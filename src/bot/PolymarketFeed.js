@@ -17,76 +17,71 @@ class PolymarketFeed {
     this.isConnected = false;
   }
 
+  /**
+   * Build the current market slug based on coin + period + current time window.
+   * Polymarket 5-min markets follow the slug pattern:
+   * "will-btc-be-higher-at-HH-MM-am-pm-et-on-month-day-year"
+   * We discover by fetching the slug-based endpoint.
+   */
+  _getCurrentPeriodSlug(periodMinutes) {
+    // Round current time up to the next period boundary
+    const now = new Date();
+    const ms = now.getTime();
+    const periodMs = periodMinutes * 60 * 1000;
+    const nextPeriod = new Date(Math.ceil(ms / periodMs) * periodMs);
+    return nextPeriod;
+  }
+
   async fetchActiveBTCMarkets() {
     try {
-      // Try multiple endpoints — 5-min markets may be under events or specific tag slugs
-      const endpoints = [
-        `${POLYMARKET_GAMMA_API}/markets?active=true&closed=false&tag_slug=btc-usd-5-minute&limit=50`,
-        `${POLYMARKET_GAMMA_API}/markets?active=true&closed=false&tag_slug=crypto-btc-intraday&limit=50`,
-        `${POLYMARKET_GAMMA_API}/events?active=true&closed=false&tag_slug=crypto&limit=50`,
-        `${POLYMARKET_GAMMA_API}/markets?active=true&closed=false&limit=100`,
-      ];
-
-      let allMarkets = [];
-
-      for (const url of endpoints) {
-        try {
-          const response = await axios.get(url, { timeout: 8000 });
-          const data = response.data;
-          // Handle both array and {markets:[]} response shapes
-          let items = Array.isArray(data) ? data : (data.markets || data.events || data.data || []);
-          // If events, extract nested markets
-          if (items[0]?.markets) {
-            items = items.flatMap(e => e.markets || []);
-          }
-          console.log(`[PolymarketFeed] ${url.split('?')[1]}: ${items.length} items`);
-          if (items.length > 0) {
-            console.log('[PolymarketFeed] Sample:', items.slice(0,3).map(m => m.question||m.title||'?').join(' | '));
-            allMarkets = allMarkets.concat(items);
-            if (items.length > 5) break; // Found a good source, stop
-          }
-        } catch(e) {
-          console.log(`[PolymarketFeed] Endpoint failed: ${e.message}`);
-        }
-      }
-
-      // Deduplicate by conditionId
-      const seen = new Set();
-      allMarkets = allMarkets.filter(m => {
-        const id = m.conditionId || m.condition_id || m.id;
-        if (seen.has(id)) return false;
-        seen.add(id); return true;
+      // Known working approach from open-source Polymarket bots:
+      // Fetch markets sorted by end_date ascending — current short-term markets come first
+      const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, {
+        params: {
+          active: true,
+          closed: false,
+          limit: 100,
+          order: 'endDate',
+          ascending: 'true'
+        },
+        timeout: 10000
       });
 
-      // Filter for short-term BTC price markets
-      const btcShortTerm = allMarkets.filter(m => {
+      let markets = Array.isArray(response.data)
+        ? response.data
+        : (response.data?.markets || response.data?.data || []);
+
+      console.log(`[PolymarketFeed] Total markets from API: ${markets.length}`);
+
+      // Log first 5 for debugging
+      markets.slice(0, 5).forEach(m => {
+        const end = m.endDate || m.endDateIso || m.end_date_iso || '?';
+        const secs = end !== '?' ? Math.round((new Date(end) - Date.now()) / 1000) : '?';
+        console.log(`  [${secs}s] "${(m.question||m.title||'?').substring(0,70)}"`);
+        console.log(`    keys: ${Object.keys(m).slice(0,12).join(', ')}`);
+      });
+
+      // Filter: BTC/Bitcoin markets resolving within 2 hours
+      const now = Date.now();
+      const btcShortTerm = markets.filter(m => {
         const q = (m.question || m.title || m.slug || '').toLowerCase();
-        const hasBTC = q.includes('btc') || q.includes('bitcoin');
-        const isShortTerm = q.includes('higher') || q.includes('lower') || q.includes('above') ||
-                            q.includes('below') || q.includes('up') || q.includes('down') ||
-                            q.includes('5-min') || q.includes('minute') || q.includes('hour') ||
-                            q.includes('pm') || q.includes('am') || q.includes('today');
-        // Also check resolution time — short-term = resolves within 24h
-        const endDate = m.endDateIso || m.end_date_iso || m.endDate || m.end_date;
-        const timeToRes = endDate ? (new Date(endDate).getTime() - Date.now()) / 1000 : Infinity;
-        return hasBTC && (isShortTerm || timeToRes < 86400);
+        if (!q.includes('btc') && !q.includes('bitcoin')) return false;
+        const end = m.endDate || m.endDateIso || m.end_date_iso || m.endTime;
+        if (!end) return false;
+        const secsToRes = (new Date(end).getTime() - now) / 1000;
+        return secsToRes > 30 && secsToRes < 7200;
       });
 
-      this.activeMarkets = btcShortTerm.length > 0 ? btcShortTerm : allMarkets.filter(m => {
-        const endDate = m.endDateIso || m.end_date_iso || m.endDate || m.end_date;
-        const timeToRes = endDate ? (new Date(endDate).getTime() - Date.now()) / 1000 : Infinity;
-        const q = (m.question || m.title || '').toLowerCase();
-        return (q.includes('btc') || q.includes('bitcoin')) && timeToRes < 86400;
+      console.log(`[PolymarketFeed] BTC markets resolving within 2h: ${btcShortTerm.length}`);
+      btcShortTerm.forEach(m => {
+        const end = m.endDate || m.endDateIso || m.end_date_iso;
+        const secs = Math.round((new Date(end) - now) / 1000);
+        console.log(`  [${secs}s] "${(m.question||m.title||'?').substring(0,70)}"`);
       });
 
-      console.log(`[PolymarketFeed] Final active markets: ${this.activeMarkets.length}`);
-      this.activeMarkets.slice(0,5).forEach(m => {
-        const end = m.endDateIso || m.end_date_iso || m.endDate || m.end_date || '?';
-        const secs = end !== '?' ? Math.round((new Date(end).getTime() - Date.now()) / 1000) : '?';
-        console.log(`  -> "${(m.question||m.title||'?').substring(0,60)}" | ${secs}s`);
-      });
-
+      this.activeMarkets = btcShortTerm;
       return this.activeMarkets;
+
     } catch (err) {
       console.error('[PolymarketFeed] fetchActiveBTCMarkets error:', err.message);
       return [];
