@@ -4,14 +4,16 @@ const { PolymarketFeed } = require('./PolymarketFeed');
 const { decrypt } = require('../services/encryption');
 const { pool } = require('../models/db');
 
-const EVAL_INTERVAL_MS = 10000; // Evaluate every 10 seconds
-const MARKET_REFRESH_MS = 60000; // Refresh active markets every minute
-const RESOLUTION_CHECK_MS = 30000; // Check open trades for resolution every 30s
+const EVAL_INTERVAL_MS = 10000;
+const MARKET_REFRESH_MS = 60000;
+const RESOLUTION_CHECK_MS = 30000;
+const ORDER_VERIFY_DELAY_MS = 5000; // Wait 5s after placing order then verify it filled
 
 class BotInstance {
   constructor(userId, settings) {
     this.userId = userId;
     this.settings = settings;
+    this.paperTrading = settings.paper_trading !== false; // default true for safety
     this.binance = new BinanceFeed();
     this.polymarket = null;
     this.engine = null;
@@ -19,9 +21,9 @@ class BotInstance {
     this.marketRefreshTimer = null;
     this.resolutionTimer = null;
     this.isRunning = false;
-    this.openTrades = new Map(); // tradeId -> { conditionId, direction, tokenId }
+    this.openTrades = new Map();
     this.lastTradeTime = 0;
-    this.MIN_TRADE_INTERVAL_MS = 30000; // No two trades within 30s
+    this.MIN_TRADE_INTERVAL_MS = 30000;
   }
 
   async start() {
@@ -41,7 +43,8 @@ class BotInstance {
     await this.polymarket.fetchActiveBTCMarkets();
 
     this.isRunning = true;
-    this._log('INFO', `Bot started for user ${this.userId}`);
+    const mode = this.paperTrading ? '📄 PAPER TRADING' : '💰 LIVE TRADING';
+    this._log('INFO', `Bot started [${mode}] for user ${this.userId}`);
 
     this.evalTimer = setInterval(() => this._evaluate(), EVAL_INTERVAL_MS);
     this.marketRefreshTimer = setInterval(() => this.polymarket.fetchActiveBTCMarkets(), MARKET_REFRESH_MS);
@@ -52,7 +55,7 @@ class BotInstance {
     if (!this.isRunning) return;
 
     try {
-      // Check daily loss limit
+      // Daily loss limit check
       const dailyResult = await pool.query(`
         SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades
         WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'
@@ -64,7 +67,6 @@ class BotInstance {
         return;
       }
 
-      // One trade at a time guard + time guard
       if (this.openTrades.size > 0) return;
       if (Date.now() - this.lastTradeTime < this.MIN_TRADE_INTERVAL_MS) return;
 
@@ -72,9 +74,12 @@ class BotInstance {
       if (!btcData.price || !btcData.volatility) return;
 
       const markets = this.polymarket.activeMarkets;
-      if (!markets.length) return;
+      if (!markets.length) {
+        this._log('INFO', 'Scanning for active BTC 5-min markets...');
+        return;
+      }
 
-      // Find the closest upcoming 5-min market
+      // Find best upcoming market (1-4 min to resolution)
       const now = Date.now();
       let bestMarket = null;
       let minTimeToRes = Infinity;
@@ -90,7 +95,6 @@ class BotInstance {
 
       if (!bestMarket) return;
 
-      // Get order books for UP and DOWN tokens
       const tokens = bestMarket.tokens || bestMarket.clobTokenIds || [];
       if (tokens.length < 2) return;
 
@@ -102,12 +106,10 @@ class BotInstance {
 
       if (!upBook || !downBook) return;
 
-      // Get beat price from Chainlink or estimate from market question
       const chainlinkPrice = await this.polymarket.getChainlinkPrice();
       const beatPrice = chainlinkPrice || btcData.price;
       const distanceToBeat = Math.abs(btcData.price - beatPrice);
 
-      // Evaluate signal
       const signal = this.engine.evaluate({
         currentPrice: btcData.price,
         beatPrice,
@@ -126,8 +128,8 @@ class BotInstance {
 
       if (!signal) return;
 
-      // Execute trade
-      await this._executeTrade(signal, bestMarket, signal.direction === 'UP' ? upTokenId : downTokenId);
+      const tokenId = signal.direction === 'UP' ? upTokenId : downTokenId;
+      await this._executeTrade(signal, bestMarket, tokenId);
 
     } catch (err) {
       this._log('ERROR', `Evaluation error: ${err.message}`);
@@ -135,34 +137,23 @@ class BotInstance {
   }
 
   async _executeTrade(signal, market, tokenId) {
-    try {
-      this._log('INFO',
-        `Signal: ${signal.direction} | Entry: ${signal.entry_price.toFixed(3)} | EV: ${(signal.expected_value * 100).toFixed(1)}% | Size: $${signal.size.toFixed(2)}`
-      );
+    const mode = this.paperTrading ? '[PAPER]' : '[LIVE]';
 
-      const orderResult = await this.polymarket.placeOrder({
-        tokenId,
-        side: 'BUY',
-        price: signal.entry_price,
-        size: signal.size,
-        conditionId: market.conditionId
-      });
+    this._log('INFO',
+      `${mode} Signal: ${signal.direction} | Entry: ${signal.entry_price.toFixed(3)} | EV: ${(signal.expected_value * 100).toFixed(1)}% | Size: $${signal.size.toFixed(2)}`
+    );
 
-      // Record trade in DB
+    // ── PAPER TRADING ─────────────────────────────────────
+    if (this.paperTrading) {
       const tradeResult = await pool.query(`
-        INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob,
+          market_prob, expected_value, fee, paper, order_status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 'SIMULATED', NOW())
         RETURNING id
       `, [
-        this.userId,
-        market.conditionId,
-        signal.direction,
-        signal.entry_price,
-        signal.size,
-        signal.anchored_prob,
-        signal.market_prob,
-        signal.expected_value,
-        signal.fee
+        this.userId, market.conditionId, signal.direction,
+        signal.entry_price, signal.size, signal.anchored_prob,
+        signal.market_prob, signal.expected_value, signal.fee
       ]);
 
       const tradeId = tradeResult.rows[0].id;
@@ -171,14 +162,80 @@ class BotInstance {
         direction: signal.direction,
         tokenId,
         entryPrice: signal.entry_price,
-        size: signal.size
+        size: signal.size,
+        paper: true
       });
 
       this.lastTradeTime = Date.now();
-      this._log('INFO', `Trade placed: ID ${tradeId}, ${signal.direction} $${signal.size.toFixed(2)} @ ${signal.entry_price.toFixed(3)}`);
+      this._log('INFO', `[PAPER] Trade recorded: ID ${tradeId} | ${signal.direction} $${signal.size.toFixed(2)} @ ${signal.entry_price.toFixed(3)}`);
+      return;
+    }
+
+    // ── LIVE TRADING ──────────────────────────────────────
+    try {
+      // Step 1: Place order
+      const orderResult = await this.polymarket.placeOrder({
+        tokenId,
+        side: 'BUY',
+        price: signal.entry_price,
+        size: signal.size,
+        conditionId: market.conditionId
+      });
+
+      const orderId = orderResult?.orderID || orderResult?.id || null;
+      this._log('INFO', `[LIVE] Order submitted: ${orderId || 'no-id'}`);
+
+      // Step 2: Wait then verify it actually filled
+      await new Promise(r => setTimeout(r, ORDER_VERIFY_DELAY_MS));
+
+      let orderStatus = 'UNKNOWN';
+      let confirmedSize = signal.size;
+
+      if (orderId) {
+        try {
+          const verified = await this.polymarket.getOrderStatus(orderId);
+          orderStatus = verified.status; // FILLED, CANCELLED, PARTIAL, etc.
+          confirmedSize = parseFloat(verified.size_matched) || signal.size;
+
+          if (orderStatus === 'CANCELLED' || orderStatus === 'UNMATCHED') {
+            this._log('WARN', `[LIVE] Order ${orderId} was NOT filled (status: ${orderStatus}). Skipping trade record.`);
+            return; // Don't record unfilled orders
+          }
+        } catch(e) {
+          this._log('WARN', `[LIVE] Could not verify order ${orderId}: ${e.message}. Recording as UNVERIFIED.`);
+          orderStatus = 'UNVERIFIED';
+        }
+      }
+
+      // Step 3: Record only if filled
+      const tradeResult = await pool.query(`
+        INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob,
+          market_prob, expected_value, fee, paper, order_id, order_status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, $10, $11, NOW())
+        RETURNING id
+      `, [
+        this.userId, market.conditionId, signal.direction,
+        signal.entry_price, confirmedSize, signal.anchored_prob,
+        signal.market_prob, signal.expected_value, signal.fee,
+        orderId, orderStatus
+      ]);
+
+      const tradeId = tradeResult.rows[0].id;
+      this.openTrades.set(tradeId, {
+        conditionId: market.conditionId,
+        direction: signal.direction,
+        tokenId,
+        entryPrice: signal.entry_price,
+        size: confirmedSize,
+        paper: false,
+        orderId
+      });
+
+      this.lastTradeTime = Date.now();
+      this._log('INFO', `[LIVE] Trade confirmed: ID ${tradeId} | ${signal.direction} $${confirmedSize.toFixed(2)} @ ${signal.entry_price.toFixed(3)} | Status: ${orderStatus}`);
 
     } catch (err) {
-      this._log('ERROR', `Trade execution failed: ${err.message}`);
+      this._log('ERROR', `[LIVE] Trade execution failed: ${err.message}`);
     }
   }
 
@@ -188,14 +245,12 @@ class BotInstance {
         const resolution = await this.polymarket.checkResolution(trade.conditionId);
         if (!resolution.resolved) continue;
 
-        // Determine win/loss
         const outcomes = resolution.outcome || [];
         const upWon = parseFloat(outcomes[0]) === 1;
         const win = (trade.direction === 'UP' && upWon) || (trade.direction === 'DOWN' && !upWon);
 
         let pnl;
         if (win) {
-          // Payout = size / entry_price * (1 - fee_pct)
           const feePct = trade.entryPrice * 0.25 * Math.pow(trade.entryPrice * (1 - trade.entryPrice), 2);
           pnl = (trade.size / trade.entryPrice - trade.size) * (1 - feePct);
         } else {
@@ -207,7 +262,8 @@ class BotInstance {
           [win ? 'WIN' : 'LOSS', pnl, tradeId]
         );
 
-        this._log('INFO', `Trade ${tradeId} resolved: ${win ? 'WIN' : 'LOSS'} | P&L: $${pnl.toFixed(2)}`);
+        const mode = trade.paper ? '[PAPER]' : '[LIVE]';
+        this._log('INFO', `${mode} Trade ${tradeId} resolved: ${win ? '✅ WIN' : '❌ LOSS'} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
         this.openTrades.delete(tradeId);
 
       } catch (err) {
@@ -223,7 +279,6 @@ class BotInstance {
         'INSERT INTO bot_logs (user_id, level, message) VALUES ($1, $2, $3)',
         [this.userId, level, message]
       );
-      // Keep only last 1000 logs per user
       await pool.query(
         'DELETE FROM bot_logs WHERE user_id = $1 AND id NOT IN (SELECT id FROM bot_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1000)',
         [this.userId]
@@ -234,6 +289,7 @@ class BotInstance {
   getStatus() {
     return {
       is_running: this.isRunning,
+      paper_trading: this.paperTrading,
       open_trades: this.openTrades.size,
       last_trade_time: this.lastTradeTime
     };
