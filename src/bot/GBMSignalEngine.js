@@ -1,7 +1,5 @@
 /**
- * GBM Signal Engine
- * Replicates the market-anchored GBM probability model from the proof report.
- * Computes risk-neutral probability and expected value for UP/DOWN Polymarket markets.
+ * GBM Signal Engine — with full decision logging
  */
 
 class GBMSignalEngine {
@@ -9,199 +7,179 @@ class GBMSignalEngine {
     this.settings = settings;
     this.consecutiveSignals = [];
     this.REQUIRED_CONFIRMATIONS = 3;
+    this.onDecision = null; // callback(decisionLog) set by BotInstance
   }
 
-  /**
-   * Compute GBM probability that BTC will be above/below the beat price at resolution.
-   * Uses Black-Scholes-inspired closed-form for binary outcome.
-   */
   computeGBMProbability({ currentPrice, beatPrice, volatility, drift, timeToResolutionSec }) {
-    const T = timeToResolutionSec / (365 * 24 * 3600); // convert to years
+    const T = timeToResolutionSec / (365 * 24 * 3600);
     if (T <= 0) return 0.5;
-
     const sigma = volatility;
     const mu = drift - 0.5 * sigma * sigma;
     const logRatio = Math.log(beatPrice / currentPrice);
-
-    // d1 for probability that S_T > beatPrice
     const d1 = (mu * T - logRatio) / (sigma * Math.sqrt(T));
-    const probUp = this._normalCDF(d1);
-    return Math.max(0.01, Math.min(0.99, probUp));
+    return Math.max(0.01, Math.min(0.99, this._normalCDF(d1)));
   }
 
-  /**
-   * Blend model probability with Polymarket's market price (Bayesian anchor).
-   * Heavy anchor (0.6 weight) to market — market has crowd wisdom.
-   */
   marketAnchoredProb(modelProb, marketProb) {
     const MARKET_WEIGHT = 0.60;
     return MARKET_WEIGHT * marketProb + (1 - MARKET_WEIGHT) * modelProb;
   }
 
-  /**
-   * Apply drift adjustments: momentum, order book imbalance, mean reversion.
-   * Dampened for 5-min noise as per original bot design.
-   */
   adjustedDrift({ rawDrift, momentum, obImbalance, currentPrice, vwap }) {
-    const MOMENTUM_WEIGHT = 0.3;
-    const OB_WEIGHT = 0.2;
-    const MR_WEIGHT = 0.15;
-    const DAMPENING = 0.4; // Dampen for 5-min noise
-
-    const mrSignal = (vwap - currentPrice) / currentPrice; // mean reversion pull
-
-    const adjustedDrift = rawDrift
-      + MOMENTUM_WEIGHT * momentum
-      + OB_WEIGHT * obImbalance
-      + MR_WEIGHT * mrSignal;
-
-    return adjustedDrift * DAMPENING;
+    const mrSignal = (vwap - currentPrice) / currentPrice;
+    return (rawDrift + 0.3 * momentum + 0.2 * obImbalance + 0.15 * mrSignal) * 0.4;
   }
 
-  /**
-   * Polymarket fee formula: fee = price * 0.25 * (price * (1 - price))^2
-   */
   calculateFee(price, size) {
-    const feePct = price * 0.25 * Math.pow(price * (1 - price), 2);
-    return feePct * size;
+    return price * 0.25 * Math.pow(price * (1 - price), 2) * size;
   }
 
-  /**
-   * Fee-adjusted Expected Value.
-   * EV = prob * (1/price - 1) * (1 - fee_pct) - (1 - prob)
-   */
-  calculateEV(prob, entryPrice, size = 1) {
+  calculateEV(prob, entryPrice) {
     const feePct = entryPrice * 0.25 * Math.pow(entryPrice * (1 - entryPrice), 2);
     const payout = (1 / entryPrice) - 1;
-    const ev = prob * payout * (1 - feePct) - (1 - prob);
-    return ev;
+    return prob * payout * (1 - feePct) - (1 - prob);
   }
 
-  /**
-   * Kelly criterion position sizing, capped at user-configured max.
-   * f = (p * b - q) / b where b = net odds
-   */
   kellySize(prob, entryPrice, maxTradeSize, kellyCap) {
-    const b = (1 / entryPrice) - 1; // net odds
-    const q = 1 - prob;
-    const kelly = (prob * b - q) / b;
-    const cappedKelly = Math.max(0, Math.min(kelly * kellyCap, 1));
-    return Math.min(cappedKelly * maxTradeSize, maxTradeSize);
+    const b = (1 / entryPrice) - 1;
+    const kelly = (prob * b - (1 - prob)) / b;
+    return Math.min(Math.max(0, kelly * kellyCap) * maxTradeSize, maxTradeSize);
   }
 
-  /**
-   * Main signal evaluation. Returns signal or null.
-   * Requires multi-confirmation and all filters.
-   */
+  _emit(log) {
+    if (this.onDecision) this.onDecision(log);
+  }
+
   evaluate({
-    currentPrice,
-    beatPrice,
-    marketProbUp,     // Polymarket's displayed probability for UP
-    entryPriceUp,     // Ask price for UP on Polymarket
-    entryPriceDown,   // Ask price for DOWN on Polymarket
-    spread,
-    volatility,
-    drift,
-    momentum,
-    obImbalance,
-    vwap,
-    timeToResolutionSec,
-    distanceToBeat
+    currentPrice, beatPrice, marketProbUp,
+    entryPriceUp, entryPriceDown, spread,
+    volatility, drift, momentum, obImbalance,
+    vwap, timeToResolutionSec, distanceToBeat
   }) {
     const { min_ev_threshold, min_prob_diff, market_prob_min, market_prob_max,
             direction_filter, max_trade_size, kelly_cap } = this.settings;
 
-    // Filter 1: Distance filter ($30-$100 from beat price)
-    if (distanceToBeat < 30 || distanceToBeat > 100) return null;
+    const base = {
+      btc_price: currentPrice.toFixed(2),
+      beat_price: beatPrice.toFixed(2),
+      distance: distanceToBeat.toFixed(2),
+      market_prob_up: (marketProbUp * 100).toFixed(1) + '%',
+      spread: spread.toFixed(3),
+      volatility: (volatility * 100).toFixed(3) + '%',
+      momentum: momentum ? (momentum * 100).toFixed(3) + '%' : '—',
+      time_to_res: Math.round(timeToResolutionSec) + 's',
+      confirmations: this.consecutiveSignals.length + '/' + this.REQUIRED_CONFIRMATIONS,
+      timestamp: new Date().toISOString()
+    };
 
-    // Filter 2: Market probability zone (uncertainty zone)
-    if (marketProbUp < market_prob_min || marketProbUp > market_prob_max) return null;
+    // Filter 1: Distance
+    if (distanceToBeat < 30 || distanceToBeat > 100) {
+      this._emit({ ...base, verdict: 'SKIP', reason: `Distance $${distanceToBeat.toFixed(0)} outside $30–$100 range` });
+      return null;
+    }
 
-    // Filter 3: Spread filter (reject illiquid markets)
-    if (spread > 0.15) return null;
+    // Filter 2: Market probability zone
+    if (marketProbUp < market_prob_min || marketProbUp > market_prob_max) {
+      this._emit({ ...base, verdict: 'SKIP', reason: `Market prob ${(marketProbUp*100).toFixed(1)}% outside uncertainty zone (${(market_prob_min*100).toFixed(0)}–${(market_prob_max*100).toFixed(0)}%)` });
+      return null;
+    }
 
-    // Compute adjusted drift
+    // Filter 3: Spread
+    if (spread > 0.15) {
+      this._emit({ ...base, verdict: 'SKIP', reason: `Spread ${spread.toFixed(3)} too wide (max 0.15) — market illiquid` });
+      return null;
+    }
+
+    // Compute model probability
     const adjDrift = this.adjustedDrift({ rawDrift: drift, momentum, obImbalance, currentPrice, vwap });
-
-    // GBM probability for UP
-    const modelProbUp = this.computeGBMProbability({
-      currentPrice, beatPrice, volatility,
-      drift: adjDrift, timeToResolutionSec
-    });
-
-    // Market-anchored probability
+    const modelProbUp = this.computeGBMProbability({ currentPrice, beatPrice, volatility, drift: adjDrift, timeToResolutionSec });
     const anchoredProbUp = this.marketAnchoredProb(modelProbUp, marketProbUp);
     const anchoredProbDown = 1 - anchoredProbUp;
 
-    // Determine signal direction
-    let direction = null;
-    let entryPrice = null;
-    let finalProb = null;
+    const evUp = this.calculateEV(anchoredProbUp, entryPriceUp);
+    const evDown = this.calculateEV(anchoredProbDown, entryPriceDown);
+    const probDiffUp = anchoredProbUp - entryPriceUp;
+    const probDiffDown = anchoredProbDown - entryPriceDown;
+
+    const modelInfo = {
+      ...base,
+      model_prob_up: (modelProbUp * 100).toFixed(1) + '%',
+      anchored_prob_up: (anchoredProbUp * 100).toFixed(1) + '%',
+      ev_up: (evUp * 100).toFixed(1) + '%',
+      ev_down: (evDown * 100).toFixed(1) + '%',
+      prob_diff_up: (probDiffUp * 100).toFixed(1) + '%',
+      prob_diff_down: (probDiffDown * 100).toFixed(1) + '%',
+    };
+
+    // Filter 4: EV + prob diff
+    let direction = null, entryPrice = null, finalProb = null;
 
     if (direction_filter !== 'DOWN') {
-      const evUp = this.calculateEV(anchoredProbUp, entryPriceUp);
-      const probDiffUp = anchoredProbUp - entryPriceUp;
       if (evUp >= min_ev_threshold && probDiffUp >= min_prob_diff) {
-        direction = 'UP';
-        entryPrice = entryPriceUp;
-        finalProb = anchoredProbUp;
+        direction = 'UP'; entryPrice = entryPriceUp; finalProb = anchoredProbUp;
       }
     }
-
     if (!direction && direction_filter !== 'UP') {
-      const evDown = this.calculateEV(anchoredProbDown, entryPriceDown);
-      const probDiffDown = anchoredProbDown - entryPriceDown;
       if (evDown >= min_ev_threshold && probDiffDown >= min_prob_diff) {
-        direction = 'DOWN';
-        entryPrice = entryPriceDown;
-        finalProb = anchoredProbDown;
+        direction = 'DOWN'; entryPrice = entryPriceDown; finalProb = anchoredProbDown;
       }
     }
 
     if (!direction) {
+      const bestEv = Math.max(evUp, evDown);
+      const reason = bestEv > 0
+        ? `Best EV ${(bestEv*100).toFixed(1)}% below threshold ${(min_ev_threshold*100).toFixed(0)}% — edge not strong enough`
+        : `Negative EV — both directions unfavorable at current prices`;
+      this._emit({ ...modelInfo, verdict: 'SKIP', reason });
       this.consecutiveSignals = [];
       return null;
     }
 
-    // Multi-signal confirmation: require 3 consecutive agreeing evaluations
+    // Filter 5: Multi-signal confirmation
     this.consecutiveSignals.push(direction);
-    if (this.consecutiveSignals.length > this.REQUIRED_CONFIRMATIONS) {
-      this.consecutiveSignals.shift();
-    }
+    if (this.consecutiveSignals.length > this.REQUIRED_CONFIRMATIONS) this.consecutiveSignals.shift();
 
-    if (this.consecutiveSignals.length < this.REQUIRED_CONFIRMATIONS) return null;
-    if (!this.consecutiveSignals.every(s => s === direction)) {
+    const confirmCount = this.consecutiveSignals.filter(s => s === direction).length;
+
+    if (this.consecutiveSignals.length < this.REQUIRED_CONFIRMATIONS || !this.consecutiveSignals.every(s => s === direction)) {
+      this._emit({ ...modelInfo, verdict: 'WAIT', direction, reason: `Confirmation ${confirmCount}/${this.REQUIRED_CONFIRMATIONS} — waiting for 3 consecutive ${direction} signals` });
       return null;
     }
 
-    // Reset after confirmed signal
     this.consecutiveSignals = [];
 
     const ev = this.calculateEV(finalProb, entryPrice);
     const size = this.kellySize(finalProb, entryPrice, max_trade_size, kelly_cap);
 
-    if (size < 0.50) return null; // Skip tiny positions
+    if (size < 0.50) {
+      this._emit({ ...modelInfo, verdict: 'SKIP', reason: `Kelly size $${size.toFixed(2)} too small (min $0.50)` });
+      return null;
+    }
+
+    this._emit({
+      ...modelInfo,
+      verdict: 'TRADE',
+      direction,
+      entry_price: entryPrice.toFixed(3),
+      final_ev: (ev * 100).toFixed(1) + '%',
+      size: '$' + size.toFixed(2),
+      reason: `All filters passed — ${direction} @ ${entryPrice.toFixed(3)} | EV ${(ev*100).toFixed(1)}% | Size $${size.toFixed(2)}`
+    });
 
     return {
-      direction,
-      entry_price: entryPrice,
-      model_prob: modelProbUp,
-      market_prob: marketProbUp,
-      anchored_prob: finalProb,
-      expected_value: ev,
-      size,
+      direction, entry_price: entryPrice,
+      model_prob: modelProbUp, market_prob: marketProbUp,
+      anchored_prob: finalProb, expected_value: ev, size,
       fee: this.calculateFee(entryPrice, size)
     };
   }
 
-  // Standard normal CDF approximation (Abramowitz & Stegun)
   _normalCDF(x) {
-    const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
-    const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+    const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
     const sign = x < 0 ? -1 : 1;
     x = Math.abs(x);
     const t = 1.0 / (1.0 + p * x);
-    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+    const y = 1.0 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
     return 0.5 * (1.0 + sign * y);
   }
 }
