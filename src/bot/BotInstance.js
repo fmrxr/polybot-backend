@@ -1,6 +1,6 @@
 /**
  * BotInstance — Clock-based snipe timing from PolymarketBot.md
- * 
+ *
  * Key timing insight:
  * - Each 5-min window has a deterministic close time (Unix epoch % 300 == 0)
  * - Bot sleeps until T-10s before window close, then enters polling loop
@@ -11,6 +11,7 @@
 const { GBMSignalEngine } = require('./GBMSignalEngine');
 const { BinanceFeed } = require('./BinanceFeed');
 const { PolymarketFeed } = require('./PolymarketFeed');
+const { ChainlinkFeed } = require('./ChainlinkFeed');
 const { decrypt } = require('../services/encryption');
 const { pool } = require('../models/db');
 
@@ -26,6 +27,7 @@ class BotInstance {
     this.settings = settings;
     this.paperTrading = settings.paper_trading !== false;
     this.binance = new BinanceFeed();
+    this.chainlink = new ChainlinkFeed();
     this.polymarket = null;
     this.engine = null;
     this.mainTimer = null;
@@ -33,14 +35,21 @@ class BotInstance {
     this.resolutionTimer = null;
     this.isRunning = false;
     this.openTrades = new Map();
-    this.lastWindowTs = null;   // Track which window we already traded
+    this.lastWindowTs = null;
     this.lastMarketData = null;
     this.lastMarketRefreshAt = 0;
     this.inSnipeLoop = false;
   }
 
   async start() {
-    const privateKey = decrypt(this.settings.encrypted_private_key);
+    // Decrypt private key with explicit error handling
+    let privateKey;
+    try {
+      privateKey = decrypt(this.settings.encrypted_private_key);
+    } catch(e) {
+      throw new Error(`Failed to decrypt private key — check ENCRYPTION_KEY env var: ${e.message}`);
+    }
+
     this.polymarket = new PolymarketFeed(privateKey);
     this.engine = new GBMSignalEngine({
       kelly_cap: parseFloat(this.settings.kelly_cap),
@@ -54,6 +63,14 @@ class BotInstance {
     this.engine.onDecision = (d) => this._recordDecision(d);
 
     await this.binance.connect();
+
+    // Chainlink is non-critical — failures are tolerated
+    try {
+      await this.chainlink.init();
+    } catch(e) {
+      this._log('WARN', `Chainlink feed unavailable: ${e.message} — window delta will use Binance price`);
+    }
+
     await this.polymarket.fetchActiveBTCMarkets();
 
     this.isRunning = true;
@@ -62,7 +79,10 @@ class BotInstance {
 
     // Main loop: check timing every second
     this.mainTimer = setInterval(() => this._tick(), 1000);
-    this.marketRefreshTimer = setInterval(() => this.polymarket.fetchActiveBTCMarkets(), MARKET_REFRESH_MS);
+    this.marketRefreshTimer = setInterval(() => {
+      this.polymarket.fetchActiveBTCMarkets()
+        .catch(e => this._log('WARN', `Market refresh failed: ${e.message}`));
+    }, MARKET_REFRESH_MS);
     this.resolutionTimer = setInterval(() => this._checkResolutions(), RESOLUTION_CHECK_MS);
   }
 
@@ -74,8 +94,9 @@ class BotInstance {
     const windowClose = windowTs + 300;
     const secsToClose = windowClose - nowSec;
 
-    // Update market data snapshot
+    // Update market data snapshot — include Chainlink data for frontend display
     const btcData = this.binance.getMarketData();
+    const chainlinkData = this.chainlink.getPriceData();
     if (btcData.price) {
       this.lastMarketData = {
         price: btcData.price,
@@ -83,6 +104,8 @@ class BotInstance {
         volatility: btcData.volatility,
         momentum: btcData.momentum,
         ob_imbalance: btcData.obImbalance,
+        chainlink_price: chainlinkData?.price || null,
+        chainlink_age: chainlinkData?.ageSeconds || null,
         updated_at: new Date().toISOString()
       };
     }
@@ -94,7 +117,8 @@ class BotInstance {
 
     if (this.polymarket.activeMarkets.length === 0 && secsToClose <= 60 && nowSec - this.lastMarketRefreshAt >= 10) {
       this.lastMarketRefreshAt = nowSec;
-      this.polymarket.fetchActiveBTCMarkets().catch(() => {});
+      this.polymarket.fetchActiveBTCMarkets()
+        .catch(e => this._log('WARN', `Urgent market refresh failed: ${e.message}`));
     }
 
     // Enter snipe loop at T-10s
@@ -112,13 +136,12 @@ class BotInstance {
         `SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
         [this.userId]
       );
-      if (parseFloat(dailyResult.rows[0].daily_pnl) <= -this.settings.max_daily_loss) {
+      if (parseFloat(dailyResult.rows[0].daily_pnl) <= -Math.abs(this.settings.max_daily_loss)) {
         this._log('WARN', `Daily loss limit reached. Skipping window.`);
         this.lastWindowTs = windowTs;
         return;
       }
 
-      // Make sure we have the freshest market list before deciding there is no market
       if (!this.polymarket.activeMarkets.length) {
         await this.polymarket.fetchActiveBTCMarkets();
       }
@@ -147,16 +170,14 @@ class BotInstance {
         if (secsLeft <= 0) break;
 
         if (marketRetryCount === 0 || marketRetryCount % 2 === 0) {
-          this._log('WARN', `No market found yet for window ${windowTs}. Retrying market discovery...`);
+          this._log('WARN', `No market found yet for window ${windowTs}. Retrying...`);
         }
 
         await this.polymarket.fetchActiveBTCMarkets();
         market = findWindowMarket() || this.polymarket.activeMarkets[0];
         marketRetryCount += 1;
 
-        if (!market) {
-          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-        }
+        if (!market) await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
       }
 
       if (!market) {
@@ -172,7 +193,7 @@ class BotInstance {
         tokens = Object.values(market.tokens).filter(Boolean);
       }
 
-      if (tokens.length === 0 && market.clobTokenIds && this.polymarket && typeof this.polymarket._extractClobTokenIds === 'function') {
+      if (tokens.length === 0 && market.clobTokenIds && typeof this.polymarket._extractClobTokenIds === 'function') {
         const tokenIds = this.polymarket._extractClobTokenIds(market.clobTokenIds);
         tokens = tokenIds.map((id, i) => ({ token_id: id, outcome: i === 0 ? 'Yes' : 'No' }));
       }
@@ -193,7 +214,7 @@ class BotInstance {
         const nowSec = Math.floor(Date.now() / 1000);
         const secsLeft = windowClose - nowSec;
 
-        if (secsLeft <= 0) break; // Window closed
+        if (secsLeft <= 0) break;
 
         const btcData = this.binance.getMarketData();
         if (!btcData.price) {
@@ -201,28 +222,30 @@ class BotInstance {
           continue;
         }
 
+        // Pass both Binance and Chainlink prices to the signal engine
+        const chainlinkData = this.chainlink.getPriceData();
         const signal = this.engine.evaluate({
           currentPrice: btcData.price,
+          binancePrice: btcData.price,
+          chainlinkPrice: chainlinkData?.price || null,
           priceHistory: btcData.priceHistory || [],
           volumeHistory: btcData.volumeHistory || [],
           timeToResolutionSec: secsLeft
         });
 
         if (signal) {
-          // Track best signal seen
           if (Math.abs(signal.score) > Math.abs(bestScore)) {
             bestSignal = signal;
             bestScore = signal.score;
           }
 
-          // Spike detection: if score jumps ≥1.5 between checks, fire immediately
           this._log('INFO', `Snipe check | Score: ${signal.score.toFixed(1)} | Conf: ${(signal.confidence*100).toFixed(0)}% | ${signal.direction} | ${secsLeft}s left`);
           await this._executeTrade(signal, market, tokens, windowTs);
           this.lastWindowTs = windowTs;
           return;
         }
 
-        // Hard deadline: T-5s — use best signal we've seen, or current direction
+        // Hard deadline: T-5s — use best signal we've seen, or fallback
         if (secsLeft <= HARD_DEADLINE_SEC) {
           const fallback = bestSignal || this._fallbackSignal(btcData);
           if (fallback) {
@@ -247,7 +270,6 @@ class BotInstance {
   }
 
   _fallbackSignal(btcData) {
-    // If no confident signal, use window delta direction as fallback
     if (!this.engine.windowOpenPrice || !btcData.price) return null;
     const direction = btcData.price >= this.engine.windowOpenPrice ? 'UP' : 'DOWN';
     const size = Math.min(parseFloat(this.settings.max_trade_size) * 0.25, parseFloat(this.settings.max_trade_size));
@@ -267,12 +289,11 @@ class BotInstance {
 
   async _executeTrade(signal, market, tokens, windowTs) {
     const mode = this.paperTrading ? '[PAPER]' : '[LIVE]';
-    // Tokens can be objects {token_id, outcome} or raw strings
     const [upToken, downToken] = tokens;
     const tokenId = signal.direction === 'UP'
       ? (upToken?.token_id || upToken)
       : (downToken?.token_id || downToken);
-    
+
     if (!tokenId) {
       this._log('ERROR', `No token ID for ${signal.direction}. Tokens: ${JSON.stringify(tokens).substring(0,100)}`);
       return;
@@ -283,19 +304,23 @@ class BotInstance {
     );
 
     if (this.paperTrading) {
-      const result = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',NOW()) RETURNING id`,
-        [this.userId, market.conditionId, signal.direction, signal.entry_price, signal.size,
-         signal.anchored_prob, signal.market_prob, signal.expected_value, signal.fee]
-      );
-      const tradeId = result.rows[0].id;
-      this.openTrades.set(tradeId, {
-        conditionId: market.conditionId, direction: signal.direction,
-        tokenId, entryPrice: signal.entry_price, size: signal.size,
-        paper: true, windowTs
-      });
-      this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded`);
+      try {
+        const result = await pool.query(
+          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',NOW()) RETURNING id`,
+          [this.userId, market.conditionId, signal.direction, signal.entry_price, signal.size,
+           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee]
+        );
+        const tradeId = result.rows[0].id;
+        this.openTrades.set(tradeId, {
+          conditionId: market.conditionId, direction: signal.direction,
+          tokenId, entryPrice: signal.entry_price, size: signal.size,
+          paper: true, windowTs
+        });
+        this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded`);
+      } catch(e) {
+        this._log('ERROR', `[PAPER] Failed to record trade: ${e.message}`);
+      }
       return;
     }
 
@@ -328,7 +353,7 @@ class BotInstance {
         `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,NOW()) RETURNING id`,
         [this.userId, market.conditionId, signal.direction, signal.entry_price, confirmedSize,
-         signal.anchored_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus]
+         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus]
       );
       const tradeId = result.rows[0].id;
       this.openTrades.set(tradeId, {
@@ -345,21 +370,22 @@ class BotInstance {
   async _checkResolutions() {
     for (const [tradeId, trade] of this.openTrades.entries()) {
       try {
-        // Primary: use Binance to determine outcome
-        const btcData = this.binance.getMarketData();
         const windowClose = (trade.windowTs || 0) + 300;
         const nowSec = Math.floor(Date.now() / 1000);
 
         if (nowSec < windowClose + 10) continue; // Wait at least 10s after close
 
-        // Check Polymarket resolution
         const resolution = await this.polymarket.checkResolution(trade.conditionId);
         if (!resolution.resolved) continue;
 
         const upWon = parseFloat((resolution.outcome || [])[0]) === 1;
         const win = (trade.direction === 'UP' && upWon) || (trade.direction === 'DOWN' && !upWon);
-        const feePct = trade.entryPrice * 0.25 * Math.pow(trade.entryPrice * (1 - trade.entryPrice), 2);
-        const pnl = win ? (trade.size / trade.entryPrice - trade.size) * (1 - feePct) : -trade.size;
+
+        // Correct P&L: shares = size / entryPrice, profit = shares - size (when win, each share pays $1)
+        // Polymarket fee: ~2% on winnings
+        const FEE_RATE = 0.02;
+        const shares = trade.size / trade.entryPrice;
+        const pnl = win ? (shares - trade.size) * (1 - FEE_RATE) : -trade.size;
 
         await pool.query('UPDATE trades SET result=$1, pnl=$2, resolved_at=NOW() WHERE id=$3',
           [win ? 'WIN' : 'LOSS', pnl, tradeId]);
@@ -383,7 +409,9 @@ class BotInstance {
         `DELETE FROM bot_decisions WHERE user_id=$1 AND id NOT IN (SELECT id FROM bot_decisions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200)`,
         [this.userId]
       );
-    } catch(e) {}
+    } catch(e) {
+      console.error(`[Bot:${this.userId}] Decision record failed:`, e.message);
+    }
   }
 
   async _log(level, message) {
@@ -411,6 +439,7 @@ class BotInstance {
     clearInterval(this.marketRefreshTimer);
     clearInterval(this.resolutionTimer);
     this.binance.disconnect();
+    this.chainlink.stop();
     if (this.polymarket) this.polymarket.disconnect();
     this._log('INFO', 'Bot stopped');
   }

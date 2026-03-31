@@ -285,7 +285,10 @@ class PolymarketFeed {
 
   async checkResolution(conditionId) {
     try {
-      const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets/${conditionId}`, { timeout: 5000 });
+      const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets/${conditionId}`, {
+        timeout: 5000,
+        headers: this._getAuthHeaders()
+      });
       const market = response.data;
       return { resolved: market.closed || market.resolved, outcome: market.outcomePrices };
     } catch (err) {

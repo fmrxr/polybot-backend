@@ -19,13 +19,29 @@ if (missingEnvs.length > 0) {
   console.error(`Missing required environment variables: ${missingEnvs.join(', ')}`);
   process.exit(1);
 }
+if (!process.env.ENCRYPTION_KEY) {
+  console.warn('⚠️  ENCRYPTION_KEY not set — using insecure default. Set this in Railway env vars!');
+}
 
 // Trust Railway proxy
 app.set('trust proxy', 1);
 
 // Security
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }));
-app.use(cors({ origin: true, credentials: true }));
+
+const allowedOrigins = [
+  /\.netlify\.app$/,
+  /\.railway\.app$/,
+  /^http:\/\/localhost(:\d+)?$/,
+];
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // curl / same-origin
+    if (allowedOrigins.some(p => (typeof p === 'string' ? p === origin : p.test(origin)))) return cb(null, true);
+    cb(new Error(`CORS blocked: ${origin}`));
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
