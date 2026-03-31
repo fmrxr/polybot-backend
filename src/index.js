@@ -13,6 +13,9 @@ const { BotManager } = require('./bot/BotManager');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust Railway's proxy (fixes X-Forwarded-For rate limit error)
+app.set('trust proxy', 1);
+
 // Security
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
@@ -33,7 +36,7 @@ app.use('/api/user', userRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
-// Global bot manager (manages all user bot instances)
+// Global bot manager
 global.botManager = new BotManager();
 
 // Start server
