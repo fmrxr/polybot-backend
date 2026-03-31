@@ -32,74 +32,84 @@ class PolymarketFeed {
     return nextPeriod;
   }
 
+  /**
+   * Calculate current 5-min window timestamp (Unix epoch rounded down to 300s boundary)
+   * Polymarket slugs are deterministic: btc-updown-5m-{window_ts}
+   */
+  getCurrentWindowTs() {
+    const nowSec = Math.floor(Date.now() / 1000);
+    return nowSec - (nowSec % 300);
+  }
+
+  /**
+   * Fetch the current AND next BTC 5-min market by constructing the slug directly.
+   * No searching required — slug is clock-based.
+   */
   async fetchActiveBTCMarkets() {
     try {
-      const now = Date.now();
-
-      // Query 1: tag-based search for crypto intraday markets
-      const queries = [
-        { tag_slug: 'crypto', limit: 100, active: true, closed: false },
-        { tag_slug: 'btc-usd', limit: 100, active: true, closed: false },
-        { search: 'will btc', limit: 50, active: true, closed: false },
-        { search: 'bitcoin higher', limit: 50, active: true, closed: false },
-        { search: 'bitcoin lower', limit: 50, active: true, closed: false },
+      const windowTs = this.getCurrentWindowTs();
+      const slugs = [
+        `btc-updown-5m-${windowTs}`,           // Current window
+        `btc-updown-5m-${windowTs + 300}`,      // Next window
+        `btc-updown-5m-${windowTs - 300}`,      // Previous (may still be open)
       ];
 
-      let allMarkets = [];
+      const found = [];
 
-      for (const params of queries) {
+      for (const slug of slugs) {
         try {
-          const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, { params, timeout: 8000 });
-          const items = Array.isArray(response.data) ? response.data
-            : (response.data?.markets || response.data?.data || []);
-
-          // Only keep markets with future end dates
-          const future = items.filter(m => {
-            const end = m.endDate || m.endDateIso || m.end_date_iso;
-            return end && new Date(end).getTime() > now;
+          const response = await axios.get(`${POLYMARKET_GAMMA_API}/events`, {
+            params: { slug },
+            timeout: 8000
           });
 
-          console.log(`[PolymarketFeed] Query ${JSON.stringify(params).substring(0,60)}: ${items.length} total, ${future.length} future`);
-          if (future.length > 0) {
-            future.slice(0,3).forEach(m => {
-              const end = m.endDate || m.endDateIso;
-              const secs = Math.round((new Date(end) - now) / 1000);
-              console.log(`  [${secs}s] "${(m.question||m.title||'?').substring(0,70)}"`);
-            });
-            allMarkets = allMarkets.concat(future);
+          const events = Array.isArray(response.data) ? response.data : [response.data];
+
+          for (const event of events) {
+            if (!event || !event.markets) continue;
+            for (const market of event.markets) {
+              const end = market.endDate || market.endDateIso || event.endDate;
+              const secsToRes = end ? (new Date(end).getTime() - Date.now()) / 1000 : -1;
+              if (secsToRes > 10) { // Still open
+                console.log(`[PolymarketFeed] ✅ Found market via slug ${slug}: "${market.question}" | ${Math.round(secsToRes)}s | tokens: ${(market.tokens||[]).length}`);
+                found.push(market);
+              }
+            }
           }
         } catch(e) {
-          console.log(`[PolymarketFeed] Query failed: ${e.message}`);
+          console.log(`[PolymarketFeed] Slug ${slug} not found: ${e.message}`);
         }
       }
 
-      // Deduplicate
-      const seen = new Set();
-      allMarkets = allMarkets.filter(m => {
-        const id = m.conditionId || m.id;
-        if (!id || seen.has(id)) return false;
-        seen.add(id); return true;
-      });
+      // Fallback: if slug approach fails, try direct market search
+      if (found.length === 0) {
+        console.log('[PolymarketFeed] Slug approach found nothing — trying direct search...');
+        try {
+          const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, {
+            params: { active: true, closed: false, limit: 100, search: 'btc' },
+            timeout: 8000
+          });
+          const markets = Array.isArray(response.data) ? response.data : (response.data?.markets || []);
+          const now = Date.now();
+          for (const m of markets) {
+            const end = m.endDate || m.endDateIso;
+            const secsToRes = end ? (new Date(end).getTime() - now) / 1000 : -1;
+            if (secsToRes > 10 && secsToRes < 7200) {
+              const q = (m.question || m.title || '').toLowerCase();
+              if (q.includes('btc') || q.includes('bitcoin')) {
+                console.log(`[PolymarketFeed] Fallback found: "${m.question}" | ${Math.round(secsToRes)}s`);
+                found.push(m);
+              }
+            }
+          }
+        } catch(e) {
+          console.error('[PolymarketFeed] Fallback search failed:', e.message);
+        }
+      }
 
-      console.log(`[PolymarketFeed] Total future markets: ${allMarkets.length}`);
-
-      // Filter: BTC + resolves within 4 hours
-      const btcMarkets = allMarkets.filter(m => {
-        const q = (m.question || m.title || m.slug || '').toLowerCase();
-        const end = m.endDate || m.endDateIso;
-        const secsToRes = end ? (new Date(end).getTime() - now) / 1000 : Infinity;
-        return (q.includes('btc') || q.includes('bitcoin')) && secsToRes < 14400;
-      });
-
-      console.log(`[PolymarketFeed] BTC markets <4h: ${btcMarkets.length}`);
-      btcMarkets.slice(0,5).forEach(m => {
-        const end = m.endDate || m.endDateIso;
-        const secs = Math.round((new Date(end) - now) / 1000);
-        console.log(`  [${secs}s] "${(m.question||'?').substring(0,70)}" tokens:${(m.tokens||m.clobTokenIds||[]).length}`);
-      });
-
-      this.activeMarkets = btcMarkets;
-      return this.activeMarkets;
+      this.activeMarkets = found;
+      console.log(`[PolymarketFeed] Active markets: ${found.length}`);
+      return found;
 
     } catch (err) {
       console.error('[PolymarketFeed] fetchActiveBTCMarkets error:', err.message);
