@@ -24,7 +24,7 @@ if (missingEnvs.length > 0) {
 app.set('trust proxy', 1);
 
 // Security
-app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
