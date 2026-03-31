@@ -11,13 +11,12 @@ router.get('/settings', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [req.userId]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Settings not found' });
-
     const settings = result.rows[0];
-    // Never return the actual private key
     const hasKey = !!settings.encrypted_private_key;
     delete settings.encrypted_private_key;
     res.json({ ...settings, has_private_key: hasKey });
   } catch (err) {
+    console.error('Settings GET error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -25,19 +24,13 @@ router.get('/settings', async (req, res) => {
 // PUT /api/user/settings
 router.put('/settings', async (req, res) => {
   const {
-    private_key,
-    kelly_cap,
-    max_daily_loss,
-    max_trade_size,
-    min_ev_threshold,
-    min_prob_diff,
-    direction_filter,
-    market_prob_min,
-    market_prob_max
+    private_key, kelly_cap, max_daily_loss, max_trade_size,
+    min_ev_threshold, min_prob_diff, direction_filter,
+    market_prob_min, market_prob_max, paper_trading
   } = req.body;
 
   try {
-    let encryptedKey = undefined;
+    let encryptedKey = null;
     if (private_key) {
       if (!private_key.startsWith('0x') || private_key.length !== 66) {
         return res.status(400).json({ error: 'Invalid private key format (must be 0x + 64 hex chars)' });
@@ -45,13 +38,10 @@ router.put('/settings', async (req, res) => {
       encryptedKey = encrypt(private_key);
     }
 
-    const current = await pool.query('SELECT encrypted_private_key FROM bot_settings WHERE user_id = $1', [req.userId]);
-    const currentKey = current.rows[0]?.encrypted_private_key;
-
     await pool.query(`
       INSERT INTO bot_settings (user_id, encrypted_private_key, kelly_cap, max_daily_loss, max_trade_size,
-        min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         kelly_cap = COALESCE($3, bot_settings.kelly_cap),
@@ -62,18 +52,14 @@ router.put('/settings', async (req, res) => {
         direction_filter = COALESCE($8, bot_settings.direction_filter),
         market_prob_min = COALESCE($9, bot_settings.market_prob_min),
         market_prob_max = COALESCE($10, bot_settings.market_prob_max),
+        paper_trading = COALESCE($11, bot_settings.paper_trading),
         updated_at = NOW()
     `, [
-      req.userId,
-      encryptedKey || null,
-      kelly_cap || null,
-      max_daily_loss || null,
-      max_trade_size || null,
-      min_ev_threshold || null,
-      min_prob_diff || null,
-      direction_filter || null,
-      market_prob_min || null,
-      market_prob_max || null
+      req.userId, encryptedKey,
+      kelly_cap || null, max_daily_loss || null, max_trade_size || null,
+      min_ev_threshold || null, min_prob_diff || null, direction_filter || null,
+      market_prob_min || null, market_prob_max || null,
+      paper_trading !== undefined ? paper_trading : null
     ]);
 
     res.json({ success: true });
@@ -102,11 +88,9 @@ router.get('/stats', async (req, res) => {
 
     const stats = result.rows[0];
     const winRate = stats.total_trades > 0
-      ? (stats.wins / stats.total_trades * 100).toFixed(1)
-      : 0;
+      ? (stats.wins / stats.total_trades * 100).toFixed(1) : 0;
     const roi = stats.total_invested > 0
-      ? (stats.total_pnl / stats.total_invested * 100).toFixed(2)
-      : 0;
+      ? (stats.total_pnl / stats.total_invested * 100).toFixed(2) : 0;
 
     res.json({ ...stats, win_rate: parseFloat(winRate), roi: parseFloat(roi) });
   } catch (err) {
