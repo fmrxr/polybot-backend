@@ -217,10 +217,16 @@ class BotInstance {
 
   async _executeTrade(signal, market, tokens, windowTs) {
     const mode = this.paperTrading ? '[PAPER]' : '[LIVE]';
+    // Tokens can be objects {token_id, outcome} or raw strings
     const [upToken, downToken] = tokens;
     const tokenId = signal.direction === 'UP'
       ? (upToken?.token_id || upToken)
       : (downToken?.token_id || downToken);
+    
+    if (!tokenId) {
+      this._log('ERROR', `No token ID for ${signal.direction}. Tokens: ${JSON.stringify(tokens).substring(0,100)}`);
+      return;
+    }
 
     this._log('INFO',
       `${mode} 🔥 TRADE | ${signal.direction} | Entry: ~$${signal.entry_price.toFixed(3)} | Conf: ${(signal.confidence*100).toFixed(0)}% | Size: $${signal.size.toFixed(2)}`
