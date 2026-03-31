@@ -113,6 +113,15 @@ class PolymarketFeed {
     return market;
   }
 
+  _getAuthHeaders() {
+    const apiKey = process.env.POLYMARKET_API_KEY || process.env.POLY_API_KEY || process.env.POLY_CLOB_API_KEY || process.env.POLYMARKET_CLOB_API_KEY;
+    if (!apiKey) return {};
+    return {
+      'x-api-key': apiKey,
+      'Authorization': `Bearer ${apiKey}`
+    };
+  }
+
   _delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -139,7 +148,8 @@ class PolymarketFeed {
           try {
             const response = await axios.get(`${POLYMARKET_GAMMA_API}/events`, {
               params: { slug },
-              timeout: 8000
+              timeout: 8000,
+              headers: this._getAuthHeaders()
             });
 
             const events = Array.isArray(response.data) ? response.data : [response.data];
@@ -175,7 +185,8 @@ class PolymarketFeed {
         try {
           const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, {
             params: { active: true, closed: false, limit: 300, search: 'btc-updown-5m' },
-            timeout: 8000
+            timeout: 8000,
+            headers: this._getAuthHeaders()
           });
           const markets = Array.isArray(response.data) ? response.data : (response.data?.markets || []);
           const now = Date.now();
@@ -210,7 +221,8 @@ class PolymarketFeed {
     try {
       const response = await axios.get(`${POLYMARKET_CLOB_API}/book`, {
         params: { token_id: tokenId },
-        timeout: 5000
+        timeout: 5000,
+        headers: this._getAuthHeaders()
       });
       const book = response.data;
       const bestBid = book.bids?.[0]?.price ? parseFloat(book.bids[0].price) : 0;
@@ -243,7 +255,10 @@ class PolymarketFeed {
       const signature = await this.wallet.signMessage(ethers.getBytes(orderHash));
       const response = await axios.post(`${POLYMARKET_CLOB_API}/order`, {
         ...orderData, maker_address: this.address, signature
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
+      }, {
+        headers: { ...this._getAuthHeaders(), 'Content-Type': 'application/json' },
+        timeout: 10000
+      });
       return response.data;
     } catch (err) {
       console.error('[PolymarketFeed] Order failed:', err.response?.data || err.message);
@@ -253,7 +268,10 @@ class PolymarketFeed {
 
   async getOrderStatus(orderId) {
     try {
-      const response = await axios.get(`${POLYMARKET_CLOB_API}/order/${orderId}`, { timeout: 5000 });
+      const response = await axios.get(`${POLYMARKET_CLOB_API}/order/${orderId}`, {
+        timeout: 5000,
+        headers: this._getAuthHeaders()
+      });
       const o = response.data;
       return {
         status: o.status || 'UNKNOWN',
