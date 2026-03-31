@@ -77,4 +77,25 @@ async function initDB() {
   }
 }
 
-module.exports = { pool, initDB };
+
+// Note: call addDecisionsTable() after initDB() if upgrading existing DB
+async function addDecisionsTable() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS bot_decisions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        verdict VARCHAR(10),
+        direction VARCHAR(10),
+        reason TEXT,
+        data JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_decisions_user_id ON bot_decisions(user_id);
+    `);
+  } finally {
+    client.release();
+  }
+}
+module.exports = { pool, initDB, addDecisionsTable };
