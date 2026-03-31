@@ -101,7 +101,7 @@ class BotInstance {
       let bestMarket = null;
       let minTimeToRes = Infinity;
       for (const market of markets) {
-        const endDate = market.endDateIso || market.end_date_iso || market.endDate ||
+        const endDate = market.endDate || market.endDateIso || market.end_date_iso ||
                         market.end_date || market.gameStartTime || market.resolutionTime;
         if (!endDate) {
           this._log('INFO', `Market has no end date: ${(market.question||market.title||'?').substring(0,50)}`);
