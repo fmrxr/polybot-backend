@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const { initDB } = require('./models/db');
+const { initDB, addDecisionsTable } = require('./models/db');
 const authRoutes = require('./routes/auth');
 const botRoutes = require('./routes/bot');
 const tradesRoutes = require('./routes/trades');
@@ -54,6 +54,7 @@ async function autoRestartBots() {
 // Start server
 async function start() {
   await initDB();
+  await addDecisionsTable();
   await autoRestartBots();
   app.listen(PORT, () => {
     console.log(`🚀 PolyBot backend running on port ${PORT}`);
