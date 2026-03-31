@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PolyBot Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header>
+      <div>
+        <h1>PolyBot Dashboard</h1>
+        <p>Monitor and control your BTC 5-min Polymarket bot.</p>
+      </div>
+      <button id="logoutBtn" class="secondary-button hidden">Logout</button>
+    </header>
+
+    <main>
+      <section id="authSection">
+        <div class="card auth-card">
+          <div class="tab-buttons">
+            <button id="loginTab" class="tab active">Login</button>
+            <button id="registerTab" class="tab">Register</button>
+          </div>
+          <div id="loginForm" class="form-stack">
+            <input id="loginEmail" type="email" placeholder="Email" autocomplete="username" />
+            <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" />
+            <button id="loginBtn" class="primary-button">Login</button>
+          </div>
+          <div id="registerForm" class="form-stack hidden">
+            <input id="registerEmail" type="email" placeholder="Email" autocomplete="username" />
+            <input id="registerPassword" type="password" placeholder="Password" autocomplete="new-password" />
+            <button id="registerBtn" class="primary-button">Register</button>
+          </div>
+          <p id="authMessage" class="message"></p>
+        </div>
+      </section>
+
+      <section id="dashboardSection" class="hidden">
+        <div class="grid">
+          <div class="card status-card">
+            <h2>Bot status</h2>
+            <div class="status-row"><span>Status:</span><strong id="botStatus">Loading...</strong></div>
+            <div class="status-row"><span>Markets:</span><strong id="marketCount">—</strong></div>
+            <div class="status-row"><span>Daily PnL:</span><strong id="dailyPnl">—</strong></div>
+            <div class="status-row"><span>Max loss cap:</span><strong id="maxLoss">—</strong></div>
+            <div class="button-row">
+              <button id="startBotBtn" class="primary-button">Start Bot</button>
+              <button id="stopBotBtn" class="secondary-button">Stop Bot</button>
+            </div>
+          </div>
+
+          <div class="card stats-card">
+            <h2>Bot stats</h2>
+            <div class="stat-item"><span>Total trades</span><strong id="totalTrades">—</strong></div>
+            <div class="stat-item"><span>Win rate</span><strong id="winRate">—</strong></div>
+            <div class="stat-item"><span>Total PnL</span><strong id="totalPnl">—</strong></div>
+            <div class="stat-item"><span>Daily PnL</span><strong id="dailyPnlStats">—</strong></div>
+            <div class="stat-item"><span>ROI</span><strong id="roi">—</strong></div>
+          </div>
+        </div>
+
+        <div class="card logs-card">
+          <h2>Recent logs</h2>
+          <div id="logsList" class="log-list">Loading logs…</div>
+        </div>
+
+        <div class="card trades-card">
+          <h2>Recent trades</h2>
+          <table>
+            <thead>
+              <tr><th>Time</th><th>Direction</th><th>Result</th><th>PnL</th></tr>
+            </thead>
+            <tbody id="tradesBody">
+              <tr><td colspan="4">Loading trades…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card settings-card">
+          <h2>Settings</h2>
+          <div class="form-stack">
+            <label>Private key</label>
+            <input id="settingsKey" type="text" placeholder="0x..." autocomplete="off" />
+            <label>Max daily loss</label>
+            <input id="settingsMaxLoss" type="number" min="1" />
+            <label>Paper trading</label>
+            <select id="settingsPaperTrading">
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+            <button id="saveSettingsBtn" class="primary-button">Save Settings</button>
+          </div>
+          <p id="settingsMessage" class="message"></p>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

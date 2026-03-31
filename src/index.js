@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -12,6 +13,13 @@ const { BotManager } = require('./bot/BotManager');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const requiredEnvs = ['DATABASE_URL', 'JWT_SECRET'];
+const missingEnvs = requiredEnvs.filter((key) => !process.env[key]);
+if (missingEnvs.length > 0) {
+  console.error(`Missing required environment variables: ${missingEnvs.join(', ')}`);
+  process.exit(1);
+}
+
 // Trust Railway proxy
 app.set('trust proxy', 1);
 
@@ -19,6 +27,7 @@ app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Routes
 app.use('/api/auth', authRoutes);

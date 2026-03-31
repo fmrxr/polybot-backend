@@ -5,6 +5,13 @@ const { pool } = require('../models/db');
 
 const router = express.Router();
 
+function getJwtSecret() {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET is not configured');
+  }
+  return process.env.JWT_SECRET;
+}
+
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   const { email, password } = req.body;
@@ -25,11 +32,11 @@ router.post('/register', async (req, res) => {
     // Create default bot settings
     await pool.query('INSERT INTO bot_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [user.id]);
 
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: user.id }, getJwtSecret(), { expiresIn: '7d' });
     res.status(201).json({ token, user: { id: user.id, email: user.email } });
   } catch (err) {
     console.error('Register error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message.includes('JWT_SECRET') ? 'Server configuration error' : 'Server error' });
   }
 });
 
@@ -46,11 +53,11 @@ router.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: user.id }, getJwtSecret(), { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, email: user.email } });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message.includes('JWT_SECRET') ? 'Server configuration error' : 'Server error' });
   }
 });
 
