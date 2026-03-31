@@ -15,23 +15,20 @@ router.post('/start', async (req, res) => {
       return res.status(400).json({ error: 'Private key not configured. Go to Settings first.' });
     }
 
-    const isRunning = global.botManager.isRunning(req.userId);
-    if (isRunning) return res.status(409).json({ error: 'Bot is already running' });
+    if (global.botManager.isRunning(req.userId)) {
+      return res.status(409).json({ error: 'Bot is already running' });
+    }
 
-    // Check daily loss limit
-    const dailyResult = await pool.query(`
-      SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades
-      WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'
-    `, [req.userId]);
-
-    const dailyPnl = parseFloat(dailyResult.rows[0].daily_pnl);
-    if (dailyPnl <= -settings.max_daily_loss) {
-      return res.status(400).json({ error: `Daily loss limit of $${settings.max_daily_loss} reached. Reset tomorrow.` });
+    const dailyResult = await pool.query(
+      `SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
+      [req.userId]
+    );
+    if (parseFloat(dailyResult.rows[0].daily_pnl) <= -settings.max_daily_loss) {
+      return res.status(400).json({ error: `Daily loss limit of $${settings.max_daily_loss} reached.` });
     }
 
     await global.botManager.startBot(req.userId, settings);
     await pool.query('UPDATE bot_settings SET is_active = true WHERE user_id = $1', [req.userId]);
-
     res.json({ success: true, message: 'Bot started successfully' });
   } catch (err) {
     console.error('Start bot error:', err);
@@ -57,20 +54,21 @@ router.get('/status', async (req, res) => {
     const status = global.botManager.getStatus(req.userId);
 
     const settingsResult = await pool.query(
-      'SELECT is_active, max_daily_loss FROM bot_settings WHERE user_id = $1',
+      'SELECT is_active, max_daily_loss, paper_trading FROM bot_settings WHERE user_id = $1',
       [req.userId]
     );
     const settings = settingsResult.rows[0];
 
-    const dailyResult = await pool.query(`
-      SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades
-      WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'
-    `, [req.userId]);
+    const dailyResult = await pool.query(
+      `SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
+      [req.userId]
+    );
 
     res.json({
       is_running: isRunning,
       daily_pnl: parseFloat(dailyResult.rows[0].daily_pnl),
       max_daily_loss: settings?.max_daily_loss || 50,
+      paper_trading: settings?.paper_trading !== false,
       ...status
     });
   } catch (err) {
@@ -92,18 +90,19 @@ router.get('/logs', async (req, res) => {
   }
 });
 
-module.exports = router;
-
-// GET /api/bot/decisions - signal decision log
+// GET /api/bot/decisions
 router.get('/decisions', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
     const result = await pool.query(
       `SELECT verdict, direction, reason, data, created_at FROM bot_decisions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
       [req.userId, limit]
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+    // Table may not exist yet on first deploy — return empty instead of crashing
+    res.json([]);
   }
 });
+
+module.exports = router;
