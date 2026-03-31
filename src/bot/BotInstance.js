@@ -1,289 +1,207 @@
-const { GBMSignalEngine } = require('./GBMSignalEngine');
-const { BinanceFeed } = require('./BinanceFeed');
-const { PolymarketFeed } = require('./PolymarketFeed');
-const { decrypt } = require('../services/encryption');
-const { pool } = require('../models/db');
+const WebSocket = require('ws');
+const axios = require('axios');
+const { ethers } = require('ethers');
 
-const EVAL_INTERVAL_MS = 10000;
-const MARKET_REFRESH_MS = 60000;
-const RESOLUTION_CHECK_MS = 30000;
-const ORDER_VERIFY_DELAY_MS = 5000;
-const MAX_DECISIONS_STORED = 200; // per user
+const POLYMARKET_CLOB_API = 'https://clob.polymarket.com';
+const POLYMARKET_GAMMA_API = 'https://gamma-api.polymarket.com';
 
-class BotInstance {
-  constructor(userId, settings) {
-    this.userId = userId;
-    this.settings = settings;
-    this.paperTrading = settings.paper_trading !== false;
-    this.binance = new BinanceFeed();
-    this.polymarket = null;
-    this.engine = null;
-    this.evalTimer = null;
-    this.marketRefreshTimer = null;
-    this.resolutionTimer = null;
-    this.isRunning = false;
-    this.openTrades = new Map();
-    this.lastTradeTime = 0;
-    this.MIN_TRADE_INTERVAL_MS = 30000;
-    // In-memory last market data snapshot for status display
-    this.lastMarketData = null;
+class PolymarketFeed {
+  constructor(privateKey) {
+    this.privateKey = privateKey;
+    this.wallet = new ethers.Wallet(privateKey);
+    this.address = this.wallet.address;
+    this.ws = null;
+    this.markets = new Map();
+    this.orderBooks = new Map();
+    this.activeMarkets = [];
+    this.isConnected = false;
   }
 
-  async start() {
-    const privateKey = decrypt(this.settings.encrypted_private_key);
-    this.polymarket = new PolymarketFeed(privateKey);
-    this.engine = new GBMSignalEngine({
-      kelly_cap: parseFloat(this.settings.kelly_cap),
-      max_trade_size: parseFloat(this.settings.max_trade_size),
-      min_ev_threshold: parseFloat(this.settings.min_ev_threshold),
-      min_prob_diff: parseFloat(this.settings.min_prob_diff),
-      direction_filter: this.settings.direction_filter,
-      market_prob_min: parseFloat(this.settings.market_prob_min),
-      market_prob_max: parseFloat(this.settings.market_prob_max)
-    });
-
-    // Wire decision callback
-    this.engine.onDecision = (decision) => this._recordDecision(decision);
-
-    await this.binance.connect();
-    await this.polymarket.fetchActiveBTCMarkets();
-
-    this.isRunning = true;
-    const mode = this.paperTrading ? '📄 PAPER TRADING' : '💰 LIVE TRADING';
-    this._log('INFO', `Bot started [${mode}] for user ${this.userId}`);
-
-    this.evalTimer = setInterval(() => this._evaluate(), EVAL_INTERVAL_MS);
-    this.marketRefreshTimer = setInterval(() => this.polymarket.fetchActiveBTCMarkets(), MARKET_REFRESH_MS);
-    this.resolutionTimer = setInterval(() => this._checkResolutions(), RESOLUTION_CHECK_MS);
+  /**
+   * Build the current market slug based on coin + period + current time window.
+   * Polymarket 5-min markets follow the slug pattern:
+   * "will-btc-be-higher-at-HH-MM-am-pm-et-on-month-day-year"
+   * We discover by fetching the slug-based endpoint.
+   */
+  _getCurrentPeriodSlug(periodMinutes) {
+    // Round current time up to the next period boundary
+    const now = new Date();
+    const ms = now.getTime();
+    const periodMs = periodMinutes * 60 * 1000;
+    const nextPeriod = new Date(Math.ceil(ms / periodMs) * periodMs);
+    return nextPeriod;
   }
 
-  async _evaluate() {
-    if (!this.isRunning) return;
+  /**
+   * Calculate current 5-min window timestamp (Unix epoch rounded down to 300s boundary)
+   * Polymarket slugs are deterministic: btc-updown-5m-{window_ts}
+   */
+  getCurrentWindowTs() {
+    const nowSec = Math.floor(Date.now() / 1000);
+    return nowSec - (nowSec % 300);
+  }
+
+  /**
+   * Fetch the current AND next BTC 5-min market by constructing the slug directly.
+   * No searching required — slug is clock-based.
+   */
+  async fetchActiveBTCMarkets() {
     try {
-      // Daily loss limit
-      const dailyResult = await pool.query(
-        `SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
-        [this.userId]
-      );
-      const dailyPnl = parseFloat(dailyResult.rows[0].daily_pnl);
-      if (dailyPnl <= -this.settings.max_daily_loss) {
-        this._log('WARN', `Daily loss limit reached ($${this.settings.max_daily_loss}). Bot paused.`);
-        await this.stop(); return;
-      }
+      const windowTs = this.getCurrentWindowTs();
+      const slugs = [
+        `btc-updown-5m-${windowTs}`,           // Current window
+        `btc-updown-5m-${windowTs + 300}`,      // Next window
+        `btc-updown-5m-${windowTs - 300}`,      // Previous (may still be open)
+      ];
 
-      if (this.openTrades.size > 0) return;
-      if (Date.now() - this.lastTradeTime < this.MIN_TRADE_INTERVAL_MS) return;
+      const found = [];
 
-      const btcData = this.binance.getMarketData();
-      if (!btcData.price || !btcData.volatility) {
-        this._log('INFO', `Warming up... BTC: $${btcData.price || '?'} | Collecting price history for volatility calc`);
-        return;
-      }
-
-      // Save market snapshot for status display
-      this.lastMarketData = {
-        price: btcData.price,
-        vwap: btcData.vwap,
-        volatility: btcData.volatility,
-        momentum: btcData.momentum,
-        ob_imbalance: btcData.obImbalance,
-        updated_at: new Date().toISOString()
-      };
-
-      const markets = this.polymarket.activeMarkets;
-      if (!markets.length) {
-        this._log('INFO', 'No active BTC 5-min markets found — scanning...');
-        return;
-      }
-
-      // Find best market - try multiple end date field names
-      const now = Date.now();
-      let bestMarket = null;
-      let minTimeToRes = Infinity;
-      for (const market of markets) {
-        const endDate = market.endDate || market.endDateIso || market.end_date_iso ||
-                        market.end_date || market.gameStartTime || market.resolutionTime;
-        if (!endDate) {
-          this._log('INFO', `Market has no end date: ${(market.question||market.title||'?').substring(0,50)}`);
-          continue;
-        }
-        const resTime = new Date(endDate).getTime();
-        const timeToRes = (resTime - now) / 1000;
-        this._log('INFO', `Market: "${(market.question||market.title||'?').substring(0,50)}" | ${Math.round(timeToRes)}s to res`);
-        // Wide window: 30s minimum, 15 min maximum
-        if (timeToRes > 30 && timeToRes < 900 && timeToRes < minTimeToRes) {
-          minTimeToRes = timeToRes; bestMarket = market;
-        }
-      }
-
-      if (!bestMarket) {
-        this._log('INFO', `${markets.length} markets found but none in valid window — waiting`);
-        return;
-      }
-
-      const tokens = bestMarket.tokens || bestMarket.clobTokenIds || [];
-      if (tokens.length < 2) return;
-
-      const [upTokenId, downTokenId] = tokens;
-      const [upBook, downBook] = await Promise.all([
-        this.polymarket.getOrderBook(upTokenId),
-        this.polymarket.getOrderBook(downTokenId)
-      ]);
-      if (!upBook || !downBook) return;
-
-      const chainlinkPrice = await this.polymarket.getChainlinkPrice();
-      const beatPrice = chainlinkPrice || btcData.price;
-      const distanceToBeat = Math.abs(btcData.price - beatPrice);
-
-      this._log('INFO',
-        `Evaluating | BTC: $${btcData.price.toFixed(0)} | Beat: $${beatPrice.toFixed(0)} | Dist: $${distanceToBeat.toFixed(0)} | UP: ${(upBook.bestAsk*100).toFixed(1)}¢ | DOWN: ${(downBook.bestAsk*100).toFixed(1)}¢ | Spread: ${Math.max(upBook.spread, downBook.spread).toFixed(3)} | ${Math.round(minTimeToRes)}s to resolution`
-      );
-
-      const signal = this.engine.evaluate({
-        currentPrice: btcData.price, beatPrice,
-        marketProbUp: upBook.bestAsk,
-        entryPriceUp: upBook.bestAsk, entryPriceDown: downBook.bestAsk,
-        spread: Math.max(upBook.spread, downBook.spread),
-        volatility: btcData.volatility || 0.02,
-        drift: btcData.drift || 0,
-        momentum: btcData.momentum || 0,
-        obImbalance: btcData.obImbalance || 0,
-        vwap: btcData.vwap || btcData.price,
-        timeToResolutionSec: minTimeToRes,
-        distanceToBeat
-      });
-
-      if (!signal) return;
-      await this._executeTrade(signal, bestMarket, signal.direction === 'UP' ? upTokenId : downTokenId);
-
-    } catch (err) {
-      this._log('ERROR', `Evaluation error: ${err.message}`);
-    }
-  }
-
-  async _recordDecision(decision) {
-    try {
-      await pool.query(
-        `INSERT INTO bot_decisions (user_id, verdict, direction, reason, data) VALUES ($1, $2, $3, $4, $5)`,
-        [this.userId, decision.verdict, decision.direction || null, decision.reason, JSON.stringify(decision)]
-      );
-      // Keep only last 200 decisions
-      await pool.query(
-        `DELETE FROM bot_decisions WHERE user_id = $1 AND id NOT IN (SELECT id FROM bot_decisions WHERE user_id = $1 ORDER BY created_at DESC LIMIT ${MAX_DECISIONS_STORED})`,
-        [this.userId]
-      );
-    } catch(e) {}
-  }
-
-  async _executeTrade(signal, market, tokenId) {
-    const mode = this.paperTrading ? '[PAPER]' : '[LIVE]';
-    this._log('INFO',
-      `🎯 ${mode} TRADE SIGNAL | ${signal.direction} | Entry: ${signal.entry_price.toFixed(3)} | EV: ${(signal.expected_value*100).toFixed(1)}% | Prob: ${(signal.anchored_prob*100).toFixed(1)}% | Size: $${signal.size.toFixed(2)}`
-    );
-
-    if (this.paperTrading) {
-      const tradeResult = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',NOW()) RETURNING id`,
-        [this.userId, market.conditionId, signal.direction, signal.entry_price, signal.size,
-         signal.anchored_prob, signal.market_prob, signal.expected_value, signal.fee]
-      );
-      const tradeId = tradeResult.rows[0].id;
-      this.openTrades.set(tradeId, { conditionId: market.conditionId, direction: signal.direction, tokenId, entryPrice: signal.entry_price, size: signal.size, paper: true });
-      this.lastTradeTime = Date.now();
-      this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded — waiting for resolution`);
-      return;
-    }
-
-    try {
-      const orderResult = await this.polymarket.placeOrder({ tokenId, side: 'BUY', price: signal.entry_price, size: signal.size, conditionId: market.conditionId });
-      const orderId = orderResult?.orderID || orderResult?.id || null;
-      this._log('INFO', `[LIVE] Order submitted: ${orderId || 'no-id'}`);
-
-      await new Promise(r => setTimeout(r, ORDER_VERIFY_DELAY_MS));
-
-      let orderStatus = 'UNKNOWN', confirmedSize = signal.size;
-      if (orderId) {
+      for (const slug of slugs) {
         try {
-          const verified = await this.polymarket.getOrderStatus(orderId);
-          orderStatus = verified.status;
-          confirmedSize = parseFloat(verified.size_matched) || signal.size;
-          if (orderStatus === 'CANCELLED' || orderStatus === 'UNMATCHED') {
-            this._log('WARN', `[LIVE] ❌ Order NOT filled (${orderStatus}) — trade cancelled`);
-            return;
+          const response = await axios.get(`${POLYMARKET_GAMMA_API}/events`, {
+            params: { slug },
+            timeout: 8000
+          });
+
+          const events = Array.isArray(response.data) ? response.data : [response.data];
+
+          for (const event of events) {
+            if (!event || !event.markets) continue;
+            for (const market of event.markets) {
+              const end = market.endDate || market.endDateIso || event.endDate;
+              const secsToRes = end ? (new Date(end).getTime() - Date.now()) / 1000 : -1;
+              if (secsToRes > 10) { // Still open
+                console.log(`[PolymarketFeed] ✅ Found market via slug ${slug}: "${market.question}" | ${Math.round(secsToRes)}s | tokens: ${(market.tokens||[]).length}`);
+                found.push(market);
+              }
+            }
           }
         } catch(e) {
-          this._log('WARN', `[LIVE] Could not verify order: ${e.message}`);
-          orderStatus = 'UNVERIFIED';
+          console.log(`[PolymarketFeed] Slug ${slug} not found: ${e.message}`);
         }
       }
 
-      const tradeResult = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,NOW()) RETURNING id`,
-        [this.userId, market.conditionId, signal.direction, signal.entry_price, confirmedSize,
-         signal.anchored_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus]
-      );
-      const tradeId = tradeResult.rows[0].id;
-      this.openTrades.set(tradeId, { conditionId: market.conditionId, direction: signal.direction, tokenId, entryPrice: signal.entry_price, size: confirmedSize, paper: false, orderId });
-      this.lastTradeTime = Date.now();
-      this._log('INFO', `[LIVE] ✅ Trade #${tradeId} confirmed — ${signal.direction} $${confirmedSize.toFixed(2)} @ ${signal.entry_price.toFixed(3)} | ${orderStatus}`);
+      // Fallback: if slug approach fails, try direct market search
+      if (found.length === 0) {
+        console.log('[PolymarketFeed] Slug approach found nothing — trying direct search...');
+        try {
+          const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, {
+            params: { active: true, closed: false, limit: 100, search: 'btc' },
+            timeout: 8000
+          });
+          const markets = Array.isArray(response.data) ? response.data : (response.data?.markets || []);
+          const now = Date.now();
+          for (const m of markets) {
+            const end = m.endDate || m.endDateIso;
+            const secsToRes = end ? (new Date(end).getTime() - now) / 1000 : -1;
+            if (secsToRes > 10 && secsToRes < 7200) {
+              const q = (m.question || m.title || '').toLowerCase();
+              if (q.includes('btc') || q.includes('bitcoin')) {
+                console.log(`[PolymarketFeed] Fallback found: "${m.question}" | ${Math.round(secsToRes)}s`);
+                found.push(m);
+              }
+            }
+          }
+        } catch(e) {
+          console.error('[PolymarketFeed] Fallback search failed:', e.message);
+        }
+      }
+
+      this.activeMarkets = found;
+      console.log(`[PolymarketFeed] Active markets: ${found.length}`);
+      return found;
+
     } catch (err) {
-      this._log('ERROR', `[LIVE] Trade failed: ${err.message}`);
+      console.error('[PolymarketFeed] fetchActiveBTCMarkets error:', err.message);
+      return [];
     }
   }
 
-  async _checkResolutions() {
-    for (const [tradeId, trade] of this.openTrades.entries()) {
-      try {
-        const resolution = await this.polymarket.checkResolution(trade.conditionId);
-        if (!resolution.resolved) continue;
-        const upWon = parseFloat((resolution.outcome || [])[0]) === 1;
-        const win = (trade.direction === 'UP' && upWon) || (trade.direction === 'DOWN' && !upWon);
-        let pnl;
-        if (win) {
-          const feePct = trade.entryPrice * 0.25 * Math.pow(trade.entryPrice * (1 - trade.entryPrice), 2);
-          pnl = (trade.size / trade.entryPrice - trade.size) * (1 - feePct);
-        } else {
-          pnl = -trade.size;
-        }
-        await pool.query('UPDATE trades SET result=$1, pnl=$2, resolved_at=NOW() WHERE id=$3', [win ? 'WIN' : 'LOSS', pnl, tradeId]);
-        const mode = trade.paper ? '[PAPER]' : '[LIVE]';
-        this._log('INFO', `${mode} Trade #${tradeId} → ${win ? '✅ WIN' : '❌ LOSS'} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
-        this.openTrades.delete(tradeId);
-      } catch (err) {
-        this._log('ERROR', `Resolution check failed trade #${tradeId}: ${err.message}`);
-      }
-    }
-  }
-
-  async _log(level, message) {
-    console.log(`[Bot:${this.userId}][${level}] ${message}`);
+  async getOrderBook(tokenId) {
     try {
-      await pool.query('INSERT INTO bot_logs (user_id, level, message) VALUES ($1,$2,$3)', [this.userId, level, message]);
-      await pool.query(`DELETE FROM bot_logs WHERE user_id=$1 AND id NOT IN (SELECT id FROM bot_logs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1000)`, [this.userId]);
-    } catch(e) {}
+      const response = await axios.get(`${POLYMARKET_CLOB_API}/book`, {
+        params: { token_id: tokenId },
+        timeout: 5000
+      });
+      const book = response.data;
+      const bestBid = book.bids?.[0]?.price ? parseFloat(book.bids[0].price) : 0;
+      const bestAsk = book.asks?.[0]?.price ? parseFloat(book.asks[0].price) : 1;
+      return { bids: book.bids, asks: book.asks, bestBid, bestAsk, spread: bestAsk - bestBid };
+    } catch (err) {
+      return null;
+    }
   }
 
-  getStatus() {
-    return {
-      is_running: this.isRunning,
-      paper_trading: this.paperTrading,
-      open_trades: this.openTrades.size,
-      last_trade_time: this.lastTradeTime,
-      market_data: this.lastMarketData
-    };
+  async getMarketPrice(tokenId) {
+    const book = await this.getOrderBook(tokenId);
+    if (!book) return null;
+    return (book.bestBid + book.bestAsk) / 2;
   }
 
-  async stop() {
-    this.isRunning = false;
-    clearInterval(this.evalTimer);
-    clearInterval(this.marketRefreshTimer);
-    clearInterval(this.resolutionTimer);
-    this.binance.disconnect();
-    if (this.polymarket) this.polymarket.disconnect();
-    this._log('INFO', 'Bot stopped');
+  async placeOrder({ tokenId, side, price, size, conditionId }) {
+    try {
+      const nonce = Date.now();
+      const orderData = {
+        token_id: tokenId,
+        price: price.toFixed(4),
+        size: size.toFixed(2),
+        side: side,
+        type: 'FOK',
+        expiration: 0,
+        nonce: nonce
+      };
+      const orderHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(orderData)));
+      const signature = await this.wallet.signMessage(ethers.getBytes(orderHash));
+      const response = await axios.post(`${POLYMARKET_CLOB_API}/order`, {
+        ...orderData, maker_address: this.address, signature
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
+      return response.data;
+    } catch (err) {
+      console.error('[PolymarketFeed] Order failed:', err.response?.data || err.message);
+      throw new Error(err.response?.data?.error || 'Order placement failed');
+    }
+  }
+
+  async getOrderStatus(orderId) {
+    try {
+      const response = await axios.get(`${POLYMARKET_CLOB_API}/order/${orderId}`, { timeout: 5000 });
+      const o = response.data;
+      return {
+        status: o.status || 'UNKNOWN',
+        size_matched: o.size_matched || o.filled_size || 0,
+        size_remaining: o.size_remaining || 0
+      };
+    } catch (err) {
+      throw new Error(`Order status check failed: ${err.message}`);
+    }
+  }
+
+  async checkResolution(conditionId) {
+    try {
+      const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets/${conditionId}`, { timeout: 5000 });
+      const market = response.data;
+      return { resolved: market.closed || market.resolved, outcome: market.outcomePrices };
+    } catch (err) {
+      return { resolved: false };
+    }
+  }
+
+  async getChainlinkPrice() {
+    try {
+      const provider = new ethers.JsonRpcProvider('https://polygon-rpc.com');
+      const aggregatorABI = ['function latestAnswer() view returns (int256)'];
+      const aggregator = new ethers.Contract('0xc907E116054Ad103354f2D350FD2514433D57F6f', aggregatorABI, provider);
+      const price = await aggregator.latestAnswer();
+      return parseFloat(ethers.formatUnits(price, 8));
+    } catch (err) {
+      console.error('[PolymarketFeed] Chainlink price error:', err.message);
+      return null;
+    }
+  }
+
+  disconnect() {
+    if (this.ws) { this.ws.removeAllListeners(); this.ws.close(); }
   }
 }
 
-module.exports = { BotInstance };
+module.exports = { PolymarketFeed };
