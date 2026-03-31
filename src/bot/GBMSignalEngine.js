@@ -28,12 +28,14 @@ class GBMSignalEngine {
   /**
    * Update window open price when a new 5-min window starts
    */
-  updateWindowOpen(currentPrice) {
+  updateWindowOpen(currentPrice, chainlinkPrice) {
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
     if (windowTs !== this.windowTs) {
       this.windowTs = windowTs;
-      this.windowOpenPrice = currentPrice;
+      // Prefer Chainlink as window open price — it's what Polymarket uses for resolution
+      this.windowOpenPrice = chainlinkPrice || currentPrice;
+      this.chainlinkOpenPrice = chainlinkPrice;
       this.recentTicks = [];
     }
     // Accumulate ticks for micro-trend
@@ -44,22 +46,24 @@ class GBMSignalEngine {
   /**
    * Main signal evaluation — composite weighted score
    */
-  evaluate({ currentPrice, priceHistory, volumeHistory, timeToResolutionSec }) {
+  evaluate({ currentPrice, binancePrice, chainlinkPrice, priceHistory, volumeHistory, timeToResolutionSec }) {
     const { direction_filter, max_trade_size, kelly_cap } = this.settings;
 
     if (!currentPrice || priceHistory.length < 5) return null;
 
-    // Update window open tracking
-    this.updateWindowOpen(currentPrice);
+    // Update window open tracking — use Chainlink as ground truth when available
+    this.updateWindowOpen(currentPrice, chainlinkPrice);
 
-    const log = { timestamp: new Date().toISOString(), btc_price: currentPrice.toFixed(2), time_to_res: Math.round(timeToResolutionSec) + 's' };
+    const log = { timestamp: new Date().toISOString(), btc_price: currentPrice.toFixed(2), binance_price: binancePrice?.toFixed(2), chainlink_price: chainlinkPrice?.toFixed(2), time_to_res: Math.round(timeToResolutionSec) + 's' };
 
     let score = 0;
 
     // ── 1. WINDOW DELTA (weight 5-7) — THE dominant signal ─────────────────
     let windowDeltaScore = 0;
     if (this.windowOpenPrice) {
-      const windowPct = (currentPrice - this.windowOpenPrice) / this.windowOpenPrice * 100;
+      // Use Chainlink price for window delta if available — same oracle as resolution
+      const deltaPrice = chainlinkPrice || currentPrice;
+      const windowPct = (deltaPrice - this.windowOpenPrice) / this.windowOpenPrice * 100;
       if (Math.abs(windowPct) > 0.10) windowDeltaScore = Math.sign(windowPct) * 7;
       else if (Math.abs(windowPct) > 0.02) windowDeltaScore = Math.sign(windowPct) * 5;
       else if (Math.abs(windowPct) > 0.005) windowDeltaScore = Math.sign(windowPct) * 3;
