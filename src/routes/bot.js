@@ -93,3 +93,17 @@ router.get('/logs', async (req, res) => {
 });
 
 module.exports = router;
+
+// GET /api/bot/decisions - signal decision log
+router.get('/decisions', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const result = await pool.query(
+      `SELECT verdict, direction, reason, data, created_at FROM bot_decisions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [req.userId, limit]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
