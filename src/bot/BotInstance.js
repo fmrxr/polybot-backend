@@ -35,6 +35,7 @@ class BotInstance {
     this.openTrades = new Map();
     this.lastWindowTs = null;   // Track which window we already traded
     this.lastMarketData = null;
+    this.lastMarketRefreshAt = 0;
     this.inSnipeLoop = false;
   }
 
@@ -91,6 +92,11 @@ class BotInstance {
       this._log('INFO', `Window closes in ${secsToClose}s | BTC: $${btcData.price?.toFixed(0) || '?'} | Markets: ${this.polymarket.activeMarkets.length}`);
     }
 
+    if (this.polymarket.activeMarkets.length === 0 && secsToClose <= 60 && nowSec - this.lastMarketRefreshAt >= 10) {
+      this.lastMarketRefreshAt = nowSec;
+      this.polymarket.fetchActiveBTCMarkets().catch(() => {});
+    }
+
     // Enter snipe loop at T-10s
     if (secsToClose <= SNIPE_BEFORE_CLOSE_SEC && windowTs !== this.lastWindowTs) {
       await this._snipeWindow(windowTs, windowClose, btcData);
@@ -112,13 +118,38 @@ class BotInstance {
         return;
       }
 
-      // Get market for this window
-      const market = this.polymarket.activeMarkets.find(m => {
+      // Make sure we have the freshest market list before deciding there is no market
+      if (!this.polymarket.activeMarkets.length) {
+        await this.polymarket.fetchActiveBTCMarkets();
+      }
+
+      const findWindowMarket = () => this.polymarket.activeMarkets.find(m => {
         const end = m.endDate || m.endDateIso;
         if (!end) return false;
         const marketClose = Math.floor(new Date(end).getTime() / 1000);
-        return Math.abs(marketClose - windowClose) < 60;
-      }) || this.polymarket.activeMarkets[0];
+        return Math.abs(marketClose - windowClose) <= 120;
+      });
+
+      let market = findWindowMarket() || this.polymarket.activeMarkets[0];
+      let marketRetryCount = 0;
+
+      while (!market) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const secsLeft = windowClose - nowSec;
+        if (secsLeft <= 0) break;
+
+        if (marketRetryCount === 0 || marketRetryCount % 2 === 0) {
+          this._log('WARN', `No market found yet for window ${windowTs}. Retrying market discovery...`);
+        }
+
+        await this.polymarket.fetchActiveBTCMarkets();
+        market = findWindowMarket() || this.polymarket.activeMarkets[0];
+        marketRetryCount += 1;
+
+        if (!market) {
+          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+        }
+      }
 
       if (!market) {
         this._log('WARN', `T-${SNIPE_BEFORE_CLOSE_SEC}s: No market found for window ${windowTs}`);
@@ -126,7 +157,18 @@ class BotInstance {
         return;
       }
 
-      const tokens = market.tokens || market.clobTokenIds || [];
+      let tokens = [];
+      if (Array.isArray(market.tokens)) {
+        tokens = market.tokens;
+      } else if (market.tokens && typeof market.tokens === 'object') {
+        tokens = Object.values(market.tokens).filter(Boolean);
+      }
+
+      if (tokens.length === 0 && market.clobTokenIds && this.polymarket && typeof this.polymarket._extractClobTokenIds === 'function') {
+        const tokenIds = this.polymarket._extractClobTokenIds(market.clobTokenIds);
+        tokens = tokenIds.map((id, i) => ({ token_id: id, outcome: i === 0 ? 'Yes' : 'No' }));
+      }
+
       if (tokens.length < 2) {
         this._log('WARN', `Market has no tokens: ${market.question}`);
         this.lastWindowTs = windowTs;
