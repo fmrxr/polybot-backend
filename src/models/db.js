@@ -29,6 +29,7 @@ async function initDB() {
         market_prob_min DECIMAL DEFAULT 0.40,
         market_prob_max DECIMAL DEFAULT 0.60,
         is_active BOOLEAN DEFAULT false,
+        paper_trading BOOLEAN DEFAULT true,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
@@ -45,6 +46,9 @@ async function initDB() {
         result VARCHAR(10),
         pnl DECIMAL,
         fee DECIMAL,
+        paper BOOLEAN DEFAULT false,
+        order_id VARCHAR(255),
+        order_status VARCHAR(20),
         resolved_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -60,6 +64,12 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id);
       CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
       CREATE INDEX IF NOT EXISTS idx_bot_logs_user_id ON bot_logs(user_id);
+
+      -- Add new columns to existing tables if they don't exist yet
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_trading BOOLEAN DEFAULT true;
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS paper BOOLEAN DEFAULT false;
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_id VARCHAR(255);
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_status VARCHAR(20);
     `);
     console.log('✅ Database initialized');
   } finally {
