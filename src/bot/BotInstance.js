@@ -96,20 +96,28 @@ class BotInstance {
         return;
       }
 
-      // Find best market (1–4 min to resolution)
+      // Find best market - try multiple end date field names
       const now = Date.now();
       let bestMarket = null;
       let minTimeToRes = Infinity;
       for (const market of markets) {
-        const resTime = new Date(market.endDateIso || market.end_date_iso).getTime();
+        const endDate = market.endDateIso || market.end_date_iso || market.endDate ||
+                        market.end_date || market.gameStartTime || market.resolutionTime;
+        if (!endDate) {
+          this._log('INFO', `Market has no end date: ${(market.question||market.title||'?').substring(0,50)}`);
+          continue;
+        }
+        const resTime = new Date(endDate).getTime();
         const timeToRes = (resTime - now) / 1000;
-        if (timeToRes > 60 && timeToRes < 240 && timeToRes < minTimeToRes) {
+        this._log('INFO', `Market: "${(market.question||market.title||'?').substring(0,50)}" | ${Math.round(timeToRes)}s to res`);
+        // Wide window: 30s minimum, 15 min maximum
+        if (timeToRes > 30 && timeToRes < 900 && timeToRes < minTimeToRes) {
           minTimeToRes = timeToRes; bestMarket = market;
         }
       }
 
       if (!bestMarket) {
-        this._log('INFO', `${markets.length} markets found but none in 1–4 min window — waiting`);
+        this._log('INFO', `${markets.length} markets found but none in valid window — waiting`);
         return;
       }
 
