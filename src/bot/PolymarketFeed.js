@@ -120,6 +120,25 @@ class PolymarketFeed {
   }
 
   /**
+
+  /**
+   * Verify an order actually filled on the CLOB
+   * Returns { status, size_matched, size_remaining }
+   */
+  async getOrderStatus(orderId) {
+    try {
+      const response = await axios.get(`${POLYMARKET_CLOB_API}/order/${orderId}`, { timeout: 5000 });
+      const o = response.data;
+      return {
+        status: o.status || "UNKNOWN",
+        size_matched: o.size_matched || o.filled_size || 0,
+        size_remaining: o.size_remaining || 0
+      };
+    } catch (err) {
+      throw new Error(`Order status check failed: ${err.message}`);
+    }
+  }
+
    * Check if a market has resolved and get the result
    */
   async checkResolution(conditionId) {
