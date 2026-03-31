@@ -24,11 +24,34 @@ class PolymarketFeed {
         timeout: 10000
       });
       const markets = response.data?.markets || response.data || [];
-      this.activeMarkets = markets.filter(m => {
-        const q = (m.question || '').toLowerCase();
-        return q.includes('btc') && (q.includes('5-minute') || q.includes('5 minute')) &&
-               (q.includes('up') || q.includes('down') || q.includes('higher') || q.includes('lower'));
+      // Log all markets found for debugging
+      console.log('[PolymarketFeed] Total markets from API:', markets.length);
+      if (markets.length > 0) {
+        console.log('[PolymarketFeed] Sample questions:',
+          markets.slice(0, 5).map(m => m.question || m.title || '?').join(' | '));
+      }
+
+      // Broad filter: any market mentioning BTC/Bitcoin price movement
+      const filtered = markets.filter(m => {
+        const q = (m.question || m.title || m.slug || '').toLowerCase();
+        const hasBTC = q.includes('btc') || q.includes('bitcoin');
+        const hasMovement = q.includes('higher') || q.includes('lower') || q.includes('above') ||
+                            q.includes('below') || q.includes('up') || q.includes('down') ||
+                            q.includes('over') || q.includes('under') || q.includes('exceed') ||
+                            q.includes('5-min') || q.includes('5 min') || q.includes('minute');
+        return hasBTC && hasMovement;
       });
+
+      // If filtered is empty, take ALL BTC markets as fallback
+      this.activeMarkets = filtered.length > 0 ? filtered : markets.filter(m => {
+        const q = (m.question || m.title || m.slug || '').toLowerCase();
+        return q.includes('btc') || q.includes('bitcoin');
+      });
+
+      console.log('[PolymarketFeed] Active BTC markets found:', this.activeMarkets.length);
+      if (this.activeMarkets.length > 0) {
+        console.log('[PolymarketFeed] Markets:', this.activeMarkets.slice(0,3).map(m => m.question||m.title).join(' | '));
+      }
       return this.activeMarkets;
     } catch (err) {
       console.error('[PolymarketFeed] Failed to fetch markets:', err.message);
