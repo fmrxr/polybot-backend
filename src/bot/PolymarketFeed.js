@@ -70,8 +70,22 @@ class PolymarketFeed {
             for (const market of event.markets) {
               const end = market.endDate || market.endDateIso || event.endDate;
               const secsToRes = end ? (new Date(end).getTime() - Date.now()) / 1000 : -1;
-              if (secsToRes > 10) { // Still open
-                console.log(`[PolymarketFeed] ✅ Found market via slug ${slug}: "${market.question}" | ${Math.round(secsToRes)}s | tokens: ${(market.tokens||[]).length}`);
+              if (secsToRes > 10) {
+                // Tokens may be at event level or market level — merge them in
+                if (!market.tokens || market.tokens.length === 0) {
+                  if (event.markets.length === 1 && event.tokens) {
+                    market.tokens = event.tokens;
+                  } else if (market.outcomePrices && market.clobTokenIds) {
+                    // Build token objects from clobTokenIds
+                    market.tokens = market.clobTokenIds.map((id, i) => ({ token_id: id, outcome: i === 0 ? 'Yes' : 'No' }));
+                  } else {
+                    // Log full market structure so we can see what fields exist
+                    console.log(`[PolymarketFeed] Market fields: ${Object.keys(market).join(', ')}`);
+                    console.log(`[PolymarketFeed] Event fields: ${Object.keys(event).join(', ')}`);
+                    if (event.markets[0]) console.log(`[PolymarketFeed] First market keys: ${Object.keys(event.markets[0]).join(', ')}`);
+                  }
+                }
+                console.log(`[PolymarketFeed] ✅ Found market via slug ${slug}: "${market.question}" | ${Math.round(secsToRes)}s | tokens: ${(market.tokens||market.clobTokenIds||[]).length} | clobTokenIds: ${(market.clobTokenIds||[]).length}`);
                 found.push(market);
               }
             }
