@@ -66,6 +66,20 @@ class PolymarketFeed {
     return [];
   }
 
+  _getMarketWindowTs(market, event = {}) {
+    const slug = String(market.slug || market.market_slug || event.slug || '').toLowerCase();
+    const match = slug.match(/btc-updown-5m-(\d+)/);
+    if (match) return parseInt(match[1], 10);
+
+    const end = market.endDate || market.endDateIso || event.endDate;
+    if (end) {
+      const endSec = Math.floor(new Date(end).getTime() / 1000);
+      if (!Number.isNaN(endSec)) return endSec - 300;
+    }
+
+    return null;
+  }
+
   _normalizeMarketTokens(market, event = {}) {
     if (market.tokens && !Array.isArray(market.tokens)) {
       if (typeof market.tokens === 'string') {
@@ -90,6 +104,12 @@ class PolymarketFeed {
     if (tokenIds.length > 0) {
       market.tokens = tokenIds.map((id, i) => ({ token_id: id, outcome: i === 0 ? 'Yes' : 'No' }));
     }
+
+    if (!market.windowTs) {
+      const windowTs = this._getMarketWindowTs(market, event);
+      if (windowTs) market.windowTs = windowTs;
+    }
+
     return market;
   }
 
@@ -175,6 +195,7 @@ class PolymarketFeed {
         }
       }
 
+      found.sort((a, b) => (a.windowTs || Infinity) - (b.windowTs || Infinity));
       this.activeMarkets = found;
       console.log(`[PolymarketFeed] Active markets: ${found.length}`);
       return found;

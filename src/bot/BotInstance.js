@@ -123,11 +123,19 @@ class BotInstance {
         await this.polymarket.fetchActiveBTCMarkets();
       }
 
-      const findWindowMarket = () => this.polymarket.activeMarkets.find(m => {
+      this.polymarket.activeMarkets.sort((a, b) => (a.windowTs || Infinity) - (b.windowTs || Infinity));
+
+      const getMarketWindowTs = (m) => {
+        if (typeof m.windowTs === 'number') return m.windowTs;
         const end = m.endDate || m.endDateIso;
-        if (!end) return false;
+        if (!end) return null;
         const marketClose = Math.floor(new Date(end).getTime() / 1000);
-        return Math.abs(marketClose - windowClose) <= 120;
+        return marketClose - 300;
+      };
+
+      const findWindowMarket = () => this.polymarket.activeMarkets.find(m => {
+        const marketWindowTs = getMarketWindowTs(m);
+        return marketWindowTs !== null && Math.abs(marketWindowTs - windowTs) <= 5;
       });
 
       let market = findWindowMarket() || this.polymarket.activeMarkets[0];
