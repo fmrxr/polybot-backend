@@ -34,52 +34,71 @@ class PolymarketFeed {
 
   async fetchActiveBTCMarkets() {
     try {
-      // Known working approach from open-source Polymarket bots:
-      // Fetch markets sorted by end_date ascending — current short-term markets come first
-      const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, {
-        params: {
-          active: true,
-          closed: false,
-          limit: 100,
-          order: 'endDate',
-          ascending: 'true'
-        },
-        timeout: 10000
-      });
-
-      let markets = Array.isArray(response.data)
-        ? response.data
-        : (response.data?.markets || response.data?.data || []);
-
-      console.log(`[PolymarketFeed] Total markets from API: ${markets.length}`);
-
-      // Log first 5 for debugging
-      markets.slice(0, 5).forEach(m => {
-        const end = m.endDate || m.endDateIso || m.end_date_iso || '?';
-        const secs = end !== '?' ? Math.round((new Date(end) - Date.now()) / 1000) : '?';
-        console.log(`  [${secs}s] "${(m.question||m.title||'?').substring(0,70)}"`);
-        console.log(`    keys: ${Object.keys(m).slice(0,12).join(', ')}`);
-      });
-
-      // Filter: BTC/Bitcoin markets resolving within 2 hours
       const now = Date.now();
-      const btcShortTerm = markets.filter(m => {
+
+      // Query 1: tag-based search for crypto intraday markets
+      const queries = [
+        { tag_slug: 'crypto', limit: 100, active: true, closed: false },
+        { tag_slug: 'btc-usd', limit: 100, active: true, closed: false },
+        { search: 'will btc', limit: 50, active: true, closed: false },
+        { search: 'bitcoin higher', limit: 50, active: true, closed: false },
+        { search: 'bitcoin lower', limit: 50, active: true, closed: false },
+      ];
+
+      let allMarkets = [];
+
+      for (const params of queries) {
+        try {
+          const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, { params, timeout: 8000 });
+          const items = Array.isArray(response.data) ? response.data
+            : (response.data?.markets || response.data?.data || []);
+
+          // Only keep markets with future end dates
+          const future = items.filter(m => {
+            const end = m.endDate || m.endDateIso || m.end_date_iso;
+            return end && new Date(end).getTime() > now;
+          });
+
+          console.log(`[PolymarketFeed] Query ${JSON.stringify(params).substring(0,60)}: ${items.length} total, ${future.length} future`);
+          if (future.length > 0) {
+            future.slice(0,3).forEach(m => {
+              const end = m.endDate || m.endDateIso;
+              const secs = Math.round((new Date(end) - now) / 1000);
+              console.log(`  [${secs}s] "${(m.question||m.title||'?').substring(0,70)}"`);
+            });
+            allMarkets = allMarkets.concat(future);
+          }
+        } catch(e) {
+          console.log(`[PolymarketFeed] Query failed: ${e.message}`);
+        }
+      }
+
+      // Deduplicate
+      const seen = new Set();
+      allMarkets = allMarkets.filter(m => {
+        const id = m.conditionId || m.id;
+        if (!id || seen.has(id)) return false;
+        seen.add(id); return true;
+      });
+
+      console.log(`[PolymarketFeed] Total future markets: ${allMarkets.length}`);
+
+      // Filter: BTC + resolves within 4 hours
+      const btcMarkets = allMarkets.filter(m => {
         const q = (m.question || m.title || m.slug || '').toLowerCase();
-        if (!q.includes('btc') && !q.includes('bitcoin')) return false;
-        const end = m.endDate || m.endDateIso || m.end_date_iso || m.endTime;
-        if (!end) return false;
-        const secsToRes = (new Date(end).getTime() - now) / 1000;
-        return secsToRes > 30 && secsToRes < 7200;
+        const end = m.endDate || m.endDateIso;
+        const secsToRes = end ? (new Date(end).getTime() - now) / 1000 : Infinity;
+        return (q.includes('btc') || q.includes('bitcoin')) && secsToRes < 14400;
       });
 
-      console.log(`[PolymarketFeed] BTC markets resolving within 2h: ${btcShortTerm.length}`);
-      btcShortTerm.forEach(m => {
-        const end = m.endDate || m.endDateIso || m.end_date_iso;
+      console.log(`[PolymarketFeed] BTC markets <4h: ${btcMarkets.length}`);
+      btcMarkets.slice(0,5).forEach(m => {
+        const end = m.endDate || m.endDateIso;
         const secs = Math.round((new Date(end) - now) / 1000);
-        console.log(`  [${secs}s] "${(m.question||m.title||'?').substring(0,70)}"`);
+        console.log(`  [${secs}s] "${(m.question||'?').substring(0,70)}" tokens:${(m.tokens||m.clobTokenIds||[]).length}`);
       });
 
-      this.activeMarkets = btcShortTerm;
+      this.activeMarkets = btcMarkets;
       return this.activeMarkets;
 
     } catch (err) {
