@@ -285,6 +285,7 @@ input:checked+.t-slider:before{transform:translateX(20px);background:#000}
       </div>
 
       <div class="stats-grid">
+        <div class="stat-card"><div class="stat-label">Polymarket Balance</div><div class="stat-value positive" id="polymarket-balance">$0.00</div><div class="stat-sub" style="font-size:11px;margin-top:4px" id="polymarket-wallet">—</div></div>
         <div class="stat-card"><div class="stat-label">Total P&amp;L</div><div class="stat-value" id="s-pnl">$0.00</div></div>
         <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value" id="s-wr">0%</div><div class="stat-sub" id="s-wl">0W / 0L</div></div>
         <div class="stat-card"><div class="stat-label">ROI</div><div class="stat-value" id="s-roi">0%</div></div>
@@ -575,13 +576,13 @@ async function refreshDashboard(manual=false) {
   const icon = document.getElementById('refresh-icon');
   if(icon) icon.classList.add('spin');
   try {
-    const [stats,status,curve,logs] = await Promise.all([
-      req('GET','/api/user/stats'),
+    const [dashboard,status,curve,logs] = await Promise.all([
+      req('GET','/api/user/dashboard'),
       req('GET','/api/bot/status'),
       req('GET','/api/trades/curve'),
       req('GET','/api/bot/logs?limit=60')
     ]);
-    updateStats(stats);
+    updateDashboard(dashboard);
     updateBotStatus(status);
     updateChart(curve);
     updateLogs(logs);
@@ -593,6 +594,15 @@ async function refreshDashboard(manual=false) {
     if(manual) toast('Refresh failed: '+e.message,'error');
   }
   if(icon) icon.classList.remove('spin');
+}
+
+function updateDashboard(d) {
+  const bal = parseFloat(d.polymarket_balance) || 0;
+  const balEl = document.getElementById('polymarket-balance');
+  if(balEl) balEl.textContent = '$' + bal.toFixed(2);
+  const walletEl = document.getElementById('polymarket-wallet');
+  if(walletEl) walletEl.textContent = d.wallet_address ? d.wallet_address.slice(0,6) + '...' + d.wallet_address.slice(-4) : '—';
+  updateStats(d);
 }
 
 function fmtPnl(v) {

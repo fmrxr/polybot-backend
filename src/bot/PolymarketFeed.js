@@ -246,15 +246,19 @@ class PolymarketFeed {
         throw new Error('SDK enums not initialized — call init() first');
       }
 
+      // size parameter is in dollars — convert to shares for CLOB API
+      const priceNum = parseFloat(price);
+      const sizeInShares = parseFloat(size) / priceNum;
+
       // Use official SDK to place order with proper authentication
       const orderSide = side === 'BUY' ? this.Side.BUY : this.Side.SELL;
-      console.log(`[PolymarketFeed] Placing order: ${orderSide} ${size} shares @ $${price}`);
+      console.log(`[PolymarketFeed] Placing order: ${orderSide} ${sizeInShares.toFixed(4)} shares @ $${priceNum}`);
 
       const response = await this.clobClient.createAndPostOrder(
         {
           tokenID: tokenId,
-          price: parseFloat(price),
-          size: parseFloat(size),
+          price: priceNum,
+          size: sizeInShares,
           side: orderSide
         },
         {

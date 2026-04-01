@@ -82,6 +82,63 @@ router.put('/settings', async (req, res) => {
   }
 });
 
+// GET /api/user/dashboard
+router.get('/dashboard', async (req, res) => {
+  try {
+    const { BotManager } = require('../bot/BotManager');
+    const botManager = global.botManager;
+
+    const settingsResult = await pool.query('SELECT polymarket_wallet_address FROM bot_settings WHERE user_id = $1', [req.userId]);
+    const walletAddress = settingsResult.rows[0]?.polymarket_wallet_address || null;
+
+    let balance = null;
+    if (walletAddress && botManager) {
+      const bot = botManager.bots.get(req.userId);
+      if (bot && bot.polymarket) {
+        try {
+          balance = await bot.polymarket.getBalance();
+        } catch (e) {
+          console.error('Balance fetch error:', e.message);
+        }
+      }
+    }
+
+    const stats = await pool.query(`
+      SELECT
+        COUNT(*) as total_trades,
+        COUNT(*) FILTER (WHERE result = 'WIN') as wins,
+        COUNT(*) FILTER (WHERE result = 'LOSS') as losses,
+        COALESCE(SUM(pnl), 0) as total_pnl,
+        COALESCE(SUM(size), 0) as total_invested,
+        COALESCE(AVG(size), 0) as avg_trade_size,
+        COALESCE(MAX(pnl), 0) as best_trade,
+        COALESCE(MIN(pnl), 0) as worst_trade,
+        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0) as daily_pnl
+      FROM trades WHERE user_id = $1
+    `, [req.userId]);
+
+    const s = stats.rows[0];
+    const winRate = s.total_trades > 0 ? (s.wins / s.total_trades * 100).toFixed(1) : 0;
+    const roi = s.total_invested > 0 ? (s.total_pnl / s.total_invested * 100).toFixed(2) : 0;
+
+    res.json({
+      polymarket_balance: balance?.usdc_balance || 0,
+      wallet_address: walletAddress,
+      total_trades: parseInt(s.total_trades),
+      wins: parseInt(s.wins),
+      losses: parseInt(s.losses),
+      win_rate: parseFloat(winRate),
+      total_pnl: parseFloat(s.total_pnl),
+      total_invested: parseFloat(s.total_invested),
+      daily_pnl: parseFloat(s.daily_pnl),
+      roi: parseFloat(roi)
+    });
+  } catch (err) {
+    console.error('Dashboard error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/user/stats
 router.get('/stats', async (req, res) => {
   try {

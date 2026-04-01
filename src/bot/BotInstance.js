@@ -315,12 +315,13 @@ class BotInstance {
   async _executeTrade(signal, market, tokens, windowTs) {
     const MIN_SHARES = 5; // Polymarket CLOB minimum: 5 shares per order
 
-    // Calculate shares from size (price-based entry)
-    const shares = signal.size / signal.entry_price;
+    // Calculate shares from size (size is in dollars, entry_price is per share)
+    const entryPrice = parseFloat(signal.entry_price) || 0.50;
+    const shares = signal.size / entryPrice;
 
     // Enforce minimum share size
     if (shares < MIN_SHARES) {
-      this._log('WARN', `Order size ${shares.toFixed(2)} shares below minimum ${MIN_SHARES} shares — skipping`);
+      this._log('WARN', `Order ${shares.toFixed(2)} shares below minimum ${MIN_SHARES} — skipping`);
       return;
     }
 
