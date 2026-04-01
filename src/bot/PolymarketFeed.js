@@ -121,7 +121,10 @@ class PolymarketFeed {
                    process.env.POLY_API_KEY ||
                    process.env.POLY_CLOB_API_KEY ||
                    process.env.POLYMARKET_CLOB_API_KEY;
-    if (!apiKey) return {};
+    if (!apiKey) {
+      console.warn('[PolymarketFeed] No API key configured (user or backend)');
+      return {};
+    }
     return {
       'x-api-key': apiKey,
       'Authorization': `Bearer ${apiKey}`

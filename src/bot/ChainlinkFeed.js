@@ -44,42 +44,64 @@ class ChainlinkFeed {
   }
 
   async init() {
-    // Try RPC endpoints until one works — use timeout to avoid infinite retry loops
-    for (const rpc of RPC_ENDPOINTS) {
-      try {
-        this.provider = new ethers.JsonRpcProvider(rpc);
-        this.contract = new ethers.Contract(BTC_USD_AGGREGATOR, AGGREGATOR_ABI, this.provider);
+    // Suppress ethers.js network detection logs — Chainlink is optional anyway
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    const originalLog = console.log;
 
-        // Test connection with a timeout — don't wait forever
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout')), 3000)
-        );
-        const descPromise = this.contract.description();
-        await Promise.race([descPromise, timeoutPromise]);
+    // Suppress logs that match JsonRpcProvider pattern
+    const suppress = (msg) => {
+      const s = String(msg);
+      return s.includes('JsonRpcProvider') || s.includes('failed to detect network');
+    };
 
-        this.isInitialized = true;
-        break;
-      } catch(e) {
-        // Silently fail and try next endpoint
-      }
-    }
+    console.warn = (...args) => { if (!suppress(args[0])) originalWarn(...args); };
+    console.error = (...args) => { if (!suppress(args[0])) originalError(...args); };
+    console.log = (...args) => { if (!suppress(args[0])) originalLog(...args); };
 
-    if (!this.isInitialized) {
-      // Chainlink is optional — bot works fine without it
-      return;
-    }
-
-    // Initial fetch
     try {
-      await this.fetchPrice();
-    } catch(e) {
-      // Initial fetch failed — disable
-      this.isInitialized = false;
-      return;
-    }
+      // Try RPC endpoints until one works — use timeout to avoid infinite retry loops
+      for (const rpc of RPC_ENDPOINTS) {
+        try {
+          this.provider = new ethers.JsonRpcProvider(rpc);
+          this.contract = new ethers.Contract(BTC_USD_AGGREGATOR, AGGREGATOR_ABI, this.provider);
 
-    // Poll every 15s
-    this.pollTimer = setInterval(() => this.fetchPrice().catch(() => {}), this.CACHE_MS);
+          // Test connection with a timeout — don't wait forever
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Timeout')), 3000)
+          );
+          const descPromise = this.contract.description();
+          await Promise.race([descPromise, timeoutPromise]);
+
+          this.isInitialized = true;
+          break;
+        } catch(e) {
+          // Silently fail and try next endpoint
+        }
+      }
+
+      if (!this.isInitialized) {
+        // Chainlink is optional — bot works fine without it
+        return;
+      }
+
+      // Initial fetch
+      try {
+        await this.fetchPrice();
+      } catch(e) {
+        // Initial fetch failed — disable
+        this.isInitialized = false;
+        return;
+      }
+
+      // Poll every 15s
+      this.pollTimer = setInterval(() => this.fetchPrice().catch(() => {}), this.CACHE_MS);
+    } finally {
+      // Restore original console methods
+      console.warn = originalWarn;
+      console.error = originalError;
+      console.log = originalLog;
+    }
   }
 
   async fetchPrice() {
