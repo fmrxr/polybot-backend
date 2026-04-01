@@ -897,7 +897,7 @@
           <div class="metric-card">
             <div class="metric-label">Skip Rate</div>
             <div class="metric-value">
-              <span id="skipRate">87%</span>
+              <span id="skipRate">—</span>
               <span class="metric-unit">/ 85% target</span>
             </div>
             <div class="metric-status green" id="skipRateStatus">✓ On Target</div>
@@ -906,16 +906,16 @@
           <div class="metric-card">
             <div class="metric-label">Avg EV_adj</div>
             <div class="metric-value">
-              <span id="avgEV">5.2%</span>
+              <span id="avgEV">—</span>
               <span class="metric-unit">/ 3-10% range</span>
             </div>
             <div class="metric-status green" id="avgEVStatus">✓ On Target</div>
           </div>
 
           <div class="metric-card">
-            <div class="metric-label">Market Lag Detection</div>
+            <div class="metric-label">Gate 1 Trigger Rate</div>
             <div class="metric-value">
-              <span id="marketLag">15%</span>
+              <span id="marketLag">—</span>
               <span class="metric-unit">/ 10-20% target</span>
             </div>
             <div class="metric-status green" id="marketLagStatus">✓ On Target</div>
@@ -937,7 +937,7 @@
             <div class="gate-title gate1">🎯 Gate 1: Microstructure</div>
             <div class="gate-stat">
               <span class="gate-stat-label">Trigger Rate</span>
-              <span class="gate-stat-value"><span id="gate1Rate">18%</span></span>
+              <span class="gate-stat-value"><span id="gate1Rate">—</span></span>
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">Target Range</span>
@@ -949,7 +949,7 @@
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">Last Detected</span>
-              <span class="gate-stat-value"><span id="gate1Last">45s ago</span></span>
+              <span class="gate-stat-value"><span id="gate1Last">—</span></span>
             </div>
           </div>
 
@@ -957,7 +957,7 @@
             <div class="gate-title gate2">💰 Gate 2: EV Cost</div>
             <div class="gate-stat">
               <span class="gate-stat-label">Pass Rate</span>
-              <span class="gate-stat-value"><span id="gate2Rate">4.2%</span></span>
+              <span class="gate-stat-value"><span id="gate2Rate">—</span></span>
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">Target Range</span>
@@ -965,11 +965,11 @@
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">EV_adjusted</span>
-              <span class="gate-stat-value"><span id="gate2EV">5.2%</span></span>
+              <span class="gate-stat-value"><span id="gate2EV">—</span></span>
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">Total Cost</span>
-              <span class="gate-stat-value"><span id="gate2Cost">0.65%</span></span>
+              <span class="gate-stat-value"><span id="gate2Cost">—</span></span>
             </div>
           </div>
 
@@ -981,11 +981,11 @@
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">EMA9</span>
-              <span class="gate-stat-value"><span id="gate3EMA9">$93,425</span></span>
+              <span class="gate-stat-value"><span id="gate3EMA9">—</span></span>
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">EMA21</span>
-              <span class="gate-stat-value"><span id="gate3EMA21">$93,420</span></span>
+              <span class="gate-stat-value"><span id="gate3EMA21">—</span></span>
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">RSI</span>
@@ -1138,7 +1138,7 @@
           <div class="metric-card">
             <div class="metric-label">Skip Rate</div>
             <div class="metric-value">
-              <span id="phaseSkipRate">87%</span>
+              <span id="phaseSkipRate">—</span>
               <span class="metric-unit">/ 85% target</span>
             </div>
             <div class="metric-status green">✓ GREEN</div>
@@ -1147,7 +1147,7 @@
           <div class="metric-card">
             <div class="metric-label">Avg EV_adj</div>
             <div class="metric-value">
-              <span id="phaseAvgEV">5.2%</span>
+              <span id="phaseAvgEV">—</span>
               <span class="metric-unit">/ 3-10% range</span>
             </div>
             <div class="metric-status green">✓ GREEN</div>
@@ -1156,7 +1156,7 @@
           <div class="metric-card">
             <div class="metric-label">Market Lag %</div>
             <div class="metric-value">
-              <span id="phaseMarketLag">15%</span>
+              <span id="phaseMarketLag">—</span>
               <span class="metric-unit">/ 10-20% target</span>
             </div>
             <div class="metric-status green">✓ GREEN</div>
@@ -1223,7 +1223,7 @@
                 <th>Dir</th>
                 <th>Entry</th>
                 <th>Size</th>
-                <th>Micro Conf</th>
+                <th>Market %</th>
                 <th>EV_adj</th>
                 <th>Model %</th>
                 <th>P&L</th>
@@ -1546,6 +1546,7 @@
 
         await loadBotStatus();
         await loadDashboard();
+        await loadGateStats();
         await loadSignals();
         await loadTrades();
         await loadClaudeAnalysis();
@@ -1555,6 +1556,7 @@
           await loadSignals();
         }, 5000);
         setInterval(loadDashboard, 30000);
+        setInterval(loadGateStats, 30000);
 
         loadSettingsIntoForms(userSettings);
       } catch (err) {
@@ -1742,6 +1744,38 @@
       }
     }
 
+    async function loadGateStats() {
+      const token = localStorage.getItem('token');
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/bot/gate-stats', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const s = await res.json();
+
+        const fmt1 = v => v != null ? parseFloat(v).toFixed(1) : '—';
+        const fmt2 = v => v != null ? parseFloat(v).toFixed(2) : '—';
+
+        document.getElementById('skipRate').textContent    = fmt1(s.skip_rate)       + '%';
+        document.getElementById('avgEV').textContent       = fmt1(s.avg_ev_adj)      + '%';
+        document.getElementById('marketLag').textContent   = fmt1(s.gate1_rate)      + '%';
+        document.getElementById('gate1Rate').textContent   = fmt1(s.gate1_rate)      + '%';
+        document.getElementById('gate2Rate').textContent   = fmt1(s.gate2_pass_rate) + '%';
+        document.getElementById('gate2EV').textContent     = fmt1(s.avg_ev_adj)      + '%';
+        document.getElementById('gate2Cost').textContent   = fmt2(s.avg_total_cost)  + '%';
+        document.getElementById('phaseSkipRate').textContent  = fmt1(s.skip_rate)  + '%';
+        document.getElementById('phaseAvgEV').textContent     = fmt1(s.avg_ev_adj) + '%';
+        document.getElementById('phaseMarketLag').textContent = fmt1(s.gate1_rate) + '%';
+
+        if (s.last_decision_at) {
+          const secs = Math.round((Date.now() - new Date(s.last_decision_at).getTime()) / 1000);
+          document.getElementById('gate1Last').textContent = secs < 60 ? secs + 's ago' : Math.round(secs / 60) + 'm ago';
+        }
+      } catch (err) {
+        console.error('Gate stats error:', err);
+      }
+    }
+
     async function loadSignals() {
       const token = localStorage.getItem('token');
       try {
@@ -1881,8 +1915,8 @@
             <td>${dir}</td>
             <td>$${parseFloat(trade.entry_price).toFixed(3)}</td>
             <td>$${parseFloat(trade.size).toFixed(2)}</td>
-            <td>62%</td>
-            <td>5.2%</td>
+            <td>${trade.market_prob != null ? (parseFloat(trade.market_prob)*100).toFixed(0)+'%' : '—'}</td>
+            <td>${trade.expected_value != null ? (parseFloat(trade.expected_value)*100).toFixed(1)+'%' : '—'}</td>
             <td>${(parseFloat(trade.model_prob || 0) * 100).toFixed(1)}%</td>
             <td style="color: var(--${pnlClass});">$${pnl.toFixed(2)}</td>
             <td>${trade.order_status || 'pending'}</td>
@@ -1929,23 +1963,26 @@
         </div>
 
         <h4 style="margin-top: 20px; margin-bottom: 12px;">Gate Analysis</h4>
+        ${(() => {
+          const marketProbStr = trade.market_prob != null ? (parseFloat(trade.market_prob)*100).toFixed(1)+'%' : '—';
+          const modelProbStr  = trade.model_prob  != null ? (parseFloat(trade.model_prob)*100).toFixed(1)+'%'  : '—';
+          const evAdjStr      = trade.expected_value != null ? (parseFloat(trade.expected_value)*100).toFixed(2)+'%' : '—';
+          return `
         <div style="background: rgba(0, 184, 212, 0.1); padding: 12px; border-radius: 6px; margin-bottom: 12px;">
-          <p style="color: var(--gate1-cyan);">Gate 1 (Microstructure): 62% confidence ✓</p>
-          <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Lag Detected: Yes | Latency: 250ms</p>
+          <p style="color: var(--gate1-cyan);">Gate 1 (Microstructure): Market probability ${marketProbStr}</p>
         </div>
         <div style="background: rgba(0, 229, 160, 0.1); padding: 12px; border-radius: 6px; margin-bottom: 12px;">
-          <p style="color: var(--gate2-green);">Gate 2 (EV Cost): 5.2% adjusted ✓</p>
-          <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Spread: 0.15% | Slippage: 0.5% | Total Cost: 0.65%</p>
+          <p style="color: var(--gate2-green);">Gate 2 (EV Cost): ${evAdjStr} adjusted</p>
         </div>
         <div style="background: rgba(245, 200, 66, 0.1); padding: 12px; border-radius: 6px;">
-          <p style="color: var(--gate3-yellow);">Gate 3 (EMA): ALIGNED ✓</p>
-          <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">EMA9: $93,425 | EMA21: $93,420 | RSI: 62</p>
-        </div>
+          <p style="color: var(--gate3-yellow);">Gate 3 (Confirmation): Model probability ${modelProbStr}</p>
+          <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">EMA9: — | EMA21: —</p>
+        </div>`;
+        })()}
 
         <h4 style="margin-top: 20px; margin-bottom: 12px;">Execution</h4>
         <p style="font-size: 13px; color: var(--text-muted);">
           Filled at ${parseFloat(trade.entry_price).toFixed(3)}<br>
-          Slippage: -0.001<br>
           Time: ${new Date(trade.created_at).toLocaleString()}
         </p>
       `;

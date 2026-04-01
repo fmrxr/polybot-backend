@@ -109,4 +109,54 @@ router.get('/decisions', async (req, res) => {
   }
 });
 
+// GET /api/bot/gate-stats
+router.get('/gate-stats', async (req, res) => {
+  const empty = {
+    total: 0, skip_rate: 0, trade_count: 0, skip_count: 0,
+    avg_ev_adj: 0, avg_total_cost: 0, avg_micro_conf: 0,
+    gate1_rate: 0, gate2_pass_rate: 0, last_decision_at: null
+  };
+  try {
+    const result = await pool.query(
+      `SELECT
+        COUNT(*)                                                                   AS total,
+        COUNT(*) FILTER (WHERE verdict = 'TRADE')                                 AS trade_count,
+        COUNT(*) FILTER (WHERE verdict = 'SKIP')                                  AS skip_count,
+        AVG(REPLACE(data->>'ev_adjusted',    '%','')::float)
+          FILTER (WHERE verdict = 'TRADE' AND data->>'ev_adjusted'    IS NOT NULL) AS avg_ev_adj,
+        AVG(REPLACE(data->>'total_cost',     '%','')::float)
+          FILTER (WHERE data->>'total_cost'  IS NOT NULL)                          AS avg_total_cost,
+        AVG(REPLACE(data->>'micro_confidence','%','')::float)
+          FILTER (WHERE verdict = 'TRADE' AND data->>'micro_confidence' IS NOT NULL) AS avg_micro_conf,
+        COUNT(*) FILTER (WHERE data->>'ev_adjusted' IS NOT NULL)                   AS gate1_passed_count,
+        MAX(created_at)                                                             AS last_decision_at
+       FROM bot_decisions
+       WHERE user_id = $1 AND verdict != 'WAIT'
+         AND created_at >= NOW() - INTERVAL '24 hours'`,
+      [req.userId]
+    );
+    const row = result.rows[0];
+    const total       = parseInt(row.total, 10)              || 0;
+    const tradeCount  = parseInt(row.trade_count, 10)        || 0;
+    const skipCount   = parseInt(row.skip_count, 10)         || 0;
+    const gate1Passed = parseInt(row.gate1_passed_count, 10) || 0;
+    const actionable  = tradeCount + skipCount;
+    res.json({
+      total,
+      skip_rate:       actionable > 0 ? parseFloat((skipCount  / actionable * 100).toFixed(1)) : 0,
+      trade_count:     tradeCount,
+      skip_count:      skipCount,
+      avg_ev_adj:      row.avg_ev_adj      != null ? parseFloat(parseFloat(row.avg_ev_adj).toFixed(2))      : 0,
+      avg_total_cost:  row.avg_total_cost  != null ? parseFloat(parseFloat(row.avg_total_cost).toFixed(2))  : 0,
+      avg_micro_conf:  row.avg_micro_conf  != null ? parseFloat(parseFloat(row.avg_micro_conf).toFixed(1))  : 0,
+      gate1_rate:      total       > 0 ? parseFloat((gate1Passed / total       * 100).toFixed(1)) : 0,
+      gate2_pass_rate: actionable  > 0 ? parseFloat((tradeCount  / actionable  * 100).toFixed(1)) : 0,
+      last_decision_at: row.last_decision_at || null
+    });
+  } catch (err) {
+    console.error('Gate stats error:', err);
+    res.json(empty);
+  }
+});
+
 module.exports = router;
