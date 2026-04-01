@@ -45,15 +45,15 @@ class PolymarketFeed {
         console.log(`[PolymarketFeed] API credentials derived for ${this.address}`);
 
         // Step 2: Create trading client with L2 credentials
-        // Signature type 2 = GNOSIS_SAFE (Polymarket proxy wallet)
-        // This is the standard type for users who log into Polymarket with MetaMask/browser wallet
+        // Signature type 1 = POLY_PROXY (Polymarket account via Magic Link / exported private key)
+        // Use this type when private key is exported from Polymarket.com settings
         console.log(`[PolymarketFeed] Using funder address: ${this.funderAddress}`);
         this.clobClient = new ClobClient(
           POLYMARKET_CLOB_API,
           CHAIN_ID,
           this.wallet,
           apiCreds,
-          2, // GNOSIS_SAFE - Polymarket proxy wallet type
+          1, // POLY_PROXY - For exported private keys from Polymarket settings
           this.funderAddress
         );
         console.log(`[PolymarketFeed] Trading client created`);
