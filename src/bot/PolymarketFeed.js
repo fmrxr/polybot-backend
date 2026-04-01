@@ -337,6 +337,36 @@ class PolymarketFeed {
     }
   }
 
+  async getBalance() {
+    // Query USDC balance on Polygon for the funder (proxy) wallet
+    // USDC.e on Polygon: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+    const USDC_CONTRACT = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+    const POLYGON_RPCS = [
+      'https://polygon-rpc.com',
+      'https://rpc-mainnet.matic.network',
+      'https://rpc.ankr.com/polygon'
+    ];
+    const address = this.funderAddress || this.address;
+    // ERC20 balanceOf(address) selector + padded address
+    const data = '0x70a08231' + address.replace('0x', '').padStart(64, '0');
+
+    for (const rpc of POLYGON_RPCS) {
+      try {
+        const res = await axios.post(rpc, {
+          jsonrpc: '2.0', method: 'eth_call',
+          params: [{ to: USDC_CONTRACT, data }, 'latest'],
+          id: 1
+        }, { timeout: 5000 });
+        const hex = res.data?.result;
+        if (hex && hex !== '0x') {
+          const raw = parseInt(hex, 16);
+          return { usdc_balance: raw / 1e6, address }; // USDC has 6 decimals
+        }
+      } catch (_) { /* try next RPC */ }
+    }
+    return { usdc_balance: 0, address };
+  }
+
   disconnect() {
     // Cleanup
   }

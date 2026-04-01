@@ -1024,19 +1024,28 @@
         <div class="connection-status">
           <div class="connection-item">
             <div class="connection-dot" id="binanceStatus"></div>
-            <span>Binance: <span id="binanceTime">Connected (2s ago)</span></span>
+            <span>Binance: <span id="binanceTime">Waiting...</span></span>
           </div>
           <div class="connection-item">
             <div class="connection-dot" id="chainlinkStatus"></div>
-            <span>Chainlink: <span id="chainlinkTime">Connected (15s ago)</span></span>
+            <span>Chainlink: <span id="chainlinkTime">Waiting...</span></span>
           </div>
           <div class="connection-item">
             <div class="connection-dot" id="polymarketStatus"></div>
-            <span>Polymarket: <span id="polymarketTime">Connected (5m ago)</span></span>
+            <span>Polymarket: <span id="polymarketTime">Loading...</span></span>
+          </div>
+          <div class="connection-item" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <div class="connection-dot" id="walletDot"></div>
+              <span>Wallet: <span id="walletAddressDisplay" style="font-family: monospace; font-size: 12px;">Not configured</span></span>
+            </div>
+            <div style="padding-left: 20px; font-size: 13px; color: var(--text-muted);">
+              USDC Balance: <span id="usdcBalanceDisplay" style="color: var(--trade-green); font-weight: bold;">—</span>
+            </div>
           </div>
           <div class="connection-item">
-            <div class="connection-dot" id="claudeStatus"></div>
-            <span>Claude AI: <span id="claudeTime">Ready</span></span>
+            <div class="connection-dot" id="claudeConnStatus"></div>
+            <span>Claude AI: <span id="claudeConnTime">Not configured</span></span>
           </div>
         </div>
       </div>
@@ -1536,6 +1545,7 @@
         document.getElementById('userEmail').textContent = localStorage.getItem('userEmail') || 'User';
 
         await loadBotStatus();
+        await loadDashboard();
         await loadSignals();
         await loadTrades();
         await loadClaudeAnalysis();
@@ -1544,6 +1554,7 @@
           await loadBotStatus();
           await loadSignals();
         }, 5000);
+        setInterval(loadDashboard, 30000);
 
         loadSettingsIntoForms(userSettings);
       } catch (err) {
@@ -1643,8 +1654,91 @@
           document.getElementById('pnlStatus').textContent = '⚠ In Loss';
           document.getElementById('pnlStatus').className = 'metric-status yellow';
         }
+
+        // Update connection status dots from live market_data
+        const md = data.market_data;
+        if (md) {
+          const ageMs = md.updated_at ? Date.now() - new Date(md.updated_at).getTime() : Infinity;
+          const ageSec = Math.round(ageMs / 1000);
+
+          // Binance
+          const binanceDot = document.getElementById('binanceStatus');
+          if (md.price && ageMs < 15000) {
+            binanceDot.style.background = 'var(--trade-green)';
+            document.getElementById('binanceTime').textContent = `BTC $${md.price.toFixed(0)} (${ageSec}s ago)`;
+          } else {
+            binanceDot.style.background = 'var(--danger)';
+            document.getElementById('binanceTime').textContent = 'Disconnected';
+          }
+
+          // Chainlink
+          const clDot = document.getElementById('chainlinkStatus');
+          if (md.chainlink_price && md.chainlink_age < 120) {
+            clDot.style.background = 'var(--trade-green)';
+            document.getElementById('chainlinkTime').textContent = `$${md.chainlink_price.toFixed(0)} (${md.chainlink_age}s ago)`;
+          } else {
+            clDot.style.background = '#f59e0b';
+            document.getElementById('chainlinkTime').textContent = md.chainlink_price ? `Stale (${md.chainlink_age}s)` : 'Disabled';
+          }
+
+          // Polymarket — green if bot is running (polymarket feed is active)
+          const pmDot = document.getElementById('polymarketStatus');
+          if (data.is_running) {
+            pmDot.style.background = 'var(--trade-green)';
+            document.getElementById('polymarketTime').textContent = 'Feed active';
+          } else {
+            pmDot.style.background = '#f59e0b';
+            document.getElementById('polymarketTime').textContent = 'Bot stopped';
+          }
+        }
       } catch (err) {
         console.error('Load status error:', err);
+      }
+    }
+
+    async function loadDashboard() {
+      const token = localStorage.getItem('token');
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/user/dashboard', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Wallet address
+        const walletEl = document.getElementById('walletAddressDisplay');
+        const walletDot = document.getElementById('walletDot');
+        if (data.wallet_address) {
+          const short = data.wallet_address.slice(0, 6) + '...' + data.wallet_address.slice(-4);
+          walletEl.textContent = short;
+          walletEl.title = data.wallet_address;
+          walletDot.style.background = 'var(--trade-green)';
+          // Also populate Settings field
+          const walletInput = document.getElementById('polymarketWallet');
+          if (walletInput && !walletInput.value) walletInput.value = data.wallet_address;
+        } else {
+          walletEl.textContent = 'Not configured';
+          walletDot.style.background = 'var(--danger)';
+        }
+
+        // USDC balance
+        const balEl = document.getElementById('usdcBalanceDisplay');
+        if (data.polymarket_balance != null) {
+          balEl.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+          // Also update settings tab balance display
+          const pmBal = document.getElementById('polymarketBalance');
+          if (pmBal) pmBal.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+        }
+
+        // Claude connection status
+        const clConnDot = document.getElementById('claudeConnStatus');
+        const clConnTime = document.getElementById('claudeConnTime');
+        if (clConnDot && clConnTime) {
+          // has_claude_api_key comes from /api/user/settings, check from loadSettingsIntoForms cached value
+          // We'll update it during settings load; just mark as-is here
+        }
+      } catch (err) {
+        console.error('Dashboard load error:', err);
       }
     }
 
@@ -1874,9 +1968,18 @@
       // Claude settings
       if (settings.claude_model) document.getElementById('claudeModel').value = settings.claude_model;
       if (settings.auto_claude_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.auto_claude_analysis;
+      const claudeKeySpan = document.getElementById('claudeStatus');
       if (settings.has_claude_api_key) {
-        document.getElementById('claudeStatus').textContent = '✓ API Key saved';
-        document.getElementById('claudeStatus').style.color = 'var(--trade-green)';
+        if (claudeKeySpan) { claudeKeySpan.textContent = '✓ API Key saved'; claudeKeySpan.style.color = 'var(--trade-green)'; }
+        const dot = document.getElementById('claudeConnStatus');
+        const lbl = document.getElementById('claudeConnTime');
+        if (dot) dot.style.background = 'var(--trade-green)';
+        if (lbl) lbl.textContent = `Key configured (${settings.claude_model || 'default model'})`;
+      } else {
+        const dot = document.getElementById('claudeConnStatus');
+        const lbl = document.getElementById('claudeConnTime');
+        if (dot) dot.style.background = 'var(--danger)';
+        if (lbl) lbl.textContent = 'API Key not configured';
       }
     }
 
@@ -1919,8 +2022,12 @@
         });
         if (res.ok) {
           showAlert('Claude settings saved', 'success');
-          document.getElementById('claudeStatus').textContent = '✓ API Key saved';
-          document.getElementById('claudeStatus').style.color = 'var(--trade-green)';
+          const span = document.getElementById('claudeStatus');
+          if (span) { span.textContent = '✓ API Key saved'; span.style.color = 'var(--trade-green)'; }
+          const dot = document.getElementById('claudeConnStatus');
+          const lbl = document.getElementById('claudeConnTime');
+          if (dot) dot.style.background = 'var(--trade-green)';
+          if (lbl) lbl.textContent = `Key configured (${document.getElementById('claudeModel').value})`;
           document.getElementById('claudeApiKey').value = ''; // Clear field after save
         } else {
           const err = await res.json().catch(() => ({}));
@@ -2051,7 +2158,25 @@
     }
 
     async function testPolymarketConnection() {
-      showAlert('Polymarket connection test in progress', 'info');
+      const token = localStorage.getItem('token');
+      showAlert('Fetching Polymarket wallet data...', 'info');
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/user/dashboard', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) { showAlert('Failed to reach backend', 'error'); return; }
+        const data = await res.json();
+        if (!data.wallet_address) {
+          showAlert('No wallet address configured — save it in Settings first', 'error');
+          return;
+        }
+        const bal = parseFloat(data.polymarket_balance || 0).toFixed(2);
+        document.getElementById('polymarketBalance').textContent = `$${bal} USDC`;
+        showAlert(`Wallet ${data.wallet_address.slice(0,8)}... — Balance: $${bal} USDC`, 'success');
+        await loadDashboard();
+      } catch (err) {
+        showAlert('Connection test failed: ' + err.message, 'error');
+      }
     }
 
     async function triggerClaudeAnalysis() {
