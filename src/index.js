@@ -3,12 +3,13 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const { initDB, addDecisionsTable } = require('./models/db');
+const { initDB, addDecisionsTable, addCopyTradingSchema } = require('./models/db');
 const authRoutes = require('./routes/auth');
 const botRoutes = require('./routes/bot');
 const tradesRoutes = require('./routes/trades');
 const userRoutes = require('./routes/user');
 const adminRoutes = require('./routes/admin');
+const copyRoutes = require('./routes/copy');
 const { BotManager } = require('./bot/BotManager');
 
 const app = express();
@@ -53,6 +54,7 @@ app.use('/api/bot', botRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/copy', copyRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
@@ -63,15 +65,29 @@ global.botManager = new BotManager();
 async function autoRestartBots() {
   const { pool } = require('./models/db');
   try {
+    // Restart GBM bots
     const result = await pool.query(
       'SELECT bs.*, bs.user_id FROM bot_settings bs WHERE bs.is_active = true AND bs.encrypted_private_key IS NOT NULL'
     );
     for (const settings of result.rows) {
       try {
         await global.botManager.startBot(settings.user_id, settings);
-        console.log(`✅ Auto-restarted bot for user ${settings.user_id}`);
+        console.log(`✅ Auto-restarted GBM bot for user ${settings.user_id}`);
       } catch(e) {
-        console.error(`❌ Failed to auto-restart bot for user ${settings.user_id}:`, e.message);
+        console.error(`❌ Failed to auto-restart GBM bot for user ${settings.user_id}:`, e.message);
+      }
+    }
+
+    // Restart copy bots
+    const copyResult = await pool.query(
+      'SELECT DISTINCT ct.user_id, bs.* FROM copy_targets ct JOIN bot_settings bs ON ct.user_id=bs.user_id WHERE ct.is_active=true'
+    );
+    for (const settings of copyResult.rows) {
+      try {
+        await global.botManager.startCopyBot(settings.user_id, settings);
+        console.log(`✅ Auto-restarted copy bot for user ${settings.user_id}`);
+      } catch(e) {
+        console.error(`❌ Failed to auto-restart copy bot for user ${settings.user_id}:`, e.message);
       }
     }
   } catch(e) {
@@ -96,6 +112,7 @@ async function seedAdmin() {
 async function start() {
   await initDB();
   await addDecisionsTable();
+  await addCopyTradingSchema();
   await seedAdmin();
   await autoRestartBots();
   app.listen(PORT, () => {
