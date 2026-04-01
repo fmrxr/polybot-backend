@@ -1,24 +1,29 @@
 /**
- * Signal Engine — based on lessons from PolymarketBot.md
- * 
- * Key insight: Window delta is KING at 5-min scale.
- * "Is BTC up or down vs window open price?" directly answers the market question.
- * Weight it 5-7x everything else.
- * 
- * 7 indicators, composite weighted score:
- * 1. Window Delta     (weight 5-7) — THE dominant signal
- * 2. Micro Momentum   (weight 2)   — Last 2 candles direction
- * 3. Acceleration     (weight 1.5) — Momentum building or fading
- * 4. EMA 9/21         (weight 1)   — Short-term trend
- * 5. RSI 14           (weight 1-2) — Overbought/oversold extremes
- * 6. Volume Surge     (weight 1)   — Volume confirms direction
- * 7. Tick Trend       (weight 2)   — Real-time micro-trend from 2s polling
+ * Signal Engine — Phase A: Three-Gate Cost-Aware Decision Logic
+ *
+ * GATE SEQUENCE (unbreakable order):
+ * 1. Microstructure Edge (BTC/Poly latency) → confidence >= 0.45
+ * 2. EV Cost Adjustment (fees + spread + slippage) → recommend() == 'TRADE'
+ * 3. Signal Confirmation (weak RSI/EMA only) → direction match
+ *
+ * Then execute with dynamic position sizing.
+ *
+ * Historical scoring still active as fallback confirmation.
  */
+
+const { EVEngine } = require('./EVEngine');
+const { MicrostructureEngine } = require('./MicrostructureEngine');
 
 class GBMSignalEngine {
   constructor(settings) {
     this.settings = settings;
     this.onDecision = null;
+
+    // Phase A engines
+    this.evEngine = new EVEngine();
+    this.microEngine = new MicrostructureEngine();
+    this.USE_NEW_STRATEGY = true; // Feature flag: toggle on/off instantly
+
     // Tick accumulator for real-time micro-trend (updated every 10s eval cycle)
     this.recentTicks = [];
     this.windowOpenPrice = null;
@@ -44,9 +49,14 @@ class GBMSignalEngine {
   }
 
   /**
-   * Main signal evaluation — composite weighted score
+   * Main signal evaluation — Phase A: Three-Gate Decision Logic
+   *
+   * GATE SEQUENCE:
+   * 1. Microstructure Edge Detection (requires latency + depth signal)
+   * 2. EV Cost Adjustment (fees + spread + slippage)
+   * 3. Signal Confirmation (weak RSI/EMA)
    */
-  evaluate({ currentPrice, binancePrice, chainlinkPrice, priceHistory, volumeHistory, timeToResolutionSec, obImbalance = 0, drift = 0, volatility = 0 }) {
+  evaluate({ currentPrice, binancePrice, chainlinkPrice, priceHistory, volumeHistory, timeToResolutionSec, obImbalance = 0, drift = 0, volatility = 0, bid = null, ask = null, bidDepth = null, askDepth = null, totalDepth = null }) {
     const { direction_filter, max_trade_size, kelly_cap } = this.settings;
 
     if (!currentPrice || priceHistory.length < 5) return null;
@@ -63,7 +73,136 @@ class GBMSignalEngine {
 
     const log = { timestamp: new Date().toISOString(), btc_price: currentPrice.toFixed(2), binance_price: binancePrice?.toFixed(2), chainlink_price: chainlinkPrice?.toFixed(2), time_to_res: Math.round(timeToResolutionSec) + 's' };
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE A: THREE-GATE DECISION LOGIC (Feature-flagged, safe fallback)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    if (this.USE_NEW_STRATEGY) {
+      try {
+        // 🔴 GATE 1: MICROSTRUCTURE EDGE DETECTION
+        // Requires: BTC moves fast AND Polymarket lags (latency + order imbalance)
+        const micro = this.microEngine.composite({
+          btcPrice: currentPrice,
+          polyPrice: chainlinkPrice || currentPrice,
+          bidSize: bidDepth || 100,
+          askSize: askDepth || 100,
+          largestBid: bid || (currentPrice * 0.995),
+          largestAsk: ask || (currentPrice * 1.005),
+          totalDepth: totalDepth || 1000,
+          avgOrderSize: totalDepth ? totalDepth / 50 : 20,
+          volatility: volatility
+        });
+
+        if (!micro || micro.confidence < 0.45) {
+          const reason = `Gate 1 FAILED: Microstructure confidence ${micro ? (micro.confidence*100).toFixed(1) : '0'}% < 45% threshold (no latency edge)`;
+          log.verdict = 'SKIP';
+          log.reason = reason;
+          log.micro_confidence = micro ? (micro.confidence*100).toFixed(1) + '%' : 'N/A';
+          log.micro_threshold = '45%';
+          log.gate_failed = 1;
+          this._emit(log);
+          return null;
+        }
+
+        // ⚠️ CRITICAL: Add market lag condition (not just confidence)
+        // Without this → still trading fake signals
+        if (!micro.hasMarketLag) {
+          const reason = `Gate 1.5 FAILED: No market lag detected (confidence ${(micro.confidence*100).toFixed(1)}% alone is not enough)`;
+          log.verdict = 'SKIP';
+          log.reason = reason;
+          log.micro_confidence = (micro.confidence*100).toFixed(1) + '%';
+          log.micro_has_lag = false;
+          log.gate_failed = 1.5;
+          this._emit(log);
+          return null;
+        }
+
+        // ✅ Gate 1 passed — we have REAL microstructure edge (confidence + market lag)
+
+        // 🟡 GATE 2: EV COST ADJUSTMENT
+        // Calculate: EV_raw - (spread + slippage) >= 3% minimum
+        // Use modelProb tied directly to latency edge strength
+        const modelProb = 0.5 + (micro.confidence - 0.5) * 0.6; // Key fix: ties to edge strength
+        const marketProb = chainlinkPrice || currentPrice; // Market price is entry price
+
+        const ev = this.evEngine.recommend({
+          priceYes: chainlinkPrice || currentPrice,
+          bid: bid || (currentPrice * 0.995),
+          ask: ask || (currentPrice * 1.005),
+          modelProb,
+          direction: obImbalance > 0 ? 'UP' : 'DOWN',
+          orderSize: 20,
+          marketDepth: totalDepth || 1000,
+          volatility: volatility,
+          btcDelta: this.windowOpenPrice ? (currentPrice - this.windowOpenPrice) / this.windowOpenPrice : 0,
+          hasMarketLag: true, // Gate 1 confirmed this
+          recentWinRate: 0.5,
+          avgSlippage: 0.1
+        });
+
+        if (ev.recommended !== 'TRADE') {
+          const reason = `Gate 2 FAILED: ${ev.reason}`;
+          log.verdict = 'SKIP';
+          log.reason = reason;
+          log.ev_adjusted = (ev.ev_adjusted*100).toFixed(2) + '%';
+          log.ev_threshold = (ev.threshold*100).toFixed(2) + '%';
+          log.total_cost = (ev.total_cost*100).toFixed(2) + '%';
+          log.gate_failed = 2;
+          this._emit(log);
+          return null;
+        }
+
+        // ⚠️ CRITICAL: Hard floor on EV_adj (even if recommend() says TRADE)
+        // Protects against borderline noise trades at the margin
+        if (ev.ev_adjusted < 0.03) {
+          const reason = `Gate 2.5 FAILED: EV_adj ${(ev.ev_adjusted*100).toFixed(2)}% below hard floor 3% (recommend says TRADE but signal is marginal)`;
+          log.verdict = 'SKIP';
+          log.reason = reason;
+          log.ev_adjusted = (ev.ev_adjusted*100).toFixed(2) + '%';
+          log.ev_hard_floor = '3%';
+          log.gate_failed = 2.5;
+          this._emit(log);
+          return null;
+        }
+
+        // ✅ Gate 2 passed — EV is solid positive after costs (≥3%)
+
+        // 🟢 GATE 3: SIGNAL CONFIRMATION (WEAK)
+        // Compute old signal for directional confirmation only
+        // Use reduced weight: score / 10.0 instead of 7.0
+        // Only confirm if direction aligns with macro signal
+
+      } catch (gateError) {
+        console.error('[Phase A] Gate system error:', gateError.message, gateError.stack);
+        // Safe fallback: if new system fails, skip trade
+        const log_error = { timestamp: new Date().toISOString(), verdict: 'SKIP', reason: `Gate system error: ${gateError.message}`, error: true };
+        this._emit(log_error);
+        return null;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONFIRMATION: Historical signal scoring (reduced weight, confirmation only)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+
     let score = 0;
+    let microData = null;
+    let evData = null;
+
+    // If gates passed (new strategy), reuse gate data for sizing
+    if (this.USE_NEW_STRATEGY && log.gate_failed === undefined) {
+      // Gates passed — derive direction from microstructure signal
+      microData = {
+        confidence: micro?.confidence || 0,
+        signal: micro?.signal || 0
+      };
+      evData = ev;
+      // Direction confirmed by gates
+      const gateDirection = obImbalance > 0 ? 'UP' : 'DOWN';
+      log.gates_passed = true;
+      log.gate_direction = gateDirection;
+    }
 
     // ── 1. WINDOW DELTA (weight 5-7) — THE dominant signal ─────────────────
     let windowDeltaScore = 0;
@@ -134,6 +273,35 @@ class GBMSignalEngine {
     }
     score += emaScore;
     log.ema_score = emaScore;
+
+    // ⚠️ GATE 3: ASYMMETRIC CONFIRMATION (forces directional alignment)
+    // After gates 1-2 pass, require EMA to actually align with direction
+    // No neutral signals allowed — only aligned pressure
+    if (this.USE_NEW_STRATEGY && log.gates_passed) {
+      const gateDir = log.gate_direction; // Set by gates 1-2
+      const isBullishEMA = emaScore > 0;
+      const isBearishEMA = emaScore < 0;
+
+      if (gateDir === 'UP' && !isBullishEMA) {
+        log.verdict = 'SKIP';
+        log.reason = `Gate 3 FAILED: Direction UP but EMA_score ${emaScore} is not bullish (no aligned pressure)`;
+        log.ema_confirmation = 'MISALIGNED';
+        log.gate_failed = 3;
+        this._emit(log);
+        return null;
+      }
+
+      if (gateDir === 'DOWN' && !isBearishEMA) {
+        log.verdict = 'SKIP';
+        log.reason = `Gate 3 FAILED: Direction DOWN but EMA_score ${emaScore} is not bearish (no aligned pressure)`;
+        log.ema_confirmation = 'MISALIGNED';
+        log.gate_failed = 3;
+        this._emit(log);
+        return null;
+      }
+
+      log.ema_confirmation = 'ALIGNED';
+    }
 
     // ── 5. MOMENTUM RSI (weight 1-3) — Confirm momentum, not just extremes ──
     let rsiScore = 0;
@@ -254,33 +422,76 @@ class GBMSignalEngine {
       return null;
     }
 
-    // Kelly sizing using TRUE edge: modelProb vs marketProb
-    const entryPrice = this._estimateTokenPrice(Math.abs(score));
-    const marketProb = entryPrice;
-    // modelProb derived from signal strength: 50% + (confidence * 40%)
-    // Ranges from 0.50 (no signal) to 0.90 (maximum confidence)
-    const modelProb = 0.5 + (confidence * 0.4);
-    // Edge = how much better we think the outcome is vs what market prices in
-    const edge = modelProb - marketProb;
-    // NO TRADE ZONE (Improvement 11): skip if edge is non-positive
-    // Adaptive minEdge based on volatility (lower in low-vol, higher in high-vol)
-    const baseMinEdge = parseFloat(this.settings.min_edge) || 0.03;
-    const adaptiveMinEdge = baseMinEdge * volatilityRatio;
+    // ── FINAL DECISION: Use gate data if available, otherwise use scoring ────
+    let entryPrice, marketProb, modelProb, edge, size, finalConfidence, expectedValue, finalDirection;
 
-    log.edge = (edge * 100).toFixed(1) + '%';
-    log.adapted_min_edge = (adaptiveMinEdge * 100).toFixed(1) + '%';
+    if (evData && log.gates_passed) {
+      // Gates passed: use EV data for final decision
+      finalDirection = log.gate_direction;
+      entryPrice = chainlinkPrice || currentPrice;
+      marketProb = entryPrice;
+      modelProb = 0.5 + (microData.confidence - 0.5) * 0.6;
+      edge = modelProb - marketProb;
+      finalConfidence = microData.confidence;
+      expectedValue = evData.ev_adjusted;
 
-    if (edge <= adaptiveMinEdge) {
-      log.verdict = 'SKIP';
-      log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(adaptiveMinEdge*100).toFixed(1)}% (vol-adjusted from ${(baseMinEdge*100).toFixed(1)}%)`;
-      this._emit(log);
-      return null;
+      // Size based on gate EV + Kelly
+      const b = (1 / marketProb) - 1;
+      const kellyFraction = (modelProb * b - (1 - modelProb)) / b;
+      size = Math.min(Math.max(0, kellyFraction) * kelly_cap * max_trade_size, max_trade_size);
+
+      log.verdict = 'TRADE';
+      log.reason = `✅ Gates passed | Micro ${(microData.confidence*100).toFixed(1)}% | EV_adj ${(evData.ev_adjusted*100).toFixed(1)}% | ${finalDirection}`;
+      log.entry_price = entryPrice.toFixed(3);
+      log.size = '$' + size.toFixed(2);
+      log.model_prob = (modelProb*100).toFixed(1) + '%';
+      log.market_prob = (marketProb*100).toFixed(1) + '%';
+      log.edge = (edge*100).toFixed(1) + '%';
+      log.micro_confidence = (microData.confidence*100).toFixed(1) + '%';
+      log.ev_adjusted = (evData.ev_adjusted*100).toFixed(2) + '%';
+
+    } else {
+      // Fallback: use old scoring system
+      entryPrice = this._estimateTokenPrice(Math.abs(score));
+      marketProb = entryPrice;
+      modelProb = 0.5 + (confidence * 0.4);
+      edge = modelProb - marketProb;
+      finalConfidence = confidence;
+      finalDirection = direction;
+
+      const baseMinEdge = parseFloat(this.settings.min_edge) || 0.03;
+      const adaptiveMinEdge = baseMinEdge * volatilityRatio;
+
+      log.edge = (edge * 100).toFixed(1) + '%';
+      log.adapted_min_edge = (adaptiveMinEdge * 100).toFixed(1) + '%';
+
+      if (edge <= adaptiveMinEdge) {
+        log.verdict = 'SKIP';
+        log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(adaptiveMinEdge*100).toFixed(1)}%`;
+        this._emit(log);
+        return null;
+      }
+
+      const b = (1 / marketProb) - 1;
+      const kellyFraction = (modelProb * b - (1 - modelProb)) / b;
+      size = Math.min(Math.max(0, kellyFraction) * kelly_cap * max_trade_size, max_trade_size);
+
+      if (size < 0.50) {
+        log.verdict = 'SKIP';
+        log.reason = `Size $${size.toFixed(2)} too small`;
+        this._emit(log);
+        return null;
+      }
+
+      expectedValue = modelProb * (1 / marketProb - 1) - (1 - modelProb);
+      log.verdict = 'TRADE';
+      log.entry_price = entryPrice.toFixed(3);
+      log.size = '$' + size.toFixed(2);
+      log.model_prob = (modelProb*100).toFixed(1) + '%';
+      log.market_prob = (marketProb*100).toFixed(1) + '%';
+      log.edge = (edge*100).toFixed(1) + '%';
+      log.reason = `Score ${score.toFixed(1)} | Conf ${(confidence*100).toFixed(0)}% | Edge ${(edge*100).toFixed(1)}% | ${direction} @ $${entryPrice.toFixed(3)}`;
     }
-
-    // b = payout ratio per dollar risked (net odds)
-    const b = (1 / marketProb) - 1;
-    const kellyFraction = (modelProb * b - (1 - modelProb)) / b;
-    const size = Math.min(Math.max(0, kellyFraction) * kelly_cap * max_trade_size, max_trade_size);
 
     if (size < 0.50) {
       log.verdict = 'SKIP';
@@ -289,27 +500,22 @@ class GBMSignalEngine {
       return null;
     }
 
-    const ev = modelProb * (1 / marketProb - 1) - (1 - modelProb);
-    log.verdict = 'TRADE';
-    log.entry_price = entryPrice.toFixed(3);
-    log.size = '$' + size.toFixed(2);
-    log.model_prob = (modelProb*100).toFixed(1) + '%';
-    log.market_prob = (marketProb*100).toFixed(1) + '%';
-    log.edge = (edge*100).toFixed(1) + '%';
-    log.reason = `Score ${score.toFixed(1)} | Conf ${(confidence*100).toFixed(0)}% | Edge ${(edge*100).toFixed(1)}% | ${direction} @ $${entryPrice.toFixed(3)} | Size $${size.toFixed(2)}`;
     this._emit(log);
 
     return {
-      direction,
+      direction: finalDirection,
       entry_price: entryPrice,
       model_prob: modelProb,
       market_prob: marketProb,
       edge,
-      expected_value: ev,
+      expected_value: expectedValue,
       size,
       fee: marketProb * 0.25 * Math.pow(marketProb * (1 - marketProb), 2) * size,
-      confidence,
-      score
+      confidence: finalConfidence,
+      score,
+      gates_passed: log.gates_passed || false,
+      micro_confidence: microData?.confidence || 0,
+      ev_adjusted: evData?.ev_adjusted || 0
     };
   }
 

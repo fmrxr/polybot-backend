@@ -266,6 +266,14 @@ class BotInstance {
 
         // Pass both Binance and Chainlink prices to the signal engine
         const chainlinkData = this.chainlink.getPriceData();
+
+        // Phase A: Get order book data from market object for EV gates
+        const bid = market.bestBid || null;
+        const ask = market.bestAsk || null;
+        const bidDepth = market.bidDepth || null;
+        const askDepth = market.askDepth || null;
+        const totalDepth = market.totalDepth || null;
+
         const signal = this.engine.evaluate({
           currentPrice: btcData.price,
           binancePrice: btcData.price,
@@ -275,7 +283,12 @@ class BotInstance {
           timeToResolutionSec: secsLeft,
           obImbalance: btcData.obImbalance || 0,
           drift: btcData.drift || 0,
-          volatility: btcData.volatility || 0
+          volatility: btcData.volatility || 0,
+          bid,
+          ask,
+          bidDepth,
+          askDepth,
+          totalDepth
         });
 
         if (signal) {
