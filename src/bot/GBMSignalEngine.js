@@ -229,11 +229,18 @@ class GBMSignalEngine {
     log.confidence = (confidence * 100).toFixed(1) + '%';
     log.direction = direction;
 
-    const minConfidence = parseFloat(this.settings.min_ev_threshold) || 0.05;
+    // Adaptive thresholds based on volatility
+    const baseMinConfidence = parseFloat(this.settings.min_ev_threshold) || 0.05;
+    const typicalVolatility = 0.02; // ~2% considered "normal"
+    const volatilityRatio = Math.max(0.5, Math.min(2.0, Math.sqrt((volatility || 0.01) / typicalVolatility)));
+    const minConfidence = baseMinConfidence * volatilityRatio;
+
+    log.volatility_ratio = volatilityRatio.toFixed(2);
+    log.adapted_min_confidence = (minConfidence * 100).toFixed(1) + '%';
 
     if (confidence < minConfidence) {
       log.verdict = 'SKIP';
-      log.reason = `Confidence ${(confidence*100).toFixed(1)}% below threshold ${(minConfidence*100).toFixed(0)}%`;
+      log.reason = `Confidence ${(confidence*100).toFixed(1)}% below threshold ${(minConfidence*100).toFixed(1)}% (vol-adjusted from ${(baseMinConfidence*100).toFixed(1)}%)`;
       this._emit(log);
       return null;
     }
@@ -256,10 +263,16 @@ class GBMSignalEngine {
     // Edge = how much better we think the outcome is vs what market prices in
     const edge = modelProb - marketProb;
     // NO TRADE ZONE (Improvement 11): skip if edge is non-positive
-    const minEdge = parseFloat(this.settings.min_edge) || 0.03;
-    if (edge <= minEdge) {
+    // Adaptive minEdge based on volatility (lower in low-vol, higher in high-vol)
+    const baseMinEdge = parseFloat(this.settings.min_edge) || 0.03;
+    const adaptiveMinEdge = baseMinEdge * volatilityRatio;
+
+    log.edge = (edge * 100).toFixed(1) + '%';
+    log.adapted_min_edge = (adaptiveMinEdge * 100).toFixed(1) + '%';
+
+    if (edge <= adaptiveMinEdge) {
       log.verdict = 'SKIP';
-      log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(minEdge*100).toFixed(1)}% — no trade zone`;
+      log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(adaptiveMinEdge*100).toFixed(1)}% (vol-adjusted from ${(baseMinEdge*100).toFixed(1)}%)`;
       this._emit(log);
       return null;
     }
