@@ -289,6 +289,8 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
       <button class="nav-item" id="nav-signals" onclick="showTab('signals')"><span class="nav-icon">⚡</span>Signal Monitor</button>
       <div class="nav-label">History</div>
       <button class="nav-item" id="nav-trades" onclick="showTab('trades')"><span class="nav-icon">◎</span>Trades</button>
+      <div class="nav-label">Copy Trading</div>
+      <button class="nav-item" id="nav-copy" onclick="showTab('copy')"><span class="nav-icon">⟳</span>Copy Bot</button>
       <div class="nav-label">Config</div>
       <button class="nav-item" id="nav-settings" onclick="showTab('settings')"><span class="nav-icon">⚙</span>Settings</button>
       <div class="nav-label hidden" id="admin-nav-label">Admin</div>
@@ -505,6 +507,87 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
       <button class="btn btn-primary" id="save-btn" onclick="saveSettings()"><div class="btn-spinner"></div>✓ Save Settings</button>
     </div>
 
+    <!-- COPY TRADING -->
+    <div id="tab-copy" class="hidden">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Copy Trading</div>
+          <div class="page-sub">Mirror trades from successful traders</div>
+        </div>
+        <button class="header-btn" onclick="loadCopyTab()"><span>↻</span> Refresh</button>
+      </div>
+
+      <!-- Copy Bot Status -->
+      <div class="bot-control">
+        <div class="status-dot" id="copy-status-dot"></div>
+        <div class="bot-info">
+          <div class="bot-label" id="copy-bot-label">STOPPED</div>
+          <div class="bot-sub" id="copy-bot-sub">No targets — add a wallet to begin</div>
+        </div>
+        <div style="display:flex;gap:10px;flex-shrink:0">
+          <button class="btn btn-primary" id="copy-btn-start" onclick="startCopyBot()"><div class="btn-spinner"></div>▶ Start</button>
+          <button class="btn btn-danger hidden" id="copy-btn-stop" onclick="stopCopyBot()"><div class="btn-spinner"></div>■ Stop</button>
+        </div>
+      </div>
+
+      <!-- Add Copy Target Form -->
+      <div class="card">
+        <div class="sec-title">Add Target Wallet</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label>Target Address (0x...)</label><input id="copy-target-addr" type="text" placeholder="0x..." style="font-family:monospace;font-size:12px"/></div>
+          <div class="form-group"><label>Label</label><input id="copy-target-label" type="text" placeholder="e.g., Top Whale #1"/></div>
+          <div class="form-group"><label>Size Multiplier (0.1–5.0)</label><input id="copy-target-mult" type="number" step="0.1" min="0.1" max="5" value="1.0"/><div class="hint">1.0 = match trader's size</div></div>
+          <div class="form-group"><label>Max Trade Size ($)</label><input id="copy-target-max" type="number" step="1" min="5" value="20"/></div>
+        </div>
+        <button class="btn btn-primary" onclick="addCopyTarget()"><div class="btn-spinner"></div>+ Add Target</button>
+      </div>
+
+      <!-- Copy Targets Table -->
+      <div class="card">
+        <div class="card-hd"><div class="card-title">Active Copy Targets</div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Address</th>
+                <th>Label</th>
+                <th>Multiplier</th>
+                <th>Max Size</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="copy-targets-body">
+              <tr><td colspan="6" class="empty">No targets — add one to get started</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Copied Trades Table -->
+      <div class="card">
+        <div class="card-hd"><div class="card-title">Copied Trades (Last 20)</div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>From</th>
+                <th>Time</th>
+                <th>Dir</th>
+                <th>Price</th>
+                <th>Size</th>
+                <th>Result</th>
+                <th>P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody id="copy-trades-body">
+              <tr><td colspan="7" class="empty">No copied trades yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- ADMIN PANEL -->
     <div id="tab-admin" class="hidden">
       <div class="page-header">
@@ -618,11 +701,12 @@ function showPage(name) {
   ['login','register','app'].forEach(p => document.getElementById('page-'+p).classList.toggle('hidden', p!==name));
 }
 function showTab(name) {
-  ['dashboard','signals','trades','settings','admin'].forEach(t => {
+  ['dashboard','signals','trades','copy','settings','admin'].forEach(t => {
     document.getElementById('tab-'+t).classList.toggle('hidden', t!==name);
     document.getElementById('nav-'+t).classList.toggle('active', t===name);
   });
   if(name==='trades') loadTrades(1);
+  if(name==='copy') loadCopyTab();
   if(name==='settings') loadSettings();
   if(name==='signals') refreshSignals();
   if(name==='admin') loadAdmin();
@@ -1263,6 +1347,142 @@ async function adminToggleBot(userId, shouldStart) {
     await loadAdmin();
   } catch(e) {
     toast('Failed to toggle bot: '+e.message, 'error');
+  }
+}
+
+// ── COPY TRADING ──────────────────────────────────────────────────────────
+async function loadCopyTab() {
+  try {
+    const [targets, status, trades] = await Promise.all([
+      req('GET', '/api/copy/targets'),
+      req('GET', '/api/copy/status'),
+      req('GET', '/api/copy/trades?limit=20')
+    ]);
+    updateCopyBotStatus(status);
+    renderCopyTargets(targets.targets || []);
+    renderCopyTrades(trades.trades || []);
+  } catch(e) {
+    toast('Failed to load copy tab: '+e.message, 'error');
+  }
+}
+
+function updateCopyBotStatus(status) {
+  const running = status.is_running;
+  const dot = document.getElementById('copy-status-dot');
+  if(dot) dot.className = 'status-dot' + (running ? ' on' : '');
+  const lbl = document.getElementById('copy-bot-label');
+  if(lbl) lbl.textContent = running ? 'RUNNING' : 'STOPPED';
+  const sub = document.getElementById('copy-bot-sub');
+  if(sub) sub.textContent = running ? `Active · ${status.targets_count} target(s)` : `Idle · ${status.targets_count} target(s) configured`;
+  document.getElementById('copy-btn-start').classList.toggle('hidden', running);
+  document.getElementById('copy-btn-stop').classList.toggle('hidden', !running);
+}
+
+function renderCopyTargets(targets) {
+  const tb = document.getElementById('copy-targets-body');
+  if(!targets.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">No targets — add one to get started</td></tr>';
+    return;
+  }
+  tb.innerHTML = targets.map(t => {
+    const addr = t.target_address.slice(0,6) + '...' + t.target_address.slice(-4);
+    return `<tr>
+      <td class="mono" style="font-size:11px">${addr}</td>
+      <td>${t.label || '—'}</td>
+      <td class="mono">${t.multiplier}x</td>
+      <td class="mono">$${t.max_trade_size.toFixed(0)}</td>
+      <td><span class="badge ${t.is_active ? 'badge-green' : 'badge-yellow'}" style="font-size:9px">${t.is_active ? '✓ Active' : '⊘ Paused'}</span></td>
+      <td><button class="btn btn-sm btn-ghost" onclick="removeCopyTarget(${t.id})">Remove</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderCopyTrades(trades) {
+  const tb = document.getElementById('copy-trades-body');
+  if(!trades.length) {
+    tb.innerHTML = '<tr><td colspan="7" class="empty">No copied trades yet</td></tr>';
+    return;
+  }
+  tb.innerHTML = trades.map(t => {
+    const from = (t.copy_source || '?').slice(0,6) + '...';
+    const dir = t.direction === 'UP' ? '<span class="badge badge-green" style="font-size:9px">▲ UP</span>' : '<span class="badge badge-red" style="font-size:9px">▼ DOWN</span>';
+    const res = t.result ? `<span class="badge ${t.result === 'WIN' ? 'badge-green' : 'badge-red'}" style="font-size:9px">${t.result}</span>` : '<span class="badge badge-yellow" style="font-size:9px">OPEN</span>';
+    const pnl = t.pnl != null ? `<span class="mono ${parseFloat(t.pnl) >= 0 ? 'positive' : 'negative'}">${parseFloat(t.pnl) >= 0 ? '+$' : '-$'}${Math.abs(parseFloat(t.pnl)).toFixed(2)}</span>` : '—';
+    return `<tr>
+      <td class="mono" style="font-size:11px">${from}</td>
+      <td class="mono" style="font-size:11px">${new Date(t.created_at).toLocaleString()}</td>
+      <td>${dir}</td>
+      <td class="mono">$${parseFloat(t.entry_price).toFixed(3)}</td>
+      <td class="mono">$${parseFloat(t.size).toFixed(2)}</td>
+      <td>${res}</td>
+      <td>${pnl}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function addCopyTarget() {
+  const addr = document.getElementById('copy-target-addr').value.trim();
+  const label = document.getElementById('copy-target-label').value.trim();
+  const mult = parseFloat(document.getElementById('copy-target-mult').value) || 1.0;
+  const maxSize = parseFloat(document.getElementById('copy-target-max').value) || 20;
+
+  if(!addr || !addr.match(/^0x[0-9a-f]{40}$/i)) {
+    toast('Invalid Ethereum address', 'error');
+    return;
+  }
+
+  try {
+    const btn = event.target;
+    btn.classList.add('loading'); btn.disabled = true;
+    await req('POST', '/api/copy/targets', { target_address: addr, label, multiplier: mult, max_trade_size: maxSize });
+    toast('Target added', 'success');
+    document.getElementById('copy-target-addr').value = '';
+    document.getElementById('copy-target-label').value = '';
+    document.getElementById('copy-target-mult').value = '1.0';
+    document.getElementById('copy-target-max').value = '20';
+    await loadCopyTab();
+    btn.classList.remove('loading'); btn.disabled = false;
+  } catch(e) {
+    toast('Failed to add target: '+e.message, 'error');
+    event.target.classList.remove('loading');
+    event.target.disabled = false;
+  }
+}
+
+async function removeCopyTarget(id) {
+  if(!confirm('Remove this target?')) return;
+  try {
+    await req('DELETE', `/api/copy/targets/${id}`);
+    toast('Target removed', 'success');
+    await loadCopyTab();
+  } catch(e) {
+    toast('Failed to remove: '+e.message, 'error');
+  }
+}
+
+async function startCopyBot() {
+  const btn = document.getElementById('copy-btn-start');
+  btn.classList.add('loading'); btn.disabled = true;
+  try {
+    await req('POST', '/api/copy/start');
+    toast('Copy bot started', 'success');
+    await loadCopyTab();
+  } catch(e) {
+    toast('Failed to start: '+e.message, 'error');
+    btn.classList.remove('loading'); btn.disabled = false;
+  }
+}
+
+async function stopCopyBot() {
+  const btn = document.getElementById('copy-btn-stop');
+  btn.classList.add('loading'); btn.disabled = true;
+  try {
+    await req('POST', '/api/copy/stop');
+    toast('Copy bot stopped', 'success');
+    await loadCopyTab();
+  } catch(e) {
+    toast('Failed to stop: '+e.message, 'error');
+    btn.classList.remove('loading'); btn.disabled = false;
   }
 }
 
