@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PolyBot – Login</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-dark: #0a0e27;
+      --bg-darker: #05070f;
+      --primary: #0066ff;
+      --success: #00e5a0;
+      --danger: #ff4d6a;
+      --border: #1a1f3a;
+      --text: #e0e0e0;
+      --muted: #8b8b8b;
+    }
+
+    html, body {
+      height: 100%;
+      background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-darker) 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 400px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px 36px;
+    }
+
+    .logo {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .logo h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      background: linear-gradient(90deg, var(--primary), var(--success));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .logo p {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-top: 6px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 8px;
+      padding: 4px;
+      margin-bottom: 28px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 8px;
+      text-align: center;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.88rem;
+      color: var(--muted);
+      border: none;
+      background: transparent;
+      transition: all 0.2s;
+    }
+
+    .tab.active {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="email"],
+    input[type="password"] {
+      width: 100%;
+      padding: 11px 14px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 18px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input:focus { border-color: var(--primary); }
+
+    .btn-primary {
+      width: 100%;
+      padding: 12px;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .error {
+      background: rgba(255, 77, 106, 0.12);
+      border: 1px solid rgba(255, 77, 106, 0.35);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.85rem;
+      color: var(--danger);
+      margin-bottom: 18px;
+      display: none;
+    }
+
+    .error.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <h1>PolyBot</h1>
+      <p>REAL EDGE MODE v1.0</p>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" id="tab-login" onclick="switchTab('login')">Login</button>
+      <button class="tab" id="tab-register" onclick="switchTab('register')">Register</button>
+    </div>
+
+    <div id="error-msg" class="error"></div>
+
+    <!-- Login form -->
+    <form id="form-login" onsubmit="handleLogin(event)">
+      <label for="login-email">Email</label>
+      <input id="login-email" type="email" placeholder="you@email.com" required autocomplete="email">
+
+      <label for="login-password">Password</label>
+      <input id="login-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+
+      <button class="btn-primary" type="submit" id="btn-login">Login</button>
+    </form>
+
+    <!-- Register form -->
+    <form id="form-register" style="display:none" onsubmit="handleRegister(event)">
+      <label for="reg-email">Email</label>
+      <input id="reg-email" type="email" placeholder="you@email.com" required autocomplete="email">
+
+      <label for="reg-password">Password</label>
+      <input id="reg-password" type="password" placeholder="Min 8 characters" required autocomplete="new-password">
+
+      <label for="reg-confirm">Confirm Password</label>
+      <input id="reg-confirm" type="password" placeholder="Repeat password" required autocomplete="new-password">
+
+      <button class="btn-primary" type="submit" id="btn-register">Create Account</button>
+    </form>
+  </div>
+
+  <script>
+    // If already logged in redirect to dashboard
+    if (localStorage.getItem('token')) {
+      window.location.href = '/';
+    }
+
+    function switchTab(tab) {
+      document.getElementById('form-login').style.display = tab === 'login' ? '' : 'none';
+      document.getElementById('form-register').style.display = tab === 'register' ? '' : 'none';
+      document.getElementById('tab-login').classList.toggle('active', tab === 'login');
+      document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+      showError('');
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error-msg');
+      el.textContent = msg;
+      el.classList.toggle('visible', !!msg);
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btn-login');
+      btn.disabled = true;
+      btn.textContent = 'Logging in…';
+      showError('');
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('login-email').value.trim(),
+            password: document.getElementById('login-password').value
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed');
+
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('userEmail', data.user.email);
+        localStorage.setItem('isAdmin', data.user.is_admin ? 'true' : 'false');
+        window.location.href = '/';
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Login';
+      }
+    }
+
+    async function handleRegister(e) {
+      e.preventDefault();
+      const pass = document.getElementById('reg-password').value;
+      const confirm = document.getElementById('reg-confirm').value;
+      if (pass !== confirm) return showError('Passwords do not match');
+
+      const btn = document.getElementById('btn-register');
+      btn.disabled = true;
+      btn.textContent = 'Creating account…';
+      showError('');
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('reg-email').value.trim(),
+            password: pass
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Registration failed');
+
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('userEmail', data.user.email);
+        localStorage.setItem('isAdmin', data.user.is_admin ? 'true' : 'false');
+        window.location.href = '/';
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Account';
+      }
+    }
+  </script>
+</body>
+</html>
