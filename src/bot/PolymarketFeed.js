@@ -230,8 +230,7 @@ class PolymarketFeed {
     try {
       const response = await axios.get(`${POLYMARKET_CLOB_API}/book`, {
         params: { token_id: tokenId },
-        timeout: 5000,
-        headers: this._getAuthHeaders()
+        timeout: 5000
       });
       const book = response.data;
       const bestBid = book.bids?.[0]?.price ? parseFloat(book.bids[0].price) : 0;
@@ -265,7 +264,7 @@ class PolymarketFeed {
       const response = await axios.post(`${POLYMARKET_CLOB_API}/order`, {
         ...orderData, maker_address: this.address, signature
       }, {
-        headers: { ...this._getAuthHeaders(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         timeout: 10000
       });
       return response.data;
@@ -278,8 +277,7 @@ class PolymarketFeed {
   async getOrderStatus(orderId) {
     try {
       const response = await axios.get(`${POLYMARKET_CLOB_API}/order/${orderId}`, {
-        timeout: 5000,
-        headers: this._getAuthHeaders()
+        timeout: 5000
       });
       const o = response.data;
       return {
