@@ -22,16 +22,24 @@ class PolymarketFeed {
       // Dynamic import for ESM module
       const { ClobClient } = await import('@polymarket/clob-client');
 
-      // Initialize CLOB client with wallet signer
-      // ClobClient uses EIP-712 signatures from the wallet for authentication
+      // Step 1: Create temp client to derive L2 API credentials
+      const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
+      const apiCreds = await tempClient.createOrDeriveApiKey();
+      console.log(`[PolymarketFeed] API credentials derived for ${this.address}`);
+
+      // Step 2: Create trading client with L2 credentials
+      // Signature type 0 = EOA (standalone wallet)
       this.clobClient = new ClobClient(
         POLYMARKET_CLOB_API,
         CHAIN_ID,
-        this.wallet
+        this.wallet,
+        apiCreds,
+        0, // EOA wallet type
+        this.address
       );
 
       this.isConnected = true;
-      console.log(`[PolymarketFeed] Initialized with address ${this.address}`);
+      console.log(`[PolymarketFeed] Initialized trading client for ${this.address}`);
     } catch(e) {
       console.error('[PolymarketFeed] Failed to initialize CLOB client:', e.message);
       // Continue without CLOB client — market discovery still works
