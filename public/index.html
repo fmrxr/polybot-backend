@@ -424,6 +424,11 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
           <div class="tbl-wrap"><table><thead><tr><th>Range</th><th>Trades</th><th>Win%</th><th>P&amp;L</th></tr></thead>
           <tbody id="prob-body"><tr><td colspan="4" class="empty">No data</td></tr></tbody></table></div>
         </div>
+        <div class="card">
+          <div class="card-hd"><div class="card-title">Exit Strategy</div></div>
+          <div class="tbl-wrap"><table><thead><tr><th>Exit Type</th><th>Count</th><th>Avg P&amp;L</th></tr></thead>
+          <tbody id="exit-body"><tr><td colspan="3" class="empty">No data</td></tr></tbody></table></div>
+        </div>
       </div>
 
       <!-- LIVE TRADES SECTION -->
@@ -1138,6 +1143,19 @@ function renderBreakdown(b) {
     <td class="mono">${r.win_rate}%</td>
     <td class="mono ${parseFloat(r.pnl)>=0?'positive':'negative'}">${fmtPnl(r.pnl)}</td></tr>`
   ).join('')||'<tr><td colspan="4" class="empty">No data</td></tr>';
+
+  // Exit strategy breakdown
+  const exits = b.by_exit_reason || [];
+  const exitLabels = {
+    auto_closed_profit: '💰 Take Profit (+30%)',
+    auto_closed_loss: '🛑 Stop Loss (-5%)',
+    resolved: '✅ Natural Resolution'
+  };
+  document.getElementById('exit-body').innerHTML=exits.map(r=>
+    `<tr><td>${exitLabels[r.exit_reason] || r.exit_reason}</td>
+    <td class="mono">${r.count}</td>
+    <td class="mono ${parseFloat(r.avg_pnl)>=0?'positive':'negative'}">${fmtPnl(r.avg_pnl)}</td></tr>`
+  ).join('')||'<tr><td colspan="3" class="empty">No data</td></tr>';
 }
 
 // ── SETTINGS ──────────────────────────────────────────────────────────────

@@ -82,7 +82,17 @@ router.get('/breakdown', async (req, res) => {
       ORDER BY MIN(market_prob)
     `, [req.userId]);
 
-    res.json({ by_direction: byDirection.rows, by_prob: byProb.rows });
+    const byExitReason = await pool.query(`
+      SELECT
+        COALESCE(exit_reason, 'resolved') as exit_reason,
+        COUNT(*) as count,
+        ROUND(AVG(pnl), 2) as avg_pnl
+      FROM trades WHERE user_id = $1 AND result IS NOT NULL
+      GROUP BY exit_reason
+      ORDER BY CASE WHEN exit_reason = 'auto_closed_profit' THEN 0 WHEN exit_reason = 'auto_closed_loss' THEN 1 ELSE 2 END
+    `, [req.userId]);
+
+    res.json({ by_direction: byDirection.rows, by_prob: byProb.rows, by_exit_reason: byExitReason.rows });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
