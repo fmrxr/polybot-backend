@@ -880,9 +880,7 @@ function enterApp() {
   showTab('dashboard');
   refreshDashboard();
   pollInterval = setInterval(()=>refreshDashboard(), 3000);
-  signalInterval = setInterval(()=>{
-    if(!document.getElementById('tab-signals').classList.contains('hidden')) refreshSignals();
-  }, 3000);
+  signalInterval = setInterval(()=>refreshSignals(), 3000);
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -1030,7 +1028,9 @@ async function refreshSignals() {
     ]);
     if(status.market_data) updateMarketSnapshot(status.market_data,status);
     renderDecisions(decisions);
-  } catch(e){}
+  } catch(e){
+    console.error('Signal refresh error:', e.message);
+  }
 }
 
 function setMon(id,val,cls) {
