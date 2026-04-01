@@ -31,27 +31,36 @@ class PolymarketFeed {
       const { ClobClient, OrderType, Side } = await import('@polymarket/clob-client');
       this.OrderType = OrderType;
       this.Side = Side;
+      console.log(`[PolymarketFeed] SDK modules imported`);
 
       // Step 1: Create temp client to derive L2 API credentials
-      const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
-      const apiCreds = await tempClient.createOrDeriveApiKey();
-      console.log(`[PolymarketFeed] API credentials derived for ${this.address}`);
+      try {
+        const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
+        console.log(`[PolymarketFeed] Temp client created`);
 
-      // Step 2: Create trading client with L2 credentials
-      // Signature type 0 = EOA (standalone wallet)
-      this.clobClient = new ClobClient(
-        POLYMARKET_CLOB_API,
-        CHAIN_ID,
-        this.wallet,
-        apiCreds,
-        0, // EOA wallet type
-        this.address
-      );
+        const apiCreds = await tempClient.createOrDeriveApiKey();
+        console.log(`[PolymarketFeed] API credentials derived for ${this.address}`);
 
-      this.isConnected = true;
-      console.log(`[PolymarketFeed] Initialized trading client for ${this.address}`);
+        // Step 2: Create trading client with L2 credentials
+        // Signature type 0 = EOA (standalone wallet)
+        this.clobClient = new ClobClient(
+          POLYMARKET_CLOB_API,
+          CHAIN_ID,
+          this.wallet,
+          apiCreds,
+          0, // EOA wallet type
+          this.address
+        );
+        console.log(`[PolymarketFeed] Trading client created`);
+
+        this.isConnected = true;
+        console.log(`[PolymarketFeed] ✅ Initialized trading client for ${this.address}`);
+      } catch(initErr) {
+        console.error('[PolymarketFeed] Client initialization failed:', initErr.message);
+        throw initErr;
+      }
     } catch(e) {
-      console.error('[PolymarketFeed] Failed to initialize CLOB client:', e.message);
+      console.error('[PolymarketFeed] Failed to initialize CLOB client - full error:', e);
       // Continue without CLOB client — market discovery still works
     }
   }
