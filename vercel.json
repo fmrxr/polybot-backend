@@ -1,10 +1,6 @@
 {
-  "functions": {
-    "api/index.js": {
-      "includeFiles": "public/**"
-    }
-  },
+  "outputDirectory": "public",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
+    { "source": "/((?!.*\\.).*)", "destination": "/index.html" }
   ]
 }

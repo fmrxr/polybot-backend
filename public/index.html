@@ -851,6 +851,7 @@
       }
     }
   </style>
+  <script src="/config.js"></script>
 </head>
 <body>
   <nav>
@@ -1479,7 +1480,7 @@
           return;
         }
 
-        const userRes = await fetch('/api/user/settings', {
+        const userRes = await fetch((window.API_BASE||'')+'/api/user/settings', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
 
@@ -1530,7 +1531,7 @@
     async function startBot() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch('/api/bot/start', {
+        const res = await fetch((window.API_BASE||'')+'/api/bot/start', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -1549,7 +1550,7 @@
     async function stopBot() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch('/api/bot/stop', {
+        const res = await fetch((window.API_BASE||'')+'/api/bot/stop', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -1567,7 +1568,7 @@
     async function loadBotStatus() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch('/api/bot/status', {
+        const res = await fetch((window.API_BASE||'')+'/api/bot/status', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json();
@@ -1610,7 +1611,7 @@
     async function loadSignals() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch('/api/bot/decisions?limit=100', {
+        const res = await fetch((window.API_BASE||'')+'/api/bot/decisions?limit=100', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json();
@@ -1625,7 +1626,7 @@
     async function loadTrades() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch(`/api/trades?page=${currentPage}&limit=${tradesPerPage}`, {
+        const res = await fetch(`${window.API_BASE||''}/api/trades?page=${currentPage}&limit=${tradesPerPage}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json();
@@ -1640,7 +1641,7 @@
     async function loadClaudeAnalysis() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch('/api/claude/latest-feedback', {
+        const res = await fetch((window.API_BASE||'')+'/api/claude/latest-feedback', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
@@ -1830,7 +1831,7 @@
       };
 
       try {
-        const res = await fetch('/api/user/settings', {
+        const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
           method: 'PUT',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -1858,7 +1859,7 @@
       };
 
       try {
-        const res = await fetch('/api/user/settings', {
+        const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
           method: 'PUT',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -1886,7 +1887,7 @@
       };
 
       try {
-        const res = await fetch('/api/user/settings', {
+        const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
           method: 'PUT',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -1915,7 +1916,7 @@
       }
 
       try {
-        const res = await fetch('/api/claude/test', {
+        const res = await fetch((window.API_BASE||'')+'/api/claude/test', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -1948,7 +1949,7 @@
     async function triggerClaudeAnalysis() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch('/api/claude/analyze', {
+        const res = await fetch((window.API_BASE||'')+'/api/claude/analyze', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,

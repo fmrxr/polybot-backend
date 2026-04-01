@@ -180,6 +180,7 @@
     </form>
   </div>
 
+  <script src="/config.js"></script>
   <script>
     // If already logged in redirect to dashboard
     if (localStorage.getItem('token')) {
@@ -208,7 +209,7 @@
       showError('');
 
       try {
-        const res = await fetch('/api/auth/login', {
+        const res = await fetch((window.API_BASE || '') + '/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -244,7 +245,7 @@
       showError('');
 
       try {
-        const res = await fetch('/api/auth/register', {
+        const res = await fetch((window.API_BASE || '') + '/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
