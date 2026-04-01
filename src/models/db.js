@@ -67,6 +67,7 @@ async function initDB() {
 
       -- Add new columns to existing tables if they don't exist yet
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_trading BOOLEAN DEFAULT true;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS encrypted_polymarket_api_key TEXT;
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS paper BOOLEAN DEFAULT false;
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_id VARCHAR(255);
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_status VARCHAR(20);

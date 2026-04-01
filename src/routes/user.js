@@ -13,8 +13,10 @@ router.get('/settings', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'Settings not found' });
     const settings = result.rows[0];
     const hasKey = !!settings.encrypted_private_key;
+    const hasApiKey = !!settings.encrypted_polymarket_api_key;
     delete settings.encrypted_private_key;
-    res.json({ ...settings, has_private_key: hasKey });
+    delete settings.encrypted_polymarket_api_key;
+    res.json({ ...settings, has_private_key: hasKey, has_polymarket_api_key: hasApiKey });
   } catch (err) {
     console.error('Settings GET error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -24,7 +26,7 @@ router.get('/settings', async (req, res) => {
 // PUT /api/user/settings
 router.put('/settings', async (req, res) => {
   const {
-    private_key, kelly_cap, max_daily_loss, max_trade_size,
+    private_key, polymarket_api_key, kelly_cap, max_daily_loss, max_trade_size,
     min_ev_threshold, min_prob_diff, direction_filter,
     market_prob_min, market_prob_max, paper_trading
   } = req.body;
@@ -38,24 +40,34 @@ router.put('/settings', async (req, res) => {
       encryptedKey = encrypt(private_key);
     }
 
+    let encryptedApiKey = null;
+    if (polymarket_api_key) {
+      // Basic validation — should be non-empty
+      if (polymarket_api_key.trim().length === 0) {
+        return res.status(400).json({ error: 'Polymarket API key cannot be empty' });
+      }
+      encryptedApiKey = encrypt(polymarket_api_key);
+    }
+
     await pool.query(`
-      INSERT INTO bot_settings (user_id, encrypted_private_key, kelly_cap, max_daily_loss, max_trade_size,
+      INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, kelly_cap, max_daily_loss, max_trade_size,
         min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
-        kelly_cap = COALESCE($3, bot_settings.kelly_cap),
-        max_daily_loss = COALESCE($4, bot_settings.max_daily_loss),
-        max_trade_size = COALESCE($5, bot_settings.max_trade_size),
-        min_ev_threshold = COALESCE($6, bot_settings.min_ev_threshold),
-        min_prob_diff = COALESCE($7, bot_settings.min_prob_diff),
-        direction_filter = COALESCE($8, bot_settings.direction_filter),
-        market_prob_min = COALESCE($9, bot_settings.market_prob_min),
-        market_prob_max = COALESCE($10, bot_settings.market_prob_max),
-        paper_trading = COALESCE($11, bot_settings.paper_trading),
+        encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
+        kelly_cap = COALESCE($4, bot_settings.kelly_cap),
+        max_daily_loss = COALESCE($5, bot_settings.max_daily_loss),
+        max_trade_size = COALESCE($6, bot_settings.max_trade_size),
+        min_ev_threshold = COALESCE($7, bot_settings.min_ev_threshold),
+        min_prob_diff = COALESCE($8, bot_settings.min_prob_diff),
+        direction_filter = COALESCE($9, bot_settings.direction_filter),
+        market_prob_min = COALESCE($10, bot_settings.market_prob_min),
+        market_prob_max = COALESCE($11, bot_settings.market_prob_max),
+        paper_trading = COALESCE($12, bot_settings.paper_trading),
         updated_at = NOW()
     `, [
-      req.userId, encryptedKey,
+      req.userId, encryptedKey, encryptedApiKey,
       kelly_cap || null, max_daily_loss || null, max_trade_size || null,
       min_ev_threshold || null, min_prob_diff || null, direction_filter || null,
       market_prob_min || null, market_prob_max || null,

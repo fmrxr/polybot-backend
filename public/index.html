@@ -406,11 +406,17 @@ input:checked+.t-slider:before{transform:translateX(20px);background:#000}
 
       <div class="card">
         <div class="sec-title">Polymarket Wallet</div>
-        <div class="warn-msg">⚠ Private key encrypted with AES-256-GCM before storage.</div>
-        <div id="key-configured" class="success-msg hidden">✓ Key configured. Enter a new one to replace.</div>
+        <div class="warn-msg">⚠ Keys encrypted with AES-256-GCM before storage.</div>
+        <div id="key-configured" class="success-msg hidden">✓ Private key configured. Enter a new one to replace.</div>
         <div class="form-group">
           <label id="key-label">Private Key (0x...)</label>
           <div class="key-wrap"><input id="input-key" type="password" placeholder="0x..."/><button class="show-btn" onclick="toggleKey()">SHOW</button></div>
+        </div>
+        <div id="api-configured" class="success-msg hidden">✓ Polymarket API key configured. Enter a new one to replace.</div>
+        <div class="form-group">
+          <label id="api-label">Polymarket API Key (optional)</label>
+          <div class="key-wrap"><input id="input-api-key" type="password" placeholder="sk_... or your API key"/><button class="show-btn" onclick="toggleApiKey()">SHOW</button></div>
+          <div class="hint">Leave empty to use shared backend key. Per-user key overrides backend key for API calls.</div>
         </div>
       </div>
 
@@ -835,6 +841,10 @@ async function loadSettings() {
       document.getElementById('key-configured').classList.remove('hidden');
       document.getElementById('key-label').textContent='Replace Private Key (optional)';
     }
+    if(s.has_polymarket_api_key){
+      document.getElementById('api-configured').classList.remove('hidden');
+      document.getElementById('api-label').textContent='Replace Polymarket API Key (optional)';
+    }
     document.getElementById('s-max-loss').value=s.max_daily_loss;
     document.getElementById('s-max-size').value=s.max_trade_size;
     document.getElementById('s-kelly').value=s.kelly_cap;
@@ -864,6 +874,13 @@ function toggleKey() {
   btn.textContent=inp.type==='password'?'SHOW':'HIDE';
 }
 
+function toggleApiKey() {
+  const inp=document.getElementById('input-api-key');
+  const btn=inp.parentElement.querySelector('.show-btn');
+  inp.type=inp.type==='password'?'text':'password';
+  btn.textContent=inp.type==='password'?'SHOW':'HIDE';
+}
+
 async function saveSettings() {
   const succ=document.getElementById('settings-success');
   const err=document.getElementById('settings-error');
@@ -883,11 +900,14 @@ async function saveSettings() {
   };
   const key=document.getElementById('input-key').value;
   if(key) payload.private_key=key;
+  const apiKey=document.getElementById('input-api-key').value;
+  if(apiKey) payload.polymarket_api_key=apiKey;
   try {
     await req('PUT','/api/user/settings',payload);
     succ.textContent='✓ Settings saved';
     succ.classList.remove('hidden');
     document.getElementById('input-key').value='';
+    document.getElementById('input-api-key').value='';
     await loadSettings();
     toast('Settings saved','success');
   } catch(e) {

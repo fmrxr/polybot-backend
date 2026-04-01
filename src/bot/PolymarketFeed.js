@@ -6,8 +6,9 @@ const POLYMARKET_CLOB_API = 'https://clob.polymarket.com';
 const POLYMARKET_GAMMA_API = 'https://gamma-api.polymarket.com';
 
 class PolymarketFeed {
-  constructor(privateKey) {
+  constructor(privateKey, userApiKey = null) {
     this.privateKey = privateKey;
+    this.userApiKey = userApiKey;  // Per-user Polymarket API key (optional, overrides backend key)
     this.wallet = new ethers.Wallet(privateKey);
     this.address = this.wallet.address;
     this.ws = null;
@@ -114,7 +115,12 @@ class PolymarketFeed {
   }
 
   _getAuthHeaders() {
-    const apiKey = process.env.POLYMARKET_API_KEY || process.env.POLY_API_KEY || process.env.POLY_CLOB_API_KEY || process.env.POLYMARKET_CLOB_API_KEY;
+    // Use per-user API key if provided, otherwise fall back to backend/env key
+    const apiKey = this.userApiKey ||
+                   process.env.POLYMARKET_API_KEY ||
+                   process.env.POLY_API_KEY ||
+                   process.env.POLY_CLOB_API_KEY ||
+                   process.env.POLYMARKET_CLOB_API_KEY;
     if (!apiKey) return {};
     return {
       'x-api-key': apiKey,

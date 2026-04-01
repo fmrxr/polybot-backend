@@ -50,7 +50,18 @@ class BotInstance {
       throw new Error(`Failed to decrypt private key — check ENCRYPTION_KEY env var: ${e.message}`);
     }
 
-    this.polymarket = new PolymarketFeed(privateKey);
+    // Decrypt user's Polymarket API key if provided
+    let userApiKey = null;
+    if (this.settings.encrypted_polymarket_api_key) {
+      try {
+        userApiKey = decrypt(this.settings.encrypted_polymarket_api_key);
+      } catch(e) {
+        this._log('WARN', `Failed to decrypt user's Polymarket API key: ${e.message}`);
+        // Continue without user API key — fall back to backend key
+      }
+    }
+
+    this.polymarket = new PolymarketFeed(privateKey, userApiKey);
     this.engine = new GBMSignalEngine({
       kelly_cap: parseFloat(this.settings.kelly_cap),
       max_trade_size: parseFloat(this.settings.max_trade_size),
