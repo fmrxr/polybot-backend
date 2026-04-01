@@ -2,6 +2,7 @@
 // Exports the Express app — Vercel handles the HTTP binding.
 // src/index.js (Railway) is unchanged and still calls app.listen() for that deployment.
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -67,5 +68,13 @@ app.use('/api/admin',  adminRoutes);
 app.use('/api/copy',   copyRoutes);
 app.use('/api/claude', claudeRoutes);
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
+
+// Serve static files from public/
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// SPA fallback
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
 
 module.exports = app;
