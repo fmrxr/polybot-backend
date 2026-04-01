@@ -132,21 +132,55 @@ input::placeholder{color:var(--dim)}
 .mon-val.up{color:var(--accent)}.mon-val.dn{color:var(--red)}.mon-val.nt{color:var(--accent2)}
 
 /* DECISIONS */
-.dec-feed{max-height:380px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
-.dec-item{display:flex;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(26,37,51,.6);align-items:flex-start}
+.dec-feed{max-height:500px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.dec-item{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-bottom:1px solid rgba(26,37,51,.6);border-left:4px solid transparent;transition:all .15s}
 .dec-item:hover{background:rgba(255,255,255,.015)}
 .dec-item:last-child{border-bottom:none}
-.dec-verdict{flex-shrink:0;width:50px;text-align:center;padding:2px 0;border-radius:4px;font-family:var(--mono);font-size:9px;font-weight:700;margin-top:2px}
+.dec-item.row-TRADE{border-left-color:var(--accent);background:rgba(0,229,160,.04)}
+.dec-item.row-SKIP{border-left-color:var(--red);background:rgba(255,77,106,.04)}
+.dec-item.row-WAIT{border-left-color:var(--accent2);background:rgba(0,184,212,.04)}
+.dec-verdict{flex-shrink:0;width:60px;text-align:center;padding:3px 6px;border-radius:4px;font-family:var(--mono);font-size:9px;font-weight:700;align-self:flex-start}
 .v-TRADE{background:rgba(0,229,160,.14);color:var(--accent)}
 .v-WAIT{background:rgba(0,184,212,.1);color:var(--accent2)}
 .v-SKIP{background:rgba(245,200,66,.08);color:var(--yellow)}
 .dec-body{flex:1;min-width:0}
-.dec-reason{font-size:12px;color:var(--text);line-height:1.4}
+.dec-header{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.dec-reason{font-size:12px;color:var(--text);line-height:1.4;flex:1}
+.dec-time{font-family:var(--mono);font-size:10px;color:var(--dim);flex-shrink:0}
+.dec-gates{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px;margin-top:6px}
+.dec-gate{display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--bg2);border-radius:3px;border:1px solid var(--border);font-size:10px;font-family:var(--mono);flex-wrap:wrap}
+.dec-gate-label{color:var(--muted);flex-shrink:0;font-weight:600}
+.dec-gate-badge{padding:2px 6px;border-radius:2px;font-weight:700;font-size:9px;flex-shrink:0}
+.dec-gate.pass .dec-gate-badge{background:rgba(0,229,160,.25);color:var(--accent)}
+.dec-gate.fail .dec-gate-badge{background:rgba(255,77,106,.25);color:var(--red)}
+.dec-gate.borderline .dec-gate-badge{background:rgba(245,200,66,.25);color:var(--yellow)}
+.dec-gate.pass{border-color:var(--accent)}
+.dec-gate.fail{border-color:var(--red)}
+.dec-gate.borderline{border-color:var(--yellow)}
 .dec-meta{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .dec-chip{background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:1px 6px;font-family:var(--mono);font-size:10px;color:var(--muted)}
 .dec-chip span{color:var(--text)}
-.dec-time{font-family:var(--mono);font-size:10px;color:var(--dim);flex-shrink:0;margin-top:2px}
 .dec-legend{display:flex;gap:14px;font-family:var(--mono);font-size:10px;color:var(--muted)}
+
+/* PHASE A METRICS */
+.phase-a-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(0,229,160,.1);border:1px solid var(--accent);border-radius:var(--radius-sm);font-family:var(--mono);font-size:11px;font-weight:700;color:var(--accent);margin-bottom:16px}
+.phase-a-badge.dry-run{background:rgba(245,200,66,.1);border-color:var(--yellow);color:var(--yellow)}
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;text-align:center;transition:all .2s}
+.metric-card.metric-pass{border-color:var(--accent);background:rgba(0,229,160,.05)}
+.metric-card.metric-warn{border-color:var(--yellow);background:rgba(245,200,66,.05)}
+.metric-card.metric-fail{border-color:var(--red);background:rgba(255,77,106,.05)}
+.metric-label{font-size:10px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.metric-value{font-size:22px;font-weight:700;font-family:var(--mono);color:var(--accent);margin-bottom:4px}
+.metric-value.warning{color:var(--yellow)}
+.metric-value.danger{color:var(--red)}
+.metric-target{font-size:9px;color:var(--dim);font-family:var(--mono);line-height:1.4}
+.ev-histogram{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.histogram-bars{display:flex;gap:4px;height:40px;align-items:flex-end;justify-content:space-around}
+.histogram-bar{flex:1;background:var(--accent);border-radius:2px;position:relative;opacity:.8}
+.histogram-bar:hover{opacity:1}
+.histogram-label{font-size:8px;color:var(--dim);text-align:center;margin-top:2px}
+.gate-breakdown{margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
 
 /* LOGS */
 .log-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;height:240px;overflow-y:auto;font-family:var(--mono);font-size:11px;line-height:1.9;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
@@ -368,6 +402,7 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
         </div>
         <button class="header-btn" onclick="refreshSignals()"><span>↻</span> Refresh</button>
       </div>
+      <div id="phase-a-badge-container"></div>
 
       <div class="card">
         <div class="card-hd"><div class="card-title">Live Market Data</div></div>
@@ -384,6 +419,13 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
           <div class="mon-cell"><div class="mon-key">Paper Balance</div><div class="mon-val" id="m-balance">—</div></div>
           <div class="mon-cell"><div class="mon-key">Mode</div><div class="mon-val" id="m-mode">—</div></div>
           <div class="mon-cell"><div class="mon-key">Last Updated</div><div class="mon-val" id="m-updated" style="font-size:11px">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-hd"><div class="card-title">Phase A Metrics Dashboard</div></div>
+        <div id="phase-a-metrics-container">
+          <div class="empty">Load metrics...</div>
         </div>
       </div>
 
@@ -488,8 +530,8 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
       <div class="card">
         <div class="card-hd"><div class="card-title">All Trades</div></div>
         <div class="tbl-wrap">
-          <table><thead><tr><th>Time</th><th>Mode</th><th>Dir</th><th>Entry</th><th>Size</th><th>Mkt Prob</th><th>EV</th><th>Result</th><th>P&amp;L</th></tr></thead>
-          <tbody id="trades-body"><tr><td colspan="9" class="empty">No trades yet</td></tr></tbody></table>
+          <table><thead><tr><th>Time</th><th>Mode</th><th>Dir</th><th>Entry</th><th>Size</th><th>Mkt Prob</th><th>EV</th><th>Result</th><th>P&amp;L</th><th style="text-align:center">Details</th></tr></thead>
+          <tbody id="trades-body"><tr><td colspan="10" class="empty">No trades yet</td></tr></tbody></table>
         </div>
         <div class="pagination" id="pagination"></div>
       </div>
@@ -794,6 +836,39 @@ function setConn(ok, label) {
   if(lbl) lbl.textContent = label || (ok?'Connected':'Offline');
 }
 
+// ── HELPER FUNCTIONS FOR DECISION DATA ─────────────────────────────────────
+// FIX #1: Source of Truth Normalization
+function getDecisionData(d) {
+  const data = d.data || d;
+  if (typeof data === 'string') return JSON.parse(data);
+  return data;
+}
+
+// FIX #1.5: Normalize percentages consistently (decimal ≤1 or percent form)
+function toPercent(v) {
+  if (v == null || v === undefined || v === '') return null;
+  const num = parseFloat(v);
+  if (isNaN(num)) return null;
+  return num <= 1 ? num * 100 : num;
+}
+
+// FIX #2: Gate Failure Attribution - Compute client-side
+function computeFailedGate(d) {
+  const data = getDecisionData(d);
+  const gate1 = toPercent(data.micro_confidence) >= 45;
+  const gate15 = data.micro_has_lag === true || data.micro_has_lag === 'true';
+  const gate2 = data.ev_recommended === 'TRADE';
+  const gate25 = toPercent(data.ev_adjusted) >= 3;
+  const gate3 = data.ema_confirmation === true || data.ema_confirmation === 'ALIGNED' || data.ema_confirmation === 'aligned';
+
+  if (!gate1) return 'G1';
+  if (!gate15) return 'G1.5';
+  if (!gate2) return 'G2';
+  if (!gate25) return 'G2.5';
+  if (!gate3) return 'G3';
+  return null; // all passed
+}
+
 // ── API ───────────────────────────────────────────────────────────────────
 async function req(method, path, body) {
   const opts = {method, headers:{'Content-Type':'application/json'}};
@@ -1027,7 +1102,7 @@ async function refreshSignals() {
       req('GET','/api/bot/decisions?limit=100')
     ]);
     if(status.market_data) updateMarketSnapshot(status.market_data,status);
-    renderDecisions(decisions);
+    await renderDecisions(decisions);
   } catch(e){
     console.error('Signal refresh error:', e.message);
   }
@@ -1071,7 +1146,7 @@ function updateMarketSnapshot(md,status) {
   setMon('m-mode', status.paper_trading===false?'LIVE 💰':'PAPER 📄', status.paper_trading===false?'dn':'nt');
 }
 
-function renderDecisions(decisions) {
+async function renderDecisions(decisions) {
   const feed=document.getElementById('dec-feed');
   if(!decisions.length){
     feed.innerHTML='<div class="empty">No decisions yet — start the bot to see signal evaluations</div>';
@@ -1086,15 +1161,22 @@ function renderDecisions(decisions) {
   fset('fs-wait',w+' ('+pct(w)+')');
   fset('fs-skip',s+' ('+pct(s)+')');
 
+  // Render Phase A Metrics
+  renderPhaseAMetrics(decisions);
+
+  // Render Phase A badge
+  await renderPhaseABadge();
+
   feed.innerHTML = decisions.map(d=>{
-    // Backend logs these fields in decision.data:
-    // btc_price, window_open, window_pct, window_delta_score,
-    // momentum_score, accel_score, ema_score, rsi, vol_score, tick_score,
-    // total_score, confidence, time_to_res, entry_price, size
-    const data = typeof d.data==='string'?JSON.parse(d.data):(d.data||{});
+    const data = getDecisionData(d);
+
+    // Parse gate status from decision data and reason
+    const gates = parseGateStatus(d);
+
     const dir = d.direction
       ? `<span class="badge ${d.direction==='UP'?'badge-green':'badge-red'}" style="font-size:9px;padding:1px 6px">${d.direction==='UP'?'▲':'▼'} ${d.direction}</span> `
       : '';
+
     const chips = [
       data.btc_price     ? ['BTC','$'+data.btc_price] : null,
       data.window_open   ? ['Open','$'+data.window_open] : null,
@@ -1106,15 +1188,252 @@ function renderDecisions(decisions) {
       data.time_to_res   ? ['⏱',data.time_to_res] : null,
     ].filter(Boolean);
     const meta = chips.map(([k,v])=>`<span class="dec-chip">${k} <span>${v}</span></span>`).join('');
-    return `<div class="dec-item">
-      <div class="dec-verdict v-${d.verdict}">${d.verdict}</div>
-      <div class="dec-body">
-        <div class="dec-reason">${dir}${d.reason||'—'}</div>
-        <div class="dec-meta">${meta}</div>
+
+    // Build gates HTML if gates are present with detailed info
+    const gatesHtml = gates.length > 0
+      ? `<div class="dec-gates">${gates.map(g => `
+        <div class="dec-gate ${g.status}" title="${g.detail || ''}">
+          <span class="dec-gate-label">${g.name}</span>
+          <span class="dec-gate-badge">${g.status === 'pass' ? '✅ PASS' : g.status === 'fail' ? '❌ FAIL' : '⚠ WARN'}</span>
+          ${g.detail ? `<span style="font-size:9px;color:var(--muted);margin-left:auto">${g.detail}</span>` : ''}
+        </div>
+      `).join('')}</div>`
+      : '';
+
+    // Extract skip reason from decision reason field
+    let skipReason = '';
+    if (d.verdict === 'SKIP' && d.reason) {
+      const match = d.reason.match(/Gate \d(?:\.\d)?\s*(?:FAILED|failed)?:?\s*([^,\.]+)/);
+      skipReason = match ? match[1].trim() : d.reason.substring(0, 60);
+    }
+
+    return `<div class="dec-item row-${d.verdict}">
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <div class="dec-verdict v-${d.verdict}">${d.verdict}</div>
+        <div class="dec-body" style="flex:1">
+          <div class="dec-header">
+            <div class="dec-reason">${dir}${d.reason||'—'}</div>
+            <div class="dec-time">${new Date(d.created_at).toLocaleTimeString()}</div>
+          </div>
+          ${gatesHtml}
+          <div class="dec-meta">${meta}</div>
+        </div>
       </div>
-      <div class="dec-time">${new Date(d.created_at).toLocaleTimeString()}</div>
     </div>`;
   }).join('');
+}
+
+function parseGateStatus(decision) {
+  const gates = [];
+  const data = getDecisionData(decision);
+
+  // Use client-side computed gate failure instead of trusting backend
+  const failedGate = computeFailedGate(decision);
+
+  // Gate 1: Microstructure (micro.confidence + micro.hasMarketLag)
+  if (data.micro_confidence !== undefined) {
+    const microConfPct = toPercent(data.micro_confidence);
+    const hasLag = data.micro_has_lag === true || data.micro_has_lag === 'true';
+    const confPass = microConfPct >= 45;
+    const lagPass = hasLag;
+    const gatePass = confPass && lagPass;
+
+    gates.push({
+      name: 'Gate 1: Microstructure',
+      status: gatePass && failedGate !== 'G1' ? 'pass' : failedGate === 'G1' ? 'fail' : 'pass',
+      detail: `Conf: ${microConfPct?.toFixed(1) || '—'}% ${confPass?'✓':'✗'} | Lag: ${lagPass?'Yes':'No'} ${lagPass?'✓':'✗'}`
+    });
+  }
+
+  // Gate 1.5: Market Lag Gate (standalone gate)
+  if (data.micro_has_lag !== undefined) {
+    const hasLag = data.micro_has_lag === true || data.micro_has_lag === 'true';
+    gates.push({
+      name: 'Gate 1.5: Market Lag',
+      status: hasLag && failedGate !== 'G1.5' ? 'pass' : failedGate === 'G1.5' ? 'fail' : 'pass',
+      detail: `Lag detected: ${hasLag ? 'YES ✓' : 'NO ✗'}`
+    });
+  }
+
+  // Gate 2: EV Recommendation
+  if (data.ev_recommended !== undefined) {
+    const evRecOk = data.ev_recommended === 'TRADE';
+    gates.push({
+      name: 'Gate 2: EV Recommendation',
+      status: evRecOk && failedGate !== 'G2' ? 'pass' : failedGate === 'G2' ? 'fail' : 'pass',
+      detail: `Recommendation: ${data.ev_recommended || 'N/A'} ${evRecOk ? '✓' : '✗'}`
+    });
+  }
+
+  // Gate 2.5: EV Adjusted Threshold
+  if (data.ev_adjusted !== undefined) {
+    const evAdjPct = toPercent(data.ev_adjusted);
+    const evPass = evAdjPct >= 3;
+
+    gates.push({
+      name: 'Gate 2.5: EV Adjusted',
+      status: evPass && failedGate !== 'G2.5' ? 'pass' : failedGate === 'G2.5' ? 'fail' : 'pass',
+      detail: `EV: ${evAdjPct?.toFixed(2) || '—'}% vs 3% threshold ${evPass ? '✓' : '✗'}`
+    });
+  }
+
+  // Gate 3: EMA Confirmation
+  if (data.ema_confirmation !== undefined) {
+    const aligned = data.ema_confirmation === true || data.ema_confirmation === 'ALIGNED' || data.ema_confirmation === 'aligned';
+    gates.push({
+      name: 'Gate 3: EMA Confirmation',
+      status: aligned && failedGate !== 'G3' ? 'pass' : failedGate === 'G3' ? 'fail' : 'pass',
+      detail: `EMA: ${aligned ? 'ALIGNED ✓' : 'MISALIGNED ✗'}`
+    });
+  }
+
+  return gates;
+}
+
+async function renderPhaseABadge() {
+  const container = document.getElementById('phase-a-badge-container');
+  if (!container) return;
+
+  // FIX #6: Dry-Run Indicator Badge
+  let isDryRun = false;
+  try {
+    const botSettings = await req('GET', '/api/bot/settings');
+    isDryRun = botSettings.paper_trading === true;
+  } catch(e) {
+    console.log('Could not load bot settings for dry-run check');
+  }
+
+  const dryRunHtml = isDryRun ? '<div style="color:var(--yellow);margin-top:6px;font-size:10px">⚠ DRY RUN (NO EXECUTION)</div>' : '';
+
+  container.innerHTML = `
+    <div class="phase-a-badge">
+      <span style="font-size:12px">⚙</span> 3-Gate Strategy ACTIVE${dryRunHtml}
+    </div>
+  `;
+}
+
+function renderPhaseAMetrics(decisions) {
+  const container = document.getElementById('phase-a-metrics-container');
+  if (!container || !decisions.length) return;
+
+  // FIX #3: Use sliding window of last 100 decisions
+  const recent = decisions.slice(-100);
+  const total = recent.length;
+  const traded = recent.filter(d => d.verdict === 'TRADE').length;
+  const skipped = recent.filter(d => d.verdict === 'SKIP').length;
+  const skipRate = total > 0 ? Math.round(skipped / total * 100) : 0;
+
+  // FIX #4: EV histogram - TRADES ONLY
+  const trades = recent.filter(d => d.verdict === 'TRADE');
+  const evValues = trades
+    .map(d => {
+      const data = getDecisionData(d);
+      return toPercent(data.ev_adjusted);
+    })
+    .filter(v => v !== null);
+
+  const avgEvAdj = evValues.length > 0
+    ? (evValues.reduce((a, b) => a + b, 0) / evValues.length).toFixed(2)
+    : 0;
+
+  // FIX #5: Market lag metric - Better definition (two metrics)
+  const lagDetections = recent.filter(d => getDecisionData(d).micro_has_lag === true || getDecisionData(d).micro_has_lag === 'true').length;
+  const lagRate = total > 0 ? Math.round(lagDetections / total * 100) : 0;
+
+  // Lag hits that passed Gate 1
+  const lagPassedG1 = recent.filter(d => {
+    const data = getDecisionData(d);
+    return (data.micro_has_lag === true || data.micro_has_lag === 'true') && toPercent(data.micro_confidence) >= 45;
+  }).length;
+
+  // EV distribution histogram buckets - TRADES ONLY
+  const evBuckets = {
+    '0-3%': 0,
+    '3-5%': 0,
+    '5-10%': 0,
+    '10%+': 0
+  };
+  evValues.forEach(v => {
+    if (v < 3) evBuckets['0-3%']++;
+    else if (v < 5) evBuckets['3-5%']++;
+    else if (v < 10) evBuckets['5-10%']++;
+    else evBuckets['10%+']++;
+  });
+
+  const maxBucket = Math.max(...Object.values(evBuckets)) || 1;
+  const histogramHtml = `
+    <div class="ev-histogram">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px">EV Adjusted Distribution (Trades Only, ${trades.length} trades)</div>
+      <div class="histogram-bars">
+        ${Object.entries(evBuckets).map(([label, count]) => `
+          <div style="flex:1">
+            <div class="histogram-bar" style="height:${(count/maxBucket)*100}%;" title="${label}: ${count} trades"></div>
+            <div class="histogram-label">${label}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  // FIX #7: Gate Failure Breakdown Chart
+  const gateBreakdown = {G1: 0, G1_5: 0, G2: 0, G2_5: 0, G3: 0, PASSED: 0};
+  recent.forEach(d => {
+    const failed = computeFailedGate(d);
+    if (failed === 'G1') gateBreakdown.G1++;
+    else if (failed === 'G1.5') gateBreakdown.G1_5++;
+    else if (failed === 'G2') gateBreakdown.G2++;
+    else if (failed === 'G2.5') gateBreakdown.G2_5++;
+    else if (failed === 'G3') gateBreakdown.G3++;
+    else gateBreakdown.PASSED++;
+  });
+  const maxGateBucket = Math.max(...Object.values(gateBreakdown)) || 1;
+  const gateBreakdownHtml = `
+    <div class="gate-breakdown">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px">Gate Failure Breakdown (Last 100)</div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px">
+        ${Object.entries(gateBreakdown).map(([gate, count]) => {
+          const pct = total > 0 ? Math.round(count / total * 100) : 0;
+          return `<div style="text-align:center">
+            <div class="histogram-bar" style="height:${(count/maxGateBucket)*100}%;margin-bottom:4px;background:${gate==='PASSED'?'var(--accent)':'var(--red)'}"></div>
+            <div class="histogram-label">${gate}</div>
+            <div style="font-size:9px;color:var(--muted)">${pct}%</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+
+  // Determine color coding for each metric
+  const skipRateStatus = skipRate >= 85 ? 'pass' : skipRate >= 70 ? 'warn' : 'fail';
+  const evStatus = avgEvAdj >= 3 && avgEvAdj <= 10 ? 'pass' : 'warn';
+  const lagStatus = lagRate >= 10 && lagRate <= 20 ? 'pass' : lagRate >= 5 ? 'warn' : 'fail';
+
+  container.innerHTML = `
+    <div class="metrics-grid">
+      <div class="metric-card metric-${skipRateStatus}">
+        <div class="metric-label">Skip Rate (Quality Gate)</div>
+        <div class="metric-value">${skipRate}%</div>
+        <div class="metric-target" style="color:${skipRateStatus==='pass'?'var(--accent)':skipRateStatus==='warn'?'var(--yellow)':'var(--red)'}">Target: ≥85% (now: ${skipRateStatus==='pass'?'✓ GOOD':skipRateStatus==='warn'?'⚠ MARGINAL':'✗ LOOSE'})</div>
+      </div>
+      <div class="metric-card metric-${evStatus}">
+        <div class="metric-label">Avg EV Adjusted</div>
+        <div class="metric-value">${avgEvAdj}%</div>
+        <div class="metric-target" style="color:${evStatus==='pass'?'var(--accent)':'var(--yellow)'}">Target: 3–10% (now: ${evStatus==='pass'?'✓ IN RANGE':'⚠ OUT OF RANGE'})</div>
+      </div>
+      <div class="metric-card metric-${lagStatus}">
+        <div class="metric-label">Market Lag Detection</div>
+        <div class="metric-value">${lagRate}%</div>
+        <div class="metric-target" style="color:${lagStatus==='pass'?'var(--accent)':lagStatus==='warn'?'var(--yellow)':'var(--red)'}">Target: 10–20% | Passed G1: ${lagPassedG1} (now: ${lagStatus==='pass'?'✓ GOOD':lagStatus==='warn'?'⚠ LOW':'✗ VERY LOW'})</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Trades Executed</div>
+        <div class="metric-value" style="color:var(--accent2)">${traded}/${total}</div>
+        <div class="metric-target">Ratio: ${total > 0 ? ((traded/total)*100).toFixed(1)+'%' : 'No signals'}</div>
+      </div>
+    </div>
+    ${histogramHtml}
+    ${gateBreakdownHtml}
+  `;
 }
 
 // ── TRADES ────────────────────────────────────────────────────────────────
@@ -1154,6 +1473,23 @@ function renderLiveTrades(data) {
     const statusText = t.result ? (t.result === 'WIN' ? '✅ WIN' : '❌ LOSS') : '⏳ OPEN';
     const timeStr = new Date(t.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
 
+    // Parse gate data from trade
+    const tradeData = getDecisionData(t);
+    const microConfPct = toPercent(tradeData.micro_confidence);
+    const evAdjPct = toPercent(tradeData.ev_adjusted);
+    const modelProb = toPercent(t.market_prob);
+    const emaScore = tradeData.ema_score ? parseFloat(tradeData.ema_score) : null;
+
+    const gateDetails = (microConfPct || evAdjPct || emaScore)
+      ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1);font-size:10px">
+          <div style="color:var(--muted);margin-bottom:4px">Gate Data:</div>
+          ${microConfPct ? `<div><span style="color:var(--muted)">Micro Conf:</span> <span>${microConfPct.toFixed(1)}%</span></div>` : ''}
+          ${evAdjPct ? `<div><span style="color:var(--muted)">EV Adjusted:</span> <span>${evAdjPct.toFixed(2)}%</span></div>` : ''}
+          ${modelProb ? `<div><span style="color:var(--muted)">Model Prob:</span> <span>${modelProb.toFixed(1)}%</span></div>` : ''}
+          ${emaScore ? `<div><span style="color:var(--muted)">EMA Score:</span> <span>${emaScore.toFixed(2)}</span></div>` : ''}
+        </div>`
+      : '';
+
     return `<div class="trade-card ${t.result ? 'closed' : 'live'}">
       <div class="trade-header">
         <div class="trade-dir ${isUp ? 'up' : 'down'}">${isUp ? '▲' : '▼'}</div>
@@ -1180,18 +1516,20 @@ function renderLiveTrades(data) {
         <span class="trade-value trade-pnl ${isPnlPositive ? 'positive' : 'negative'}">${isPnlPositive ? '+' : ''}$${Math.abs(parseFloat(t.pnl)).toFixed(2)}</span>
       </div>` : ''}
       <span class="trade-status ${statusClass}">${statusText}</span>
+      ${gateDetails}
     </div>`;
   }).join('');
 }
 
 function renderTrades(data) {
   const tb=document.getElementById('trades-body');
-  if(!data.trades.length){tb.innerHTML='<tr><td colspan="9" class="empty">No trades yet</td></tr>';return;}
-  tb.innerHTML=data.trades.map(t=>{
+  if(!data.trades.length){tb.innerHTML='<tr><td colspan="10" class="empty">No trades yet</td></tr>';return;}
+  tb.innerHTML=data.trades.map((t,idx)=>{
     const dir=t.direction==='UP'?'<span class="badge badge-green">▲ UP</span>':'<span class="badge badge-red">▼ DOWN</span>';
     const res=t.result?`<span class="badge ${t.result==='WIN'?'badge-green':'badge-red'}">${t.result}</span>`:'<span class="badge badge-yellow">OPEN</span>';
     const pnl=t.pnl!=null?`<span class="mono ${parseFloat(t.pnl)>=0?'positive':'negative'}">${fmtPnl(t.pnl)}</span>`:'—';
     const mode=t.paper?'<span class="badge badge-yellow" style="font-size:9px">PAPER</span>':'<span class="badge badge-blue" style="font-size:9px">LIVE</span>';
+    const detailId=`trade-detail-${idx}`;
     return `<tr>
       <td class="mono muted">${new Date(t.created_at).toLocaleString()}</td>
       <td>${mode}</td><td>${dir}</td>
@@ -1200,13 +1538,62 @@ function renderTrades(data) {
       <td class="mono">${t.market_prob?(parseFloat(t.market_prob)*100).toFixed(1)+'%':'—'}</td>
       <td class="mono">${t.expected_value?(parseFloat(t.expected_value)*100).toFixed(1)+'%':'—'}</td>
       <td>${res}</td><td>${pnl}</td>
-    </tr>`;
+      <td style="text-align:center"><button class="btn btn-ghost btn-sm" onclick="toggleTradeDetail('${detailId}')">⋮</button></td>
+    </tr>
+    <tr id="${detailId}" class="hidden"><td colspan="10" style="padding:0">
+      <div style="background:var(--bg2);padding:12px;margin:0 14px 0 14px;border-radius:4px;font-size:12px">
+        ${buildTradeDetailPanel(t)}
+      </div>
+    </td></tr>`;
   }).join('');
   const pg=document.getElementById('pagination');
   pg.innerHTML=data.pages>1?`
     <button class="btn btn-ghost btn-sm" onclick="loadTrades(${currentPage-1})" ${currentPage===1?'disabled':''}>← Prev</button>
     <span class="mono muted">Page ${currentPage}/${data.pages}</span>
     <button class="btn btn-ghost btn-sm" onclick="loadTrades(${currentPage+1})" ${currentPage===data.pages?'disabled':''}>Next →</button>`:'';
+}
+
+function toggleTradeDetail(detailId) {
+  const el = document.getElementById(detailId);
+  if (el) el.classList.toggle('hidden');
+}
+
+function buildTradeDetailPanel(t) {
+  const tradeData = getDecisionData(t);
+  const microConfPct = toPercent(tradeData.micro_confidence);
+  const evAdjPct = toPercent(tradeData.ev_adjusted);
+  const modelProbPct = toPercent(t.market_prob);
+  const emaScore = tradeData.ema_score ? parseFloat(tradeData.ema_score) : null;
+  const emaConf = tradeData.ema_confirmation || null;
+
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px">
+      <div>
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;margin-bottom:4px">Micro Confidence</div>
+        <div style="color:var(--accent);font-weight:700;font-family:var(--mono)">${microConfPct ? microConfPct.toFixed(1)+'%' : '—'}</div>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;margin-bottom:4px">EV Adjusted</div>
+        <div style="color:var(--accent);font-weight:700;font-family:var(--mono)">${evAdjPct ? evAdjPct.toFixed(2)+'%' : '—'}</div>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;margin-bottom:4px">Model Probability</div>
+        <div style="color:var(--accent);font-weight:700;font-family:var(--mono)">${modelProbPct ? modelProbPct.toFixed(1)+'%' : '—'}</div>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;margin-bottom:4px">Direction</div>
+        <div style="color:${t.direction==='UP'?'var(--accent)':'var(--red)'};font-weight:700;font-family:var(--mono)">${t.direction === 'UP' ? '▲ UP' : '▼ DOWN'}</div>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;margin-bottom:4px">EMA Score</div>
+        <div style="color:var(--accent);font-weight:700;font-family:var(--mono)">${emaScore ? emaScore.toFixed(2) : '—'}</div>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:10px;text-transform:uppercase;margin-bottom:4px">EMA Status</div>
+        <div style="color:var(--accent);font-weight:700;font-family:var(--mono)">${emaConf || '—'}</div>
+      </div>
+    </div>
+  `;
 }
 
 function renderBreakdown(b) {
