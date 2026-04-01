@@ -130,17 +130,28 @@ class CopyBotInstance {
   }
 
   async _fetchTargetTrades(address, sinceTs) {
+    // Back off for 5 min after a 401 to avoid log spam
+    const backoffKey = `401:${address}`;
+    const backoffUntil = this._fetchBackoff?.get(backoffKey) || 0;
+    if (Date.now() < backoffUntil) return [];
+
     try {
-      // Build query params
       let params = `?maker_address=${address}&limit=100`;
       if (sinceTs && sinceTs > 0) {
-        params += `&min_timestamp=${sinceTs.getTime()}`;
+        const ts = sinceTs instanceof Date ? sinceTs.getTime() : sinceTs;
+        params += `&min_timestamp=${ts}`;
       }
 
       const response = await axios.get(`${CLOB_API}/data/trades${params}`, { timeout: 10000 });
       return response.data || [];
     } catch(e) {
-      this._log('WARN', `Failed to fetch trades for ${address}: ${e.message}`);
+      if (e.response?.status === 401) {
+        if (!this._fetchBackoff) this._fetchBackoff = new Map();
+        this._fetchBackoff.set(backoffKey, Date.now() + 5 * 60 * 1000);
+        this._log('WARN', `Fetch trades 401 for ${address} — backing off 5 min (CLOB API auth required)`);
+      } else {
+        this._log('WARN', `Failed to fetch trades for ${address}: ${e.message}`);
+      }
       return [];
     }
   }
