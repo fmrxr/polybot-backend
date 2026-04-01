@@ -26,12 +26,14 @@ class PolymarketFeed {
   }
 
   async init() {
+    console.log(`[PolymarketFeed] init() called for address ${this.address}`);
     try {
       // Dynamic import for ESM module
+      console.log(`[PolymarketFeed] Attempting to import SDK modules...`);
       const { ClobClient, OrderType, Side } = await import('@polymarket/clob-client');
       this.OrderType = OrderType;
       this.Side = Side;
-      console.log(`[PolymarketFeed] SDK modules imported`);
+      console.log(`[PolymarketFeed] ✅ SDK modules imported`);
 
       // Step 1: Create temp client to derive L2 API credentials
       try {
