@@ -261,10 +261,15 @@ class PolymarketFeed {
         this.OrderType.GTC  // Good-Til-Cancelled order type
       );
 
-      console.log(`[PolymarketFeed] Order response:`, JSON.stringify(response, null, 2));
+      console.log(`[PolymarketFeed] Full order response:`, JSON.stringify(response, null, 2));
+      console.log(`[PolymarketFeed] Response keys:`, Object.keys(response || {}));
+      console.log(`[PolymarketFeed] Response.success:`, response?.success);
+      console.log(`[PolymarketFeed] Response.errorMsg:`, response?.errorMsg);
 
       if (!response || !response.success) {
-        console.error('[PolymarketFeed] Order rejected by CLOB:', response?.errorMsg || 'Unknown error');
+        console.error('[PolymarketFeed] Order rejected by CLOB');
+        console.error('[PolymarketFeed] Error message:', response?.errorMsg || 'None');
+        console.error('[PolymarketFeed] Full response body:', response);
       }
 
       return {
