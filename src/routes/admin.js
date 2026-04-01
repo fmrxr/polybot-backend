@@ -114,7 +114,7 @@ router.post('/users/:id/toggle-bot', async (req, res) => {
         console.error('Bot start error:', e.message);
       }
     } else if (!newActive && botManager) {
-      botManager.stopBot(targetId);
+      await botManager.stopBot(targetId);
     }
 
     await logAdminAction(req.userId, newActive ? 'BOT_START' : 'BOT_STOP', targetId);

@@ -584,8 +584,8 @@ class BotInstance {
 
         if (shouldExit) {
           await pool.query(
-            `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2, exit_reason=$2 WHERE id=$3`,
-            [unrealizedPnL, exitReason, tradeId]
+            `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2, exit_reason=$3 WHERE id=$4`,
+            [unrealizedPnL, exitReason, exitReason, tradeId]
           );
           // Add back trade size + P&L to paper balance
           if (trade.paper) {

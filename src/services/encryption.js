@@ -4,7 +4,10 @@ const ALGORITHM = 'aes-256-gcm';
  
 // AES-256 requires exactly 32 bytes = 64 hex chars
 // We derive a 32-byte key from whatever is provided using SHA-256
-const raw = process.env.ENCRYPTION_KEY || 'polybot_default_key_please_change';
+const raw = process.env.ENCRYPTION_KEY;
+if (!raw) {
+  throw new Error('ENCRYPTION_KEY environment variable is required. Set it in your deployment env vars.');
+}
 const KEY = crypto.createHash('sha256').update(raw).digest(); // always exactly 32 bytes
  
 function encrypt(text) {

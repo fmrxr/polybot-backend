@@ -111,9 +111,9 @@ router.get('/dashboard', async (req, res) => {
     const walletAddress = settingsResult.rows[0]?.polymarket_wallet_address || null;
 
     let balance = null;
-    if (walletAddress && global.botManager && global.botManager.bots) {
+    if (walletAddress && global.botManager && global.botManager.instances) {
       try {
-        const bot = global.botManager.bots.get(req.userId);
+        const bot = global.botManager.instances.get(req.userId);
         if (bot && bot.polymarket && bot.polymarket.getBalance) {
           balance = await bot.polymarket.getBalance();
         }

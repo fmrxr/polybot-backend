@@ -57,7 +57,7 @@ class BotManager {
   async stopCopyBot(userId) {
     const instance = this.copyInstances.get(userId);
     if (instance) {
-      instance.stop();
+      await instance.stop();
       this.copyInstances.delete(userId);
     }
   }

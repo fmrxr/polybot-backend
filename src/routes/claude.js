@@ -8,8 +8,6 @@ router.use(authMiddleware);
 
 // POST /api/claude/analyze - Trigger Claude AI analysis
 router.post('/analyze', async (req, res) => {
-  const token = localStorage?.getItem('token');
-
   try {
     // Get user's Claude settings
     const settingsResult = await pool.query(

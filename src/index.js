@@ -22,9 +22,6 @@ if (missingEnvs.length > 0) {
   console.error(`Missing required environment variables: ${missingEnvs.join(', ')}`);
   process.exit(1);
 }
-if (!process.env.ENCRYPTION_KEY) {
-  console.warn('⚠️  ENCRYPTION_KEY not set — using insecure default. Set this in Railway env vars!');
-}
 
 // Trust Railway proxy
 app.set('trust proxy', 1);
@@ -104,11 +101,13 @@ async function autoRestartBots() {
 
 // Seed admin user
 async function seedAdmin() {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) return;
   const { pool } = require('./models/db');
   try {
     await pool.query(
       'UPDATE users SET is_admin = true WHERE email = $1',
-      ['mereeffet@gmail.com']
+      [adminEmail.toLowerCase()]
     );
   } catch (e) {
     console.error('Admin seed error:', e.message);
