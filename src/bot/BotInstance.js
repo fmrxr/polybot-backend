@@ -294,8 +294,10 @@ class BotInstance {
   _fallbackSignal(btcData) {
     if (!this.engine.windowOpenPrice || !btcData.price) return null;
     const direction = btcData.price >= this.engine.windowOpenPrice ? 'UP' : 'DOWN';
-    const MIN_TRADE_SIZE = 1.0;
-    const size = Math.max(MIN_TRADE_SIZE, Math.min(parseFloat(this.settings.max_trade_size) * 0.25, parseFloat(this.settings.max_trade_size)));
+    const MIN_SHARES = 5; // Polymarket minimum
+    const entryPrice = 0.50; // Fallback entry price estimate
+    const minSize = MIN_SHARES * entryPrice; // Minimum size in dollars
+    const size = Math.max(minSize, Math.min(parseFloat(this.settings.max_trade_size) * 0.25, parseFloat(this.settings.max_trade_size)));
     return {
       direction,
       entry_price: 0.50,
@@ -311,11 +313,14 @@ class BotInstance {
   }
 
   async _executeTrade(signal, market, tokens, windowTs) {
-    const MIN_TRADE_SIZE = 1.0; // Polymarket minimum
+    const MIN_SHARES = 5; // Polymarket CLOB minimum: 5 shares per order
 
-    // Enforce minimum trade size
-    if (signal.size < MIN_TRADE_SIZE) {
-      this._log('WARN', `Trade size $${signal.size.toFixed(2)} below minimum $${MIN_TRADE_SIZE} — skipping`);
+    // Calculate shares from size (price-based entry)
+    const shares = signal.size / signal.entry_price;
+
+    // Enforce minimum share size
+    if (shares < MIN_SHARES) {
+      this._log('WARN', `Order size ${shares.toFixed(2)} shares below minimum ${MIN_SHARES} shares — skipping`);
       return;
     }
 
