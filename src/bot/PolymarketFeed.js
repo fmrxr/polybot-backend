@@ -259,10 +259,15 @@ class PolymarketFeed {
         expiration: 0,
         nonce: nonce
       };
-      const orderHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(orderData)));
-      const signature = await this.wallet.signMessage(ethers.getBytes(orderHash));
+
+      // Sign the order as a plain message (Polymarket expects wallet-signed orders)
+      const messageToSign = JSON.stringify(orderData);
+      const signature = await this.wallet.signMessage(messageToSign);
+
       const response = await axios.post(`${POLYMARKET_CLOB_API}/order`, {
-        ...orderData, maker_address: this.address, signature
+        ...orderData,
+        maker_address: this.address,
+        signature
       }, {
         headers: { 'Content-Type': 'application/json' },
         timeout: 10000
