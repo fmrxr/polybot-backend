@@ -879,10 +879,10 @@ function enterApp() {
 
   showTab('dashboard');
   refreshDashboard();
-  pollInterval = setInterval(()=>refreshDashboard(), 10000);
+  pollInterval = setInterval(()=>refreshDashboard(), 3000);
   signalInterval = setInterval(()=>{
     if(!document.getElementById('tab-signals').classList.contains('hidden')) refreshSignals();
-  }, 10000);
+  }, 3000);
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────

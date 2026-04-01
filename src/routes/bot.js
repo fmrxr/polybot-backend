@@ -79,12 +79,13 @@ router.get('/status', async (req, res) => {
 // GET /api/bot/logs
 router.get('/logs', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
+    // Get newest logs, then reverse to show chronologically (oldest at top, newest at bottom)
     const result = await pool.query(
-      'SELECT level, message, created_at FROM bot_logs WHERE user_id = $1 ORDER BY created_at ASC LIMIT $2',
+      'SELECT level, message, created_at FROM bot_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
       [req.userId, limit]
     );
-    res.json(result.rows);
+    res.json(result.rows.reverse());
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
