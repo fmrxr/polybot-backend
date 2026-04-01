@@ -1444,7 +1444,7 @@
               <select id="claudeModel" onchange="updateClaudeSetting()">
                 <option value="claude-opus-4-6">Claude Opus 4.6 (Best)</option>
                 <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
-                <option value="claude-haiku">Claude Haiku (Fast)</option>
+                <option value="claude-haiku-4-5-20251001">Claude Haiku (Fast)</option>
               </select>
               <div class="form-hint">Select Claude model for analysis quality vs speed</div>
             </div>
@@ -1457,6 +1457,7 @@
             </div>
 
             <button class="secondary" onclick="testClaudeConnection()" style="width: 100%; margin-bottom: 12px;">Test Claude Connection</button>
+            <button class="primary" onclick="saveClaudeSettings()" style="width: 100%; margin-bottom: 12px;">Save Claude Settings</button>
             <div style="padding: 12px; background: rgba(102, 51, 153, 0.2); border-radius: 4px; color: #9966ff; font-size: 13px;">
               <span id="claudeStatus">✗ API Key not configured</span>
             </div>
@@ -1869,6 +1870,14 @@
       if (settings.paper_trading !== undefined) document.getElementById('paperTradingEnabled').checked = settings.paper_trading;
       if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
       if (settings.min_edge) document.getElementById('minEdge').value = settings.min_edge;
+
+      // Claude settings
+      if (settings.claude_model) document.getElementById('claudeModel').value = settings.claude_model;
+      if (settings.auto_claude_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.auto_claude_analysis;
+      if (settings.has_claude_api_key) {
+        document.getElementById('claudeStatus').textContent = '✓ API Key saved';
+        document.getElementById('claudeStatus').style.color = 'var(--trade-green)';
+      }
     }
 
     function updateSliderValue(id) {
@@ -1892,6 +1901,35 @@
 
     function updateSetting() {}
     function updateClaudeSetting() {}
+
+    async function saveClaudeSettings() {
+      const token = localStorage.getItem('token');
+      const apiKeyVal = document.getElementById('claudeApiKey').value.trim();
+      const settings = {
+        claude_model: document.getElementById('claudeModel').value,
+        auto_claude_analysis: document.getElementById('autoClaudeAnalysis').checked
+      };
+      if (apiKeyVal) settings.claude_api_key = apiKeyVal;
+
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(settings)
+        });
+        if (res.ok) {
+          showAlert('Claude settings saved', 'success');
+          document.getElementById('claudeStatus').textContent = '✓ API Key saved';
+          document.getElementById('claudeStatus').style.color = 'var(--trade-green)';
+          document.getElementById('claudeApiKey').value = ''; // Clear field after save
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showAlert(err.error || 'Failed to save Claude settings', 'error');
+        }
+      } catch (err) {
+        showAlert('Error saving Claude settings', 'error');
+      }
+    }
 
     async function saveStrategySettings() {
       const token = localStorage.getItem('token');
