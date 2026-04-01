@@ -1,16 +1,15 @@
 const crypto = require('crypto');
- 
+
 const ALGORITHM = 'aes-256-gcm';
- 
-// AES-256 requires exactly 32 bytes = 64 hex chars
-// We derive a 32-byte key from whatever is provided using SHA-256
-const raw = process.env.ENCRYPTION_KEY;
-if (!raw) {
-  throw new Error('ENCRYPTION_KEY environment variable is required. Set it in your deployment env vars.');
+
+function getKey() {
+  const raw = process.env.ENCRYPTION_KEY;
+  if (!raw) throw new Error('ENCRYPTION_KEY environment variable is not set.');
+  return crypto.createHash('sha256').update(raw).digest();
 }
-const KEY = crypto.createHash('sha256').update(raw).digest(); // always exactly 32 bytes
- 
+
 function encrypt(text) {
+  const KEY = getKey();
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
   let encrypted = cipher.update(text, 'utf8', 'hex');
@@ -18,8 +17,9 @@ function encrypt(text) {
   const authTag = cipher.getAuthTag().toString('hex');
   return `${iv.toString('hex')}:${authTag}:${encrypted}`;
 }
- 
+
 function decrypt(encryptedData) {
+  const KEY = getKey();
   const [ivHex, authTagHex, encrypted] = encryptedData.split(':');
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
@@ -29,5 +29,5 @@ function decrypt(encryptedData) {
   decrypted += decipher.final('utf8');
   return decrypted;
 }
- 
+
 module.exports = { encrypt, decrypt };
