@@ -12,6 +12,8 @@ class PolymarketFeed {
     this.wallet = new ethers.Wallet(privateKey);
     this.address = this.wallet.address;
     this.clobClient = null;
+    this.OrderType = null;
+    this.Side = null;
     this.markets = new Map();
     this.activeMarkets = [];
     this.isConnected = false;
@@ -20,7 +22,9 @@ class PolymarketFeed {
   async init() {
     try {
       // Dynamic import for ESM module
-      const { ClobClient } = await import('@polymarket/clob-client');
+      const { ClobClient, OrderType, Side } = await import('@polymarket/clob-client');
+      this.OrderType = OrderType;
+      this.Side = Side;
 
       // Step 1: Create temp client to derive L2 API credentials
       const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
@@ -218,11 +222,12 @@ class PolymarketFeed {
         throw new Error('CLOB client not initialized — check API credentials');
       }
 
-      // Import OrderType enum for order submission
-      const { OrderType } = await import('@polymarket/clob-client');
+      if (!this.OrderType || !this.Side) {
+        throw new Error('SDK enums not initialized — call init() first');
+      }
 
       // Use official SDK to place order with proper authentication
-      const orderSide = side === 'BUY' ? 'BUY' : 'SELL';
+      const orderSide = side === 'BUY' ? this.Side.BUY : this.Side.SELL;
       const response = await this.clobClient.createAndPostOrder(
         {
           tokenID: tokenId,
@@ -234,7 +239,7 @@ class PolymarketFeed {
           tickSize: '0.01',
           negRisk: false
         },
-        OrderType.GTC  // Good-Til-Cancelled order type
+        this.OrderType.GTC  // Good-Til-Cancelled order type
       );
 
       return {
@@ -251,13 +256,15 @@ class PolymarketFeed {
   async getOrderStatus(orderId) {
     try {
       if (!this.clobClient) return null;
-      const orders = await this.clobClient.getOrdersForUser(this.address);
-      const order = orders.find(o => o.orderID === orderId || o.id === orderId);
+      // Use getOrder() to fetch single order, or getOpenOrders() to list all
+      const order = await this.clobClient.getOrder(orderId);
       if (!order) return null;
+      const originalSize = parseFloat(order.original_size || 0);
+      const matched = parseFloat(order.size_matched || 0);
       return {
         status: order.status || 'UNKNOWN',
-        size_matched: order.size_matched || order.matched || 0,
-        size_remaining: order.size_remaining || 0
+        size_matched: matched,
+        size_remaining: Math.max(0, originalSize - matched)
       };
     } catch (err) {
       throw new Error(`Order status check failed: ${err.message}`);
