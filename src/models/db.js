@@ -73,6 +73,9 @@ async function initDB() {
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS paper BOOLEAN DEFAULT false;
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_id VARCHAR(255);
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_status VARCHAR(20);
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS window_ts BIGINT;
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_type VARCHAR(20) DEFAULT 'gbm';
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS copy_source VARCHAR(255);
     `);
     console.log('✅ Database initialized');
   } finally {
@@ -111,4 +114,35 @@ async function addDecisionsTable() {
     client.release();
   }
 }
-module.exports = { pool, initDB, addDecisionsTable };
+
+// Copy trading schema — call after addDecisionsTable() on server start
+async function addCopyTradingSchema() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS copy_targets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        target_address VARCHAR(255) NOT NULL,
+        label VARCHAR(100),
+        is_active BOOLEAN DEFAULT true,
+        multiplier DECIMAL DEFAULT 1.0,
+        max_trade_size DECIMAL DEFAULT 20.0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, target_address)
+      );
+      CREATE INDEX IF NOT EXISTS idx_copy_targets_user ON copy_targets(user_id);
+
+      CREATE TABLE IF NOT EXISTS copy_target_state (
+        target_address VARCHAR(255) PRIMARY KEY,
+        last_trade_ts TIMESTAMPTZ,
+        last_checked_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('✅ Copy trading schema initialized');
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { pool, initDB, addDecisionsTable, addCopyTradingSchema };

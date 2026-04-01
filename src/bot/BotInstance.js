@@ -95,6 +95,9 @@ class BotInstance {
 
     await this.polymarket.fetchActiveBTCMarkets();
 
+    // Restore open trades from database (fixes orphaned trades on restart)
+    await this._reloadOpenTrades();
+
     this.isRunning = true;
     const mode = this.paperTrading ? '📄 PAPER TRADING' : '💰 LIVE TRADING';
     this._log('INFO', `Bot started [${mode}] for user ${this.userId}`);
@@ -293,6 +296,14 @@ class BotInstance {
 
   _fallbackSignal(btcData) {
     if (!this.engine.windowOpenPrice || !btcData.price) return null;
+
+    // Require minimum window movement — don't coin-flip on neutral price
+    const windowPct = Math.abs((btcData.price - this.engine.windowOpenPrice) / this.engine.windowOpenPrice * 100);
+    if (windowPct < 0.05) {
+      this._log('WARN', `Fallback skipped: price movement ${windowPct.toFixed(4)}% below 0.05% minimum`);
+      return null;
+    }
+
     const direction = btcData.price >= this.engine.windowOpenPrice ? 'UP' : 'DOWN';
     const MIN_SHARES = 5; // Polymarket minimum
     const entryPrice = 0.50; // Fallback entry price estimate
@@ -310,6 +321,32 @@ class BotInstance {
       confidence: 0.1,
       score: direction === 'UP' ? 0.1 : -0.1
     };
+  }
+
+  async _reloadOpenTrades() {
+    try {
+      const result = await pool.query(
+        `SELECT id, condition_id, direction, entry_price, size, paper, order_id, window_ts
+         FROM trades WHERE user_id=$1 AND result IS NULL AND resolved_at IS NULL`,
+        [this.userId]
+      );
+      for (const row of result.rows) {
+        this.openTrades.set(row.id, {
+          conditionId: row.condition_id,
+          direction: row.direction,
+          entryPrice: parseFloat(row.entry_price),
+          size: parseFloat(row.size),
+          paper: row.paper,
+          orderId: row.order_id,
+          windowTs: row.window_ts
+        });
+      }
+      if (result.rows.length > 0) {
+        this._log('INFO', `Reloaded ${result.rows.length} open trade(s) from database`);
+      }
+    } catch(e) {
+      this._log('ERROR', `Failed to reload open trades: ${e.message}`);
+    }
   }
 
   async _executeTrade(signal, market, tokens, windowTs) {
@@ -343,10 +380,10 @@ class BotInstance {
     if (this.paperTrading) {
       try {
         const result = await pool.query(
-          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',NOW()) RETURNING id`,
+          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, window_ts, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',$10,NOW()) RETURNING id`,
           [this.userId, market.conditionId, signal.direction, signal.entry_price, signal.size,
-           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee]
+           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, windowTs]
         );
         const tradeId = result.rows[0].id;
         this.openTrades.set(tradeId, {
@@ -387,10 +424,10 @@ class BotInstance {
       }
 
       const result = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,NOW()) RETURNING id`,
+        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,NOW()) RETURNING id`,
         [this.userId, market.conditionId, signal.direction, signal.entry_price, confirmedSize,
-         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus]
+         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs]
       );
       const tradeId = result.rows[0].id;
       this.openTrades.set(tradeId, {

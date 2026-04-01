@@ -51,6 +51,13 @@ class GBMSignalEngine {
 
     if (!currentPrice || priceHistory.length < 5) return null;
 
+    // Don't evaluate in first 60 seconds of window — delta is not meaningful yet
+    if (timeToResolutionSec > 240) {
+      const log = { timestamp: new Date().toISOString(), verdict: 'WAIT', reason: `Too early in window (${(300-timeToResolutionSec).toFixed(0)}s elapsed) — waiting for delta to form` };
+      this._emit(log);
+      return null;
+    }
+
     // Update window open tracking — use Chainlink as ground truth when available
     this.updateWindowOpen(currentPrice, chainlinkPrice);
 
@@ -176,9 +183,18 @@ class GBMSignalEngine {
       return null;
     }
 
-    // Kelly sizing based on confidence
-    const prob = 0.5 + confidence * 0.35; // Map confidence to win probability estimate
+    // Gate on absolute score — only trade with clear directional signal
+    const minAbsScore = 3.0;
+    if (Math.abs(score) < minAbsScore) {
+      log.verdict = 'SKIP';
+      log.reason = `Score |${score.toFixed(1)}| below minimum |${minAbsScore}| — weak signal`;
+      this._emit(log);
+      return null;
+    }
+
+    // Kelly sizing based on entry price
     const entryPrice = this._estimateTokenPrice(Math.abs(score));
+    const prob = entryPrice; // Token price IS the implied win probability
     const b = (1 / entryPrice) - 1;
     const kellyFraction = Math.max(0, (prob * b - (1 - prob)) / b);
     const size = Math.min(kellyFraction * kelly_cap * max_trade_size, max_trade_size);
