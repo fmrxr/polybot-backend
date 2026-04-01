@@ -22,19 +22,18 @@ class PolymarketFeed {
       // Dynamic import for ESM module
       const { ClobClient } = await import('@polymarket/clob-client');
 
-      // Initialize CLOB client and derive API credentials
+      // Initialize CLOB client with wallet signer
+      // The wallet address is automatically derived from the signer
       this.clobClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
-      const apiCreds = await this.clobClient.createOrDeriveApiKey();
 
-      // Reinitialize client with derived credentials
-      this.clobClient = new ClobClient(
-        POLYMARKET_CLOB_API,
-        CHAIN_ID,
-        this.wallet,
-        apiCreds,
-        0, // EOA wallet type
-        this.address
-      );
+      // Derive API credentials (optional — allows API-key auth fallback)
+      try {
+        await this.clobClient.createOrDeriveApiKey();
+        console.log(`[PolymarketFeed] API credentials derived`);
+      } catch(e) {
+        console.log(`[PolymarketFeed] Could not derive API credentials (will use wallet signature): ${e.message}`);
+      }
+
       this.isConnected = true;
       console.log(`[PolymarketFeed] Initialized with address ${this.address}`);
     } catch(e) {
