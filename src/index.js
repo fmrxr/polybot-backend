@@ -3,7 +3,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const { initDB, addDecisionsTable, addCopyTradingSchema } = require('./models/db');
+const { initDB, addDecisionsTable, addCopyTradingSchema, addWhalePerformanceSchema } = require('./models/db');
 const authRoutes = require('./routes/auth');
 const botRoutes = require('./routes/bot');
 const tradesRoutes = require('./routes/trades');
@@ -113,6 +113,7 @@ async function start() {
   await initDB();
   await addDecisionsTable();
   await addCopyTradingSchema();
+  await addWhalePerformanceSchema();
   await seedAdmin();
   await autoRestartBots();
   app.listen(PORT, () => {

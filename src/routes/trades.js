@@ -98,4 +98,85 @@ router.get('/breakdown', async (req, res) => {
   }
 });
 
+// GET /api/trades/stats — Pro metrics: Sharpe, max drawdown, expectancy, profit factor, streak
+router.get('/stats', async (req, res) => {
+  try {
+    // Fetch all resolved trades ordered by time
+    const result = await pool.query(`
+      SELECT pnl, result, created_at, size
+      FROM trades
+      WHERE user_id = $1 AND result IS NOT NULL AND pnl IS NOT NULL
+      ORDER BY created_at ASC
+    `, [req.userId]);
+
+    const trades = result.rows;
+    if (!trades.length) {
+      return res.json({ sharpe: 0, max_drawdown: 0, expectancy: 0,
+        win_streak: 0, loss_streak: 0, total_trades: 0, profit_factor: 0,
+        avg_win: 0, avg_loss: 0, win_rate: 0 });
+    }
+
+    // Expectancy = (winRate * avgWin) - (lossRate * avgLoss)
+    const wins = trades.filter(t => t.result === 'WIN');
+    const losses = trades.filter(t => t.result === 'LOSS');
+    const winRate = wins.length / trades.length;
+    const avgWin = wins.length > 0
+      ? wins.reduce((s, t) => s + parseFloat(t.pnl), 0) / wins.length
+      : 0;
+    const avgLoss = losses.length > 0
+      ? Math.abs(losses.reduce((s, t) => s + parseFloat(t.pnl), 0) / losses.length)
+      : 0;
+    const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
+
+    // Sharpe Ratio = mean(returns) / std(returns) * sqrt(N)
+    const pnls = trades.map(t => parseFloat(t.pnl));
+    const mean = pnls.reduce((s, p) => s + p, 0) / pnls.length;
+    const variance = pnls.reduce((s, p) => s + Math.pow(p - mean, 2), 0) / pnls.length;
+    const stdDev = Math.sqrt(variance);
+    const sharpe = stdDev > 0 ? (mean / stdDev) * Math.sqrt(pnls.length) : 0;
+
+    // Max Drawdown: peak-to-trough on cumulative P&L curve
+    let peak = 0, cumPnl = 0, maxDrawdown = 0;
+    for (const pnl of pnls) {
+      cumPnl += pnl;
+      if (cumPnl > peak) peak = cumPnl;
+      const drawdown = peak - cumPnl;
+      if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+    }
+
+    // Current streak
+    let winStreak = 0, lossStreak = 0;
+    for (let i = trades.length - 1; i >= 0; i--) {
+      if (trades[i].result === 'WIN') {
+        if (lossStreak === 0) winStreak++;
+        else break;
+      } else {
+        if (winStreak === 0) lossStreak++;
+        else break;
+      }
+    }
+
+    // Profit factor = gross wins / gross losses
+    const grossWins = wins.reduce((s, t) => s + parseFloat(t.pnl), 0);
+    const grossLosses = Math.abs(losses.reduce((s, t) => s + parseFloat(t.pnl), 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+
+    res.json({
+      sharpe: parseFloat(sharpe.toFixed(3)),
+      max_drawdown: parseFloat(maxDrawdown.toFixed(2)),
+      expectancy: parseFloat(expectancy.toFixed(3)),
+      win_streak: winStreak,
+      loss_streak: lossStreak,
+      profit_factor: parseFloat(Math.min(profitFactor, 99).toFixed(2)),
+      avg_win: parseFloat(avgWin.toFixed(2)),
+      avg_loss: parseFloat(avgLoss.toFixed(2)),
+      total_trades: trades.length,
+      win_rate: parseFloat((winRate * 100).toFixed(1))
+    });
+  } catch(err) {
+    console.error('Stats error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

@@ -3,9 +3,11 @@ const { PolymarketFeed } = require('./PolymarketFeed');
 const { decrypt } = require('../services/encryption');
 const { pool } = require('../models/db');
 
-const POLL_INTERVAL_MS = 30000; // Poll every 30s
+const POLL_INTERVAL_MS = 5000; // Poll every 5s (was 30s)
 const CLOB_API = 'https://clob.polymarket.com';
 const MAX_SLIPPAGE = 0.05; // 5% max price deviation
+const DELAY_FILTER_MS = 60000; // Don't copy trades older than 60s
+const MAX_PRICE_STALENESS_PCT = 0.10; // 10% max price drift since whale trade
 
 class CopyBotInstance {
   constructor(userId, settings) {
@@ -14,8 +16,10 @@ class CopyBotInstance {
     this.polymarket = null;
     this.pollTimer = null;
     this.isRunning = false;
+    this.isPolling = false;
     this.targetStates = new Map(); // Map<address, lastTradeTs>
     this.marketCache = new Map(); // Cache of conditionId -> market info
+    this.pendingTrades = new Map(); // Map<tokenId:direction, {count, firstSeenAt, trades[]}>
   }
 
   async start() {
@@ -49,7 +53,13 @@ class CopyBotInstance {
       this._log('INFO', `Copy bot started [${mode}] | ${this.targetStates.size} target(s)`);
 
       // Start polling
-      this.pollTimer = setInterval(() => this._pollTargets().catch(e => this._log('ERROR', `Poll failed: ${e.message}`)), POLL_INTERVAL_MS);
+      this.pollTimer = setInterval(() => {
+        if (this.isPolling) return; // Skip if already running
+        this.isPolling = true;
+        this._pollTargets()
+          .catch(e => this._log('ERROR', `Poll failed: ${e.message}`))
+          .finally(() => { this.isPolling = false; });
+      }, POLL_INTERVAL_MS);
 
       // Do one poll immediately
       await this._pollTargets();
@@ -99,7 +109,7 @@ class CopyBotInstance {
         const trades = await this._fetchTargetTrades(target.target_address, lastTs);
 
         for (const trade of trades) {
-          await this._mirrorTrade(trade, target);
+          await this._mirrorTradeWithConfirmation(trade, target);
         }
 
         // Update state
@@ -162,10 +172,28 @@ class CopyBotInstance {
         return;
       }
 
+      // Delay filter: reject if whale's trade is too old
+      const tradeAge = Date.now() - new Date(sourceTrade.timestamp || 0).getTime();
+      if (tradeAge > DELAY_FILTER_MS) {
+        this._log('WARN', `Delay filter: trade is ${(tradeAge/1000).toFixed(0)}s old — skipping`);
+        return;
+      }
+
+      // Price staleness: check total price drift since whale traded
+      const priceDriftPct = Math.abs(livePrice - sourcePrice) / sourcePrice;
+      if (priceDriftPct > MAX_PRICE_STALENESS_PCT) {
+        this._log('WARN', `Price drift ${(priceDriftPct*100).toFixed(1)}% exceeds ${(MAX_PRICE_STALENESS_PCT*100).toFixed(0)}% max — stale copy`);
+        return;
+      }
+
       // Calculate size
       const sourceSize = parseFloat(sourceTrade.size) || 0;
       const rawSize = target.multiplier * sourceSize;
-      const size = Math.min(rawSize, parseFloat(target.max_trade_size));
+
+      // Whale score multiplier — favor proven whales
+      const whaleScore = await this._getWhaleScore(target.target_address);
+      const scoredSize = rawSize * (0.5 + whaleScore * 0.5); // 50%-100% of size depending on score
+      const size = Math.min(scoredSize, parseFloat(target.max_trade_size));
 
       // Enforce minimum shares
       const MIN_SHARES = 5;
@@ -186,6 +214,14 @@ class CopyBotInstance {
            VALUES ($1, $2, $3, $4, $5, $6, true, 'SIMULATED', 'copy', $7, $8, NOW()) RETURNING id`,
           [this.userId, sourceTrade.condition_id, direction, livePrice, size, livePrice, target.target_address, Math.floor(Date.now() / 1000) - (Math.floor(Date.now() / 1000) % 300)]
         );
+        // Update whale performance
+        await pool.query(`
+          INSERT INTO whale_performance (target_address, total_trades, last_updated)
+          VALUES ($1, 1, NOW())
+          ON CONFLICT(target_address) DO UPDATE SET
+            total_trades = whale_performance.total_trades + 1,
+            last_updated = NOW()
+        `, [target.target_address]);
         this._log('INFO', `[PAPER] ✅ Copy trade #${result.rows[0].id} recorded`);
       } else {
         // Live trade
@@ -220,6 +256,14 @@ class CopyBotInstance {
              VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, 'copy', $9, $10, NOW()) RETURNING id`,
             [this.userId, sourceTrade.condition_id, direction, livePrice, size, livePrice, orderId, orderStatus, target.target_address, Math.floor(Date.now() / 1000) - (Math.floor(Date.now() / 1000) % 300)]
           );
+          // Update whale performance
+          await pool.query(`
+            INSERT INTO whale_performance (target_address, total_trades, last_updated)
+            VALUES ($1, 1, NOW())
+            ON CONFLICT(target_address) DO UPDATE SET
+              total_trades = whale_performance.total_trades + 1,
+              last_updated = NOW()
+          `, [target.target_address]);
           this._log('INFO', `[LIVE] ✅ Copy trade #${result.rows[0].id} | ${direction} $${size.toFixed(2)}`);
         } catch(e) {
           this._log('ERROR', `[LIVE] Copy trade failed: ${e.message}`);
@@ -264,6 +308,59 @@ class CopyBotInstance {
       this._log('WARN', `Failed to fetch price for ${tokenId}: ${e.message}`);
       return null;
     }
+  }
+
+  async _getWhaleScore(address) {
+    try {
+      const result = await pool.query(
+        `SELECT total_trades, win_trades, total_pnl, avg_latency_ms
+         FROM whale_performance WHERE target_address=$1`,
+        [address]
+      );
+      if (!result.rows[0] || result.rows[0].total_trades < 5) {
+        return 0.5; // Default score for unproven whales
+      }
+      const row = result.rows[0];
+      const winRate = row.win_trades / row.total_trades;
+      const avgPnl = parseFloat(row.total_pnl) / row.total_trades;
+      const latencyPenalty = Math.min(row.avg_latency_ms / 10000, 0.2); // Penalize slow whales
+
+      // Composite score: 0-1
+      // win rate (40%) + positive pnl (40%) + speed (20%)
+      const pnlScore = Math.min(Math.max(avgPnl / 10, 0), 1); // Normalize $0-$10 avg PnL
+      return Math.min(winRate * 0.4 + pnlScore * 0.4 + (1 - latencyPenalty) * 0.2, 1.0);
+    } catch(e) {
+      return 0.5;
+    }
+  }
+
+  async _mirrorTradeWithConfirmation(sourceTrade, target) {
+    const minConf = target.min_confirmations || 1;
+    if (minConf <= 1) {
+      return this._mirrorTrade(sourceTrade, target);
+    }
+
+    // Multi-whale: accumulate
+    const key = `${sourceTrade.asset_id}:BUY`;
+    const existing = this.pendingTrades.get(key) || { count: 0, firstSeenAt: Date.now(), trades: [] };
+    existing.count += 1;
+    existing.trades.push({ sourceTrade, target });
+    this.pendingTrades.set(key, existing);
+
+    // Expire pending entries older than 2 minutes
+    if (Date.now() - existing.firstSeenAt > 120000) {
+      this.pendingTrades.delete(key);
+      return;
+    }
+
+    if (existing.count >= minConf) {
+      this._log('INFO', `Multi-whale confirmed: ${existing.count}/${minConf} whales agree on ${key}`);
+      this.pendingTrades.delete(key);
+      // Use the trade from the target with highest whale score
+      return this._mirrorTrade(sourceTrade, target);
+    }
+
+    this._log('INFO', `Waiting for multi-whale confirmation: ${existing.count}/${minConf} so far for ${key}`);
   }
 
   getStatus() {

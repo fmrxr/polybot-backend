@@ -70,11 +70,13 @@ class BotInstance {
     }
 
     this.polymarket = new PolymarketFeed(privateKey, userApiKey, funderAddress);
+    this._snipeSec = parseInt(this.settings.snipe_before_close_sec) || 10;
     this.engine = new GBMSignalEngine({
       kelly_cap: parseFloat(this.settings.kelly_cap),
       max_trade_size: parseFloat(this.settings.max_trade_size),
       min_ev_threshold: parseFloat(this.settings.min_ev_threshold),
       min_prob_diff: parseFloat(this.settings.min_prob_diff),
+      min_edge: parseFloat(this.settings.min_edge) || 0.05,
       direction_filter: this.settings.direction_filter,
       market_prob_min: parseFloat(this.settings.market_prob_min),
       market_prob_max: parseFloat(this.settings.market_prob_max)
@@ -148,8 +150,8 @@ class BotInstance {
         .catch(e => this._log('WARN', `Urgent market refresh failed: ${e.message}`));
     }
 
-    // Enter snipe loop at T-10s
-    if (secsToClose <= SNIPE_BEFORE_CLOSE_SEC && windowTs !== this.lastWindowTs) {
+    // Enter snipe loop at T-snipeSec
+    if (secsToClose <= this._snipeSec && windowTs !== this.lastWindowTs) {
       await this._snipeWindow(windowTs, windowClose, btcData);
     }
   }
@@ -257,7 +259,10 @@ class BotInstance {
           chainlinkPrice: chainlinkData?.price || null,
           priceHistory: btcData.priceHistory || [],
           volumeHistory: btcData.volumeHistory || [],
-          timeToResolutionSec: secsLeft
+          timeToResolutionSec: secsLeft,
+          obImbalance: btcData.obImbalance || 0,
+          drift: btcData.drift || 0,
+          volatility: btcData.volatility || 0
         });
 
         if (signal) {
@@ -328,7 +333,7 @@ class BotInstance {
   async _reloadOpenTrades() {
     try {
       const result = await pool.query(
-        `SELECT id, condition_id, direction, entry_price, size, paper, order_id, window_ts
+        `SELECT id, condition_id, direction, entry_price, size, paper, order_id, window_ts, token_id
          FROM trades WHERE user_id=$1 AND result IS NULL AND resolved_at IS NULL`,
         [this.userId]
       );
@@ -340,7 +345,8 @@ class BotInstance {
           size: parseFloat(row.size),
           paper: row.paper,
           orderId: row.order_id,
-          windowTs: row.window_ts
+          windowTs: row.window_ts,
+          tokenId: row.token_id
         });
       }
       if (result.rows.length > 0) {
@@ -379,19 +385,32 @@ class BotInstance {
       `${mode} 🔥 TRADE | ${signal.direction} | Entry: ~$${signal.entry_price.toFixed(3)} | Conf: ${(signal.confidence*100).toFixed(0)}% | Size: $${signal.size.toFixed(2)}`
     );
 
+    // Improvement 12: Combined strategy — require whale convergence when enabled
+    if (this.settings.require_whale_convergence) {
+      const whaleDir = await this._recentWhaleActivity(market.conditionId);
+      if (whaleDir && whaleDir !== signal.direction) {
+        this._log('WARN', `Convergence fail: GBM=${signal.direction} Whale=${whaleDir} — SKIP`);
+        return;
+      }
+      if (whaleDir === signal.direction) {
+        signal.size = Math.min(signal.size * 1.25, parseFloat(this.settings.max_trade_size));
+        this._log('INFO', `Convergence: GBM+Whale agree on ${signal.direction} — boosted size to $${signal.size.toFixed(2)}`);
+      }
+    }
+
     if (this.paperTrading) {
       try {
         const result = await pool.query(
-          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, window_ts, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',$10,NOW()) RETURNING id`,
+          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, window_ts, token_id, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',$10,$11,NOW()) RETURNING id`,
           [this.userId, market.conditionId, signal.direction, signal.entry_price, signal.size,
-           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, windowTs]
+           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, windowTs, tokenId]
         );
         const tradeId = result.rows[0].id;
         this.openTrades.set(tradeId, {
           conditionId: market.conditionId, direction: signal.direction,
           tokenId, entryPrice: signal.entry_price, size: signal.size,
-          paper: true, windowTs
+          paper: true, windowTs, confidence: signal.confidence
         });
         this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded`);
       } catch(e) {
@@ -426,16 +445,16 @@ class BotInstance {
       }
 
       const result = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,NOW()) RETURNING id`,
+        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, token_id, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,$13,NOW()) RETURNING id`,
         [this.userId, market.conditionId, signal.direction, signal.entry_price, confirmedSize,
-         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs]
+         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs, tokenId]
       );
       const tradeId = result.rows[0].id;
       this.openTrades.set(tradeId, {
         conditionId: market.conditionId, direction: signal.direction,
         tokenId, entryPrice: signal.entry_price, size: confirmedSize,
-        paper: false, orderId, windowTs
+        paper: false, orderId, windowTs, confidence: signal.confidence
       });
       this._log('INFO', `[LIVE] ✅ Trade #${tradeId} | ${signal.direction} $${confirmedSize.toFixed(2)} | ${orderStatus}`);
     } catch(err) {
@@ -443,27 +462,41 @@ class BotInstance {
     }
   }
 
+  async _recentWhaleActivity(conditionId) {
+    try {
+      // Check if any copy target has traded this conditionId in the last 5 minutes
+      const result = await pool.query(
+        `SELECT direction, COUNT(*) as count
+         FROM trades
+         WHERE copy_source IS NOT NULL AND condition_id=$1
+         AND created_at >= NOW() - INTERVAL '5 minutes'
+         GROUP BY direction`,
+        [conditionId]
+      );
+      if (!result.rows.length) return null;
+      const up = result.rows.find(r => r.direction === 'UP');
+      const down = result.rows.find(r => r.direction === 'DOWN');
+      const upCount = up ? parseInt(up.count) : 0;
+      const downCount = down ? parseInt(down.count) : 0;
+      return upCount >= downCount ? 'UP' : 'DOWN';
+    } catch (e) {
+      return null; // Non-critical
+    }
+  }
+
   async _manageOpenPositions() {
-    // Check live trades for early exit conditions
-    // Exit winners at +30%, exit losers at -5%
+    // Check open trades for early exit conditions (TP/SL)
+    // Exit at +20–40% profit (based on confidence) or -4 to -8% loss (based on confidence)
     for (const [tradeId, trade] of this.openTrades.entries()) {
       try {
-        // Only manage trades that are actually active
         if (!trade || !trade.conditionId) continue;
 
-        // Calculate unrealized P&L
-        // Note: simplified calculation. Real P&L requires knowing current market price
-        // For now, we'll use a basic approach: shares * (market_price - entry_price)
-        // This is approximate since we don't have live market price easily available here
-
-        // Query trade from DB to get entry_price and size
         const result = await pool.query(
           'SELECT id, entry_price, size, result FROM trades WHERE id=$1',
           [tradeId]
         );
 
         if (!result.rows[0] || result.rows[0].result) {
-          // Trade already resolved or doesn't exist
           this.openTrades.delete(tradeId);
           continue;
         }
@@ -472,17 +505,31 @@ class BotInstance {
         const entryPrice = parseFloat(dbTrade.entry_price);
         const tradeSize = parseFloat(dbTrade.size);
 
-        // Estimate current market price (simplified: use last known price)
-        // In production, would fetch live market data
-        const lastMarketPrice = this.lastMarketData?.price || entryPrice;
+        // Fetch live token price from Polymarket orderbook
+        let currentTokenPrice = null;
+        if (trade.tokenId) {
+          currentTokenPrice = await this.polymarket.getLiveTokenPrice(trade.tokenId);
+        }
+        // Fallback: no movement
+        if (!currentTokenPrice) currentTokenPrice = entryPrice;
 
-        // Calculate shares and unrealized P&L
+        // Correct P&L: shares * (currentPrice - entryPrice) - fees
         const shares = tradeSize / entryPrice;
-        const unrealizedPnL = shares * (lastMarketPrice - entryPrice) - (tradeSize * 0.02); // Account for ~2% fees
+        const unrealizedPnL = shares * (currentTokenPrice - entryPrice) - (tradeSize * 0.02);
 
-        // Exit thresholds
-        const profitThreshold = tradeSize * 0.30; // +30%
-        const lossThreshold = tradeSize * -0.05;  // -5%
+        // Dynamic thresholds: scale with confidence and time remaining
+        const nowSec = Math.floor(Date.now() / 1000);
+        const windowClose = (trade.windowTs || 0) + 300;
+        const secsRemaining = Math.max(0, windowClose - nowSec);
+        const timeDecay = 1 + (1 - secsRemaining / 300) * 0.5; // Tighten SL as expiry approaches
+
+        const confidence = trade.confidence || 0.5;
+        // Higher confidence = wider TP, tighter SL
+        const tpPct = 0.20 + (confidence * 0.20);  // 20-40% based on confidence
+        const slPct = -(0.08 - confidence * 0.04);  // -8% to -4% based on confidence
+
+        const profitThreshold = tradeSize * tpPct;
+        const lossThreshold = tradeSize * slPct * timeDecay;
 
         let shouldExit = false;
         let exitReason = null;
@@ -490,17 +537,16 @@ class BotInstance {
         if (unrealizedPnL >= profitThreshold) {
           shouldExit = true;
           exitReason = 'auto_closed_profit';
-          this._log('INFO', `🎯 TAKE PROFIT | Trade #${tradeId} | Profit: $${unrealizedPnL.toFixed(2)} (+${(unrealizedPnL/tradeSize*100).toFixed(1)}%)`);
+          this._log('INFO', `🎯 TAKE PROFIT | Trade #${tradeId} | +$${unrealizedPnL.toFixed(2)} (${(unrealizedPnL/tradeSize*100).toFixed(1)}%) | TokenPrice: ${currentTokenPrice.toFixed(3)}`);
         } else if (unrealizedPnL <= lossThreshold) {
           shouldExit = true;
           exitReason = 'auto_closed_loss';
-          this._log('WARN', `🛑 STOP LOSS | Trade #${tradeId} | Loss: $${unrealizedPnL.toFixed(2)} (${(unrealizedPnL/tradeSize*100).toFixed(1)}%)`);
+          this._log('WARN', `🛑 STOP LOSS | Trade #${tradeId} | $${unrealizedPnL.toFixed(2)} (${(unrealizedPnL/tradeSize*100).toFixed(1)}%) | TokenPrice: ${currentTokenPrice.toFixed(3)}`);
         }
 
         if (shouldExit) {
-          // Close the position
           await pool.query(
-            `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2 WHERE id=$3`,
+            `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2, exit_reason=$2 WHERE id=$3`,
             [unrealizedPnL, exitReason, tradeId]
           );
           this.openTrades.delete(tradeId);

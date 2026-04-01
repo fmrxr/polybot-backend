@@ -431,6 +431,51 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
         </div>
       </div>
 
+      <!-- PRO METRICS CARD -->
+      <div class="card" style="grid-column:1/-1">
+        <div class="card-hd"><div class="card-title">Pro Metrics</div></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          <div class="stat-card">
+            <div class="stat-label">Sharpe Ratio</div>
+            <div class="stat-value" id="pm-sharpe">—</div>
+            <div class="stat-sub">Risk-adj return</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Max Drawdown</div>
+            <div class="stat-value negative" id="pm-drawdown">—</div>
+            <div class="stat-sub">Peak-to-trough loss</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Expectancy</div>
+            <div class="stat-value" id="pm-expectancy">—</div>
+            <div class="stat-sub">Avg $ per trade</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Profit Factor</div>
+            <div class="stat-value" id="pm-profit-factor">—</div>
+            <div class="stat-sub">Gross wins / losses</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Win Streak</div>
+            <div class="stat-value positive" id="pm-win-streak">—</div>
+            <div class="stat-sub">Current</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Loss Streak</div>
+            <div class="stat-value negative" id="pm-loss-streak">—</div>
+            <div class="stat-sub">Current</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Avg Win</div>
+            <div class="stat-value positive" id="pm-avg-win">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Avg Loss</div>
+            <div class="stat-value negative" id="pm-avg-loss">—</div>
+          </div>
+        </div>
+      </div>
+
       <!-- LIVE TRADES SECTION -->
       <div class="card">
         <div class="card-hd"><div class="card-title">🔥 Live Trades (Last 24h)</div></div>
@@ -466,6 +511,17 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
         </div>
         <div id="paper-warning" class="warn-msg" style="margin-bottom:0">⚠ Paper mode — no real orders placed.</div>
         <div id="live-warning" class="error-msg hidden" style="margin-bottom:0">🔴 LIVE mode — real USDC will be used.</div>
+      </div>
+
+      <div class="card">
+        <div class="sec-title">Strategy Options</div>
+        <div class="toggle-row">
+          <div>
+            <div class="t-label">Require Whale Convergence</div>
+            <div class="t-sub">Only trade when GBM signal agrees with recent whale activity (copy bots only matter if you have copy targets).</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="s-whale-convergence"><span class="t-slider"></span></label>
+        </div>
       </div>
 
       <div class="card">
@@ -506,6 +562,8 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
           <div class="form-group"><label>Min Prob Difference</label><input id="s-prob-diff" type="number" step="0.01" min="0.03"/><div class="hint">0.08 = 8% edge required</div></div>
           <div class="form-group"><label>Market Prob Min</label><input id="s-prob-min" type="number" step="0.01" min="0.1" max="0.5"/></div>
           <div class="form-group"><label>Market Prob Max</label><input id="s-prob-max" type="number" step="0.01" min="0.5" max="0.9"/><div class="hint">0.40–0.60 sweet spot</div></div>
+          <div class="form-group"><label>Min Edge (NO TRADE ZONE)</label><input id="s-min-edge" type="number" step="0.01" min="0.01" max="0.50"/><div class="hint">0.05 = skip when model edge &lt; 5% above market</div></div>
+          <div class="form-group"><label>Snipe Window (seconds)</label><select id="s-snipe-sec"><option value="10">T-10s (default)</option><option value="30">T-30s (wider window)</option><option value="60">T-60s (max info)</option></select><div class="hint">How early before window close to start evaluating</div></div>
         </div>
       </div>
 
@@ -543,6 +601,7 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
           <div class="form-group"><label>Label</label><input id="copy-target-label" type="text" placeholder="e.g., Top Whale #1"/></div>
           <div class="form-group"><label>Size Multiplier (0.1–5.0)</label><input id="copy-target-mult" type="number" step="0.1" min="0.1" max="5" value="1.0"/><div class="hint">1.0 = match trader's size</div></div>
           <div class="form-group"><label>Max Trade Size ($)</label><input id="copy-target-max" type="number" step="1" min="5" value="20"/></div>
+          <div class="form-group"><label>Min Confirmations</label><select id="copy-target-min-conf"><option value="1">1 (immediate)</option><option value="2">2 (multi-whale)</option><option value="3">3 (strong signal)</option></select><div class="hint">Wait for N whales to trade same direction</div></div>
         </div>
         <button class="btn btn-primary" onclick="addCopyTarget()"><div class="btn-spinner"></div>+ Add Target</button>
       </div>
@@ -1046,14 +1105,16 @@ function renderDecisions(decisions) {
 async function loadTrades(page) {
   currentPage=page;
   try {
-    const [data,breakdown,allTrades] = await Promise.all([
+    const [data,breakdown,allTrades,stats] = await Promise.all([
       req('GET',`/api/trades?page=${page}&limit=50`),
       req('GET','/api/trades/breakdown'),
-      req('GET','/api/trades?limit=100&sort=recent')
+      req('GET','/api/trades?limit=100&sort=recent'),
+      req('GET','/api/trades/stats')
     ]);
     renderLiveTrades(allTrades);
     renderTrades(data);
     renderBreakdown(breakdown);
+    renderProMetrics(stats);
   } catch(e){console.error(e)}
 }
 
@@ -1158,6 +1219,32 @@ function renderBreakdown(b) {
   ).join('')||'<tr><td colspan="3" class="empty">No data</td></tr>';
 }
 
+function renderProMetrics(s) {
+  if (!s) return;
+  const set = (id, val, prefix='', suffix='') => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val != null ? `${prefix}${val}${suffix}` : '—';
+  };
+  const sharpe = parseFloat(s.sharpe) || 0;
+  const sharpeEl = document.getElementById('pm-sharpe');
+  if (sharpeEl) {
+    sharpeEl.textContent = sharpe.toFixed(2);
+    sharpeEl.className = 'stat-value ' + (sharpe > 1 ? 'positive' : sharpe < 0 ? 'negative' : '');
+  }
+  set('pm-drawdown', s.max_drawdown != null ? '-$' + parseFloat(s.max_drawdown).toFixed(2) : '—');
+  const exp = parseFloat(s.expectancy);
+  const expEl = document.getElementById('pm-expectancy');
+  if (expEl) {
+    expEl.textContent = exp != null ? (exp >= 0 ? '+$' : '-$') + Math.abs(exp).toFixed(2) : '—';
+    expEl.className = 'stat-value ' + (exp >= 0 ? 'positive' : 'negative');
+  }
+  set('pm-profit-factor', s.profit_factor);
+  set('pm-win-streak', s.win_streak ? `${s.win_streak}W` : '0');
+  set('pm-loss-streak', s.loss_streak ? `${s.loss_streak}L` : '0');
+  set('pm-avg-win', s.avg_win != null ? '+$' + parseFloat(s.avg_win).toFixed(2) : '—');
+  set('pm-avg-loss', s.avg_loss != null ? '-$' + parseFloat(s.avg_loss).toFixed(2) : '—');
+}
+
 // ── SETTINGS ──────────────────────────────────────────────────────────────
 async function loadSettings() {
   try {
@@ -1181,6 +1268,9 @@ async function loadSettings() {
     document.getElementById('s-prob-diff').value=s.min_prob_diff;
     document.getElementById('s-prob-min').value=s.market_prob_min;
     document.getElementById('s-prob-max').value=s.market_prob_max;
+    document.getElementById('s-min-edge').value=s.min_edge||0.05;
+    document.getElementById('s-snipe-sec').value=s.snipe_before_close_sec||10;
+    document.getElementById('s-whale-convergence').checked=s.require_whale_convergence||false;
     document.getElementById('s-paper').checked=s.paper_trading!==false;
     updatePaperBadge();
   } catch(e){}
@@ -1221,9 +1311,12 @@ async function saveSettings() {
     max_trade_size:document.getElementById('s-max-size').value,
     min_ev_threshold:document.getElementById('s-ev').value,
     min_prob_diff:document.getElementById('s-prob-diff').value,
+    min_edge:document.getElementById('s-min-edge').value,
+    snipe_before_close_sec:document.getElementById('s-snipe-sec').value,
     direction_filter:document.getElementById('s-direction').value,
     market_prob_min:document.getElementById('s-prob-min').value,
     market_prob_max:document.getElementById('s-prob-max').value,
+    require_whale_convergence:document.getElementById('s-whale-convergence').checked,
     paper_trading:document.getElementById('s-paper').checked
   };
   const walletAddr=document.getElementById('input-wallet-addr').value;
@@ -1443,6 +1536,7 @@ async function addCopyTarget() {
   const label = document.getElementById('copy-target-label').value.trim();
   const mult = parseFloat(document.getElementById('copy-target-mult').value) || 1.0;
   const maxSize = parseFloat(document.getElementById('copy-target-max').value) || 20;
+  const minConf = parseInt(document.getElementById('copy-target-min-conf').value) || 1;
 
   if(!addr || !addr.match(/^0x[0-9a-f]{40}$/i)) {
     toast('Invalid Ethereum address', 'error');
@@ -1452,12 +1546,13 @@ async function addCopyTarget() {
   try {
     const btn = event.target;
     btn.classList.add('loading'); btn.disabled = true;
-    await req('POST', '/api/copy/targets', { target_address: addr, label, multiplier: mult, max_trade_size: maxSize });
+    await req('POST', '/api/copy/targets', { target_address: addr, label, multiplier: mult, max_trade_size: maxSize, min_confirmations: minConf });
     toast('Target added', 'success');
     document.getElementById('copy-target-addr').value = '';
     document.getElementById('copy-target-label').value = '';
     document.getElementById('copy-target-mult').value = '1.0';
     document.getElementById('copy-target-max').value = '20';
+    document.getElementById('copy-target-min-conf').value = '1';
     await loadCopyTab();
     btn.classList.remove('loading'); btn.disabled = false;
   } catch(e) {

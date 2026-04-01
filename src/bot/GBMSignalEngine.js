@@ -46,7 +46,7 @@ class GBMSignalEngine {
   /**
    * Main signal evaluation — composite weighted score
    */
-  evaluate({ currentPrice, binancePrice, chainlinkPrice, priceHistory, volumeHistory, timeToResolutionSec }) {
+  evaluate({ currentPrice, binancePrice, chainlinkPrice, priceHistory, volumeHistory, timeToResolutionSec, obImbalance = 0, drift = 0, volatility = 0 }) {
     const { direction_filter, max_trade_size, kelly_cap } = this.settings;
 
     if (!currentPrice || priceHistory.length < 5) return null;
@@ -81,6 +81,17 @@ class GBMSignalEngine {
     }
     score += windowDeltaScore;
 
+    // ── HYBRID MODE DETECTION ────────────────────────────────────────────────
+    // Large window delta (>0.10%) = MOMENTUM mode — ride the trend
+    // Small window delta (<0.02%) = MEAN REVERSION mode — fade extremes
+    let windowPctAbs = 0;
+    if (this.windowOpenPrice) {
+      const deltaPrice = chainlinkPrice || currentPrice;
+      windowPctAbs = Math.abs((deltaPrice - this.windowOpenPrice) / this.windowOpenPrice * 100);
+    }
+    const mode = windowPctAbs > 0.10 ? 'MOMENTUM' : windowPctAbs < 0.02 ? 'MEAN_REVERSION' : 'NEUTRAL';
+    log.strategy_mode = mode;
+
     // ── 2. MICRO MOMENTUM (weight 2) — Last 2 candles ──────────────────────
     let momentumScore = 0;
     if (priceHistory.length >= 3) {
@@ -108,24 +119,41 @@ class GBMSignalEngine {
     score += accelScore;
     log.accel_score = accelScore;
 
-    // ── 4. EMA 9/21 CROSSOVER (weight 1) ────────────────────────────────────
+    // ── 4. VELOCITY-WEIGHTED EMA (weight 1-2) ──────────────────────────────
     let emaScore = 0;
     if (priceHistory.length >= 21) {
       const ema9 = this._ema(priceHistory.slice(-9), 9);
       const ema21 = this._ema(priceHistory.slice(-21), 21);
-      emaScore = ema9 > ema21 ? 1 : -1;
+      const ema9Prev = priceHistory.length >= 12 ? this._ema(priceHistory.slice(-12, -3), 9) : ema9;
+      const emaVelocity = Math.abs((ema9 - ema9Prev) / ema9Prev);
+      if (ema9 > ema21) {
+        emaScore = emaVelocity > 0.001 ? 2 : 1;
+      } else {
+        emaScore = emaVelocity > 0.001 ? -2 : -1;
+      }
     }
     score += emaScore;
     log.ema_score = emaScore;
 
-    // ── 5. RSI 14 (weight 1-2) — Only extremes ──────────────────────────────
+    // ── 5. MOMENTUM RSI (weight 1-3) — Confirm momentum, not just extremes ──
     let rsiScore = 0;
     if (priceHistory.length >= 15) {
       const rsi = this._rsi(priceHistory.slice(-15), 14);
-      if (rsi > 75) rsiScore = -2; // Overbought — likely to reverse
-      else if (rsi < 25) rsiScore = 2; // Oversold — likely to bounce
-      // Neutral zone: 0 weight
       log.rsi = rsi.toFixed(1);
+      if (rsi > 75) rsiScore = -2;        // Overbought reversal signal
+      else if (rsi < 25) rsiScore = 2;    // Oversold bounce signal
+      else if (rsi > 60 && rsi <= 75) rsiScore = 1;   // Strong upward momentum
+      else if (rsi < 40 && rsi >= 25) rsiScore = -1;  // Strong downward momentum
+      // 40-60 neutral: 0 weight
+
+      // Hybrid mode: mean-reversion doubles RSI weight, momentum suppresses contradictory RSI
+      if (mode === 'MEAN_REVERSION') {
+        rsiScore *= 2;
+        log.rsi_mode = 'MEAN_REV_2x';
+      } else if (mode === 'MOMENTUM' && Math.sign(rsiScore) !== Math.sign(windowDeltaScore)) {
+        rsiScore = 0;
+        log.rsi_mode = 'SUPPRESSED';
+      }
     }
     score += rsiScore;
     log.rsi_score = rsiScore;
@@ -165,9 +193,36 @@ class GBMSignalEngine {
     score += tickScore;
     log.tick_score = tickScore;
 
+    // ── 8. ORDER BOOK IMBALANCE (weight 1.5) ────────────────────────────────
+    let obScore = 0;
+    if (Math.abs(obImbalance) > 0.15) {
+      obScore = obImbalance > 0 ? 1.5 : -1.5;
+    } else if (Math.abs(obImbalance) > 0.05) {
+      obScore = obImbalance > 0 ? 0.5 : -0.5;
+    }
+    score += obScore;
+    log.ob_score = obScore;
+    log.ob_imbalance = typeof obImbalance === 'number' ? obImbalance.toFixed(3) : obImbalance;
+
+    // ── 9. GBM DIVERGENCE (weight 2) — Model prob vs market price ───────────
+    let divergenceScore = 0;
+    if (this.windowOpenPrice && timeToResolutionSec > 0 && volatility) {
+      const gbmProb = this._gbmProb(currentPrice, this.windowOpenPrice, drift, volatility, timeToResolutionSec);
+      const estimatedMarketProb = this._estimateTokenPrice(Math.abs(score));
+      const divergence = gbmProb - estimatedMarketProb;
+      log.gbm_prob = (gbmProb * 100).toFixed(1) + '%';
+      log.gbm_divergence = (divergence * 100).toFixed(1) + '%';
+      if (Math.abs(divergence) > 0.10) divergenceScore = Math.sign(divergence) * 2;
+      else if (Math.abs(divergence) > 0.05) divergenceScore = Math.sign(divergence) * 1;
+      // Only apply if direction agrees with main signal direction
+      if (Math.sign(divergenceScore) !== Math.sign(score)) divergenceScore = 0;
+    }
+    score += divergenceScore;
+    log.divergence_score = divergenceScore;
+
     // ── COMPOSITE SCORE → CONFIDENCE ────────────────────────────────────────
-    // Divide by 7 (not 10) — at 5-min scale, long-term indicators less relevant
-    const confidence = Math.min(Math.abs(score) / 7.0, 1.0);
+    // Divide by 10 — accounts for 9 indicators: delta, momentum, accel, ema, rsi, vol, tick, ob, divergence
+    const confidence = Math.min(Math.abs(score) / 10.0, 1.0);
     const direction = score > 0 ? 'UP' : 'DOWN';
 
     log.total_score = score.toFixed(2);
@@ -192,12 +247,27 @@ class GBMSignalEngine {
       return null;
     }
 
-    // Kelly sizing based on entry price
+    // Kelly sizing using TRUE edge: modelProb vs marketProb
     const entryPrice = this._estimateTokenPrice(Math.abs(score));
-    const prob = entryPrice; // Token price IS the implied win probability
-    const b = (1 / entryPrice) - 1;
-    const kellyFraction = Math.max(0, (prob * b - (1 - prob)) / b);
-    const size = Math.min(kellyFraction * kelly_cap * max_trade_size, max_trade_size);
+    const marketProb = entryPrice;
+    // modelProb derived from signal strength: 50% + (confidence * 40%)
+    // Ranges from 0.50 (no signal) to 0.90 (maximum confidence)
+    const modelProb = 0.5 + (confidence * 0.4);
+    // Edge = how much better we think the outcome is vs what market prices in
+    const edge = modelProb - marketProb;
+    // NO TRADE ZONE (Improvement 11): skip if edge is non-positive
+    const minEdge = parseFloat(this.settings.min_edge) || 0.05;
+    if (edge <= minEdge) {
+      log.verdict = 'SKIP';
+      log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(minEdge*100).toFixed(1)}% — no trade zone`;
+      this._emit(log);
+      return null;
+    }
+
+    // b = payout ratio per dollar risked (net odds)
+    const b = (1 / marketProb) - 1;
+    const kellyFraction = (modelProb * b - (1 - modelProb)) / b;
+    const size = Math.min(Math.max(0, kellyFraction) * kelly_cap * max_trade_size, max_trade_size);
 
     if (size < 0.50) {
       log.verdict = 'SKIP';
@@ -206,22 +276,25 @@ class GBMSignalEngine {
       return null;
     }
 
-    const ev = prob * (1 / entryPrice - 1) - (1 - prob);
+    const ev = modelProb * (1 / marketProb - 1) - (1 - modelProb);
     log.verdict = 'TRADE';
     log.entry_price = entryPrice.toFixed(3);
     log.size = '$' + size.toFixed(2);
-    log.reason = `Score ${score.toFixed(1)} | Conf ${(confidence*100).toFixed(0)}% | ${direction} @ $${entryPrice.toFixed(3)} | Size $${size.toFixed(2)}`;
+    log.model_prob = (modelProb*100).toFixed(1) + '%';
+    log.market_prob = (marketProb*100).toFixed(1) + '%';
+    log.edge = (edge*100).toFixed(1) + '%';
+    log.reason = `Score ${score.toFixed(1)} | Conf ${(confidence*100).toFixed(0)}% | Edge ${(edge*100).toFixed(1)}% | ${direction} @ $${entryPrice.toFixed(3)} | Size $${size.toFixed(2)}`;
     this._emit(log);
 
     return {
       direction,
       entry_price: entryPrice,
-      model_prob: prob,
-      market_prob: entryPrice,
-      anchored_prob: prob,
+      model_prob: modelProb,
+      market_prob: marketProb,
+      edge,
       expected_value: ev,
       size,
-      fee: entryPrice * 0.25 * Math.pow(entryPrice * (1 - entryPrice), 2) * size,
+      fee: marketProb * 0.25 * Math.pow(marketProb * (1 - marketProb), 2) * size,
       confidence,
       score
     };
@@ -257,6 +330,26 @@ class GBMSignalEngine {
     if (avgLoss === 0) return 100;
     const rs = avgGain / avgLoss;
     return 100 - (100 / (1 + rs));
+  }
+
+  _normalCDF(x) {
+    // Abramowitz and Stegun approximation
+    const a = [0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429];
+    const p = 0.3275911;
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x) / Math.sqrt(2);
+    const t = 1 / (1 + p * x);
+    const y = 1 - ((((a[4]*t+a[3])*t+a[2])*t+a[1])*t+a[0])*t*Math.exp(-x*x);
+    return 0.5 * (1 + sign * y);
+  }
+
+  _gbmProb(currentPrice, windowOpenPrice, drift, volatility, T) {
+    // P(S_T > S_0) using GBM formula
+    // drift and volatility are per-second (from BinanceFeed)
+    T = Math.max(T, 1);
+    const vol = Math.max(volatility, 0.0001);
+    const d = (Math.log(currentPrice/windowOpenPrice) + (drift - 0.5*vol*vol)*T) / (vol*Math.sqrt(T));
+    return this._normalCDF(d);
   }
 
   _emit(log) {

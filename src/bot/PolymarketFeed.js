@@ -321,6 +321,22 @@ class PolymarketFeed {
     }
   }
 
+  async getLiveTokenPrice(tokenId) {
+    try {
+      if (!this.clobClient) return null;
+      const mid = await this.clobClient.getMidpoint(tokenId);
+      const price = parseFloat(mid);
+      return isNaN(price) ? null : price;
+    } catch (e) {
+      try {
+        const r = await axios.get(`${POLYMARKET_CLOB_API}/midpoint?token_id=${tokenId}`, { timeout: 3000 });
+        return parseFloat(r.data?.mid) || null;
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
   disconnect() {
     // Cleanup
   }

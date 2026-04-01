@@ -77,6 +77,16 @@ async function initDB() {
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_type VARCHAR(20) DEFAULT 'gbm';
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS copy_source VARCHAR(255);
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(50);
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS token_id VARCHAR(255);
+
+      -- Settings for 12 improvements
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS min_edge DECIMAL DEFAULT 0.05;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS snipe_before_close_sec INTEGER DEFAULT 10;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS require_whale_convergence BOOLEAN DEFAULT false;
+
+      -- Copy trading enhancements
+      ALTER TABLE copy_targets ADD COLUMN IF NOT EXISTS whale_score DECIMAL DEFAULT 0.5;
+      ALTER TABLE copy_targets ADD COLUMN IF NOT EXISTS min_confirmations INTEGER DEFAULT 1;
     `);
     console.log('✅ Database initialized');
   } finally {
@@ -146,4 +156,26 @@ async function addCopyTradingSchema() {
   }
 }
 
-module.exports = { pool, initDB, addDecisionsTable, addCopyTradingSchema };
+// Whale performance tracking for copy trading scoring
+async function addWhalePerformanceSchema() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS whale_performance (
+        id SERIAL PRIMARY KEY,
+        target_address VARCHAR(255) NOT NULL UNIQUE,
+        total_trades INTEGER DEFAULT 0,
+        win_trades INTEGER DEFAULT 0,
+        total_pnl DECIMAL DEFAULT 0,
+        avg_latency_ms INTEGER DEFAULT 0,
+        last_updated TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_whale_perf_address ON whale_performance(target_address);
+    `);
+    console.log('✅ Whale performance schema initialized');
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { pool, initDB, addDecisionsTable, addCopyTradingSchema, addWhalePerformanceSchema };
