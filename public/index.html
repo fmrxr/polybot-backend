@@ -1872,7 +1872,7 @@
       trades.forEach((trade, idx) => {
         const time = new Date(trade.created_at).toLocaleTimeString();
         const dir = trade.direction === 'YES' ? '▲' : '▼';
-        const pnl = trade.pnl || 0;
+        const pnl = parseFloat(trade.pnl) || 0;
         const pnlClass = pnl > 0 ? 'trade-green' : 'skip-red';
 
         html += `
@@ -1883,7 +1883,7 @@
             <td>$${parseFloat(trade.size).toFixed(2)}</td>
             <td>62%</td>
             <td>5.2%</td>
-            <td>${(trade.model_prob * 100).toFixed(1)}%</td>
+            <td>${(parseFloat(trade.model_prob || 0) * 100).toFixed(1)}%</td>
             <td style="color: var(--${pnlClass});">$${pnl.toFixed(2)}</td>
             <td>${trade.order_status || 'pending'}</td>
             <td><button class="secondary" style="padding: 4px 8px; font-size: 12px;">View</button></td>
@@ -1924,7 +1924,7 @@
           </div>
           <div>
             <p style="color: var(--text-muted); font-size: 12px;">P&L</p>
-            <p style="font-size: 18px; font-weight: bold; color: var(--${trade.pnl > 0 ? 'trade-green' : 'skip-red'});">$${trade.pnl.toFixed(2)}</p>
+            <p style="font-size: 18px; font-weight: bold; color: var(--${parseFloat(trade.pnl) > 0 ? 'trade-green' : 'skip-red'});">$${parseFloat(trade.pnl || 0).toFixed(2)}</p>
           </div>
         </div>
 
