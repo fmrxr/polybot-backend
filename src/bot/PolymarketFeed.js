@@ -218,6 +218,9 @@ class PolymarketFeed {
         throw new Error('CLOB client not initialized — check API credentials');
       }
 
+      // Import OrderType enum for order submission
+      const { OrderType } = await import('@polymarket/clob-client');
+
       // Use official SDK to place order with proper authentication
       const orderSide = side === 'BUY' ? 'BUY' : 'SELL';
       const response = await this.clobClient.createAndPostOrder(
@@ -230,7 +233,8 @@ class PolymarketFeed {
         {
           tickSize: '0.01',
           negRisk: false
-        }
+        },
+        OrderType.GTC  // Good-Til-Cancelled order type
       );
 
       return {
