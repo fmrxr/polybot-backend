@@ -85,21 +85,18 @@ router.put('/settings', async (req, res) => {
 // GET /api/user/dashboard
 router.get('/dashboard', async (req, res) => {
   try {
-    const { BotManager } = require('../bot/BotManager');
-    const botManager = global.botManager;
-
     const settingsResult = await pool.query('SELECT polymarket_wallet_address FROM bot_settings WHERE user_id = $1', [req.userId]);
     const walletAddress = settingsResult.rows[0]?.polymarket_wallet_address || null;
 
     let balance = null;
-    if (walletAddress && botManager) {
-      const bot = botManager.bots.get(req.userId);
-      if (bot && bot.polymarket) {
-        try {
+    if (walletAddress && global.botManager && global.botManager.bots) {
+      try {
+        const bot = global.botManager.bots.get(req.userId);
+        if (bot && bot.polymarket && bot.polymarket.getBalance) {
           balance = await bot.polymarket.getBalance();
-        } catch (e) {
-          console.error('Balance fetch error:', e.message);
         }
+      } catch (e) {
+        console.error('Balance fetch error:', e.message);
       }
     }
 
