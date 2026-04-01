@@ -44,31 +44,42 @@ class ChainlinkFeed {
   }
 
   async init() {
-    // Try RPC endpoints until one works
+    // Try RPC endpoints until one works — use timeout to avoid infinite retry loops
     for (const rpc of RPC_ENDPOINTS) {
       try {
         this.provider = new ethers.JsonRpcProvider(rpc);
         this.contract = new ethers.Contract(BTC_USD_AGGREGATOR, AGGREGATOR_ABI, this.provider);
-        // Test the connection
-        const desc = await this.contract.description();
-        console.log(`[ChainlinkFeed] Connected via ${rpc} | Feed: ${desc}`);
+
+        // Test connection with a timeout — don't wait forever
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout')), 3000)
+        );
+        const descPromise = this.contract.description();
+        await Promise.race([descPromise, timeoutPromise]);
+
         this.isInitialized = true;
         break;
       } catch(e) {
-        console.log(`[ChainlinkFeed] RPC ${rpc} failed: ${e.message}`);
+        // Silently fail and try next endpoint
       }
     }
 
     if (!this.isInitialized) {
-      console.error('[ChainlinkFeed] All RPC endpoints failed — Chainlink feed disabled');
+      // Chainlink is optional — bot works fine without it
       return;
     }
 
     // Initial fetch
-    await this.fetchPrice();
+    try {
+      await this.fetchPrice();
+    } catch(e) {
+      // Initial fetch failed — disable
+      this.isInitialized = false;
+      return;
+    }
 
     // Poll every 15s
-    this.pollTimer = setInterval(() => this.fetchPrice(), this.CACHE_MS);
+    this.pollTimer = setInterval(() => this.fetchPrice().catch(() => {}), this.CACHE_MS);
   }
 
   async fetchPrice() {
