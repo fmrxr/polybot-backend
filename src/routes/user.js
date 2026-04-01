@@ -26,7 +26,7 @@ router.get('/settings', async (req, res) => {
 // PUT /api/user/settings
 router.put('/settings', async (req, res) => {
   const {
-    private_key, polymarket_api_key, kelly_cap, max_daily_loss, max_trade_size,
+    private_key, polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
     min_ev_threshold, min_prob_diff, direction_filter,
     market_prob_min, market_prob_max, paper_trading
   } = req.body;
@@ -50,24 +50,25 @@ router.put('/settings', async (req, res) => {
     }
 
     await pool.query(`
-      INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, kelly_cap, max_daily_loss, max_trade_size,
+      INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
         min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
-        kelly_cap = COALESCE($4, bot_settings.kelly_cap),
-        max_daily_loss = COALESCE($5, bot_settings.max_daily_loss),
-        max_trade_size = COALESCE($6, bot_settings.max_trade_size),
-        min_ev_threshold = COALESCE($7, bot_settings.min_ev_threshold),
-        min_prob_diff = COALESCE($8, bot_settings.min_prob_diff),
-        direction_filter = COALESCE($9, bot_settings.direction_filter),
-        market_prob_min = COALESCE($10, bot_settings.market_prob_min),
-        market_prob_max = COALESCE($11, bot_settings.market_prob_max),
-        paper_trading = COALESCE($12, bot_settings.paper_trading),
+        polymarket_wallet_address = COALESCE($4, bot_settings.polymarket_wallet_address),
+        kelly_cap = COALESCE($5, bot_settings.kelly_cap),
+        max_daily_loss = COALESCE($6, bot_settings.max_daily_loss),
+        max_trade_size = COALESCE($7, bot_settings.max_trade_size),
+        min_ev_threshold = COALESCE($8, bot_settings.min_ev_threshold),
+        min_prob_diff = COALESCE($9, bot_settings.min_prob_diff),
+        direction_filter = COALESCE($10, bot_settings.direction_filter),
+        market_prob_min = COALESCE($11, bot_settings.market_prob_min),
+        market_prob_max = COALESCE($12, bot_settings.market_prob_max),
+        paper_trading = COALESCE($13, bot_settings.paper_trading),
         updated_at = NOW()
     `, [
-      req.userId, encryptedKey, encryptedApiKey,
+      req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
       kelly_cap || null, max_daily_loss || null, max_trade_size || null,
       min_ev_threshold || null, min_prob_diff || null, direction_filter || null,
       market_prob_min || null, market_prob_max || null,

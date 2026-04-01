@@ -61,7 +61,15 @@ class BotInstance {
       }
     }
 
-    this.polymarket = new PolymarketFeed(privateKey, userApiKey);
+    // Get user's Polymarket wallet address (proxy wallet for GNOSIS_SAFE auth)
+    const funderAddress = this.settings.polymarket_wallet_address;
+    if (!funderAddress) {
+      this._log('WARN', 'No Polymarket wallet address configured — trades may fail');
+    } else {
+      this._log('INFO', `Using Polymarket wallet: ${funderAddress}`);
+    }
+
+    this.polymarket = new PolymarketFeed(privateKey, userApiKey, funderAddress);
     this.engine = new GBMSignalEngine({
       kelly_cap: parseFloat(this.settings.kelly_cap),
       max_trade_size: parseFloat(this.settings.max_trade_size),

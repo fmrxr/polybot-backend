@@ -407,6 +407,11 @@ input:checked+.t-slider:before{transform:translateX(20px);background:#000}
       <div class="card">
         <div class="sec-title">Polymarket Wallet</div>
         <div class="warn-msg">⚠ Keys encrypted with AES-256-GCM before storage.</div>
+        <div class="form-group">
+          <label>Polymarket Wallet Address (0x...)</label>
+          <input id="input-wallet-addr" type="text" placeholder="Your Polymarket proxy wallet (from polymarket.com settings)"/>
+          <div class="hint">Get from Polymarket.com → Settings → Profile dropdown. This is your account's proxy wallet address.</div>
+        </div>
         <div id="key-configured" class="success-msg hidden">✓ Private key configured. Enter a new one to replace.</div>
         <div class="form-group">
           <label id="key-label">Private Key (0x...)</label>
@@ -837,6 +842,9 @@ function renderBreakdown(b) {
 async function loadSettings() {
   try {
     const s=await req('GET','/api/user/settings');
+    if(s.polymarket_wallet_address){
+      document.getElementById('input-wallet-addr').value=s.polymarket_wallet_address;
+    }
     if(s.has_private_key){
       document.getElementById('key-configured').classList.remove('hidden');
       document.getElementById('key-label').textContent='Replace Private Key (optional)';
@@ -898,6 +906,8 @@ async function saveSettings() {
     market_prob_max:document.getElementById('s-prob-max').value,
     paper_trading:document.getElementById('s-paper').checked
   };
+  const walletAddr=document.getElementById('input-wallet-addr').value;
+  if(walletAddr) payload.polymarket_wallet_address=walletAddr;
   const key=document.getElementById('input-key').value;
   if(key) payload.private_key=key;
   const apiKey=document.getElementById('input-api-key').value;

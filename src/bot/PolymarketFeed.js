@@ -12,11 +12,12 @@ const POLYMARKET_GAMMA_API = 'https://gamma-api.polymarket.com';
 const CHAIN_ID = 137; // Polygon mainnet
 
 class PolymarketFeed {
-  constructor(privateKey, userApiKey = null) {
+  constructor(privateKey, userApiKey = null, funderAddress = null) {
     this.privateKey = privateKey;
     this.userApiKey = userApiKey;
     this.wallet = new ethers.Wallet(privateKey);
     this.address = this.wallet.address;
+    this.funderAddress = funderAddress || this.address; // Use provided funder address or fallback to wallet address
     this.clobClient = null;
     this.OrderType = null;
     this.Side = null;
@@ -46,13 +47,14 @@ class PolymarketFeed {
         // Step 2: Create trading client with L2 credentials
         // Signature type 2 = GNOSIS_SAFE (Polymarket proxy wallet)
         // This is the standard type for users who log into Polymarket with MetaMask/browser wallet
+        console.log(`[PolymarketFeed] Using funder address: ${this.funderAddress}`);
         this.clobClient = new ClobClient(
           POLYMARKET_CLOB_API,
           CHAIN_ID,
           this.wallet,
           apiCreds,
           2, // GNOSIS_SAFE - Polymarket proxy wallet type
-          this.address
+          this.funderAddress
         );
         console.log(`[PolymarketFeed] Trading client created`);
 
