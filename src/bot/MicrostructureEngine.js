@@ -101,10 +101,10 @@ class MicrostructureEngine {
     // Imbalance ratio
     const imbalance = (bidSize - askSize) / (bidSize + askSize);
 
-    // Scale to -1 to +1
-    // Positive imbalance (more bids) → market wants to go UP → mean revert DOWN
-    // Negative imbalance (more asks) → market wants to go DOWN → mean revert UP
-    return Math.max(-1, Math.min(1, imbalance * 2));
+    // Scale to -1 to +1 and negate for mean reversion:
+    // More bids (positive imbalance) → overbought → mean revert DOWN → score negative
+    // More asks (negative imbalance) → oversold  → mean revert UP   → score positive
+    return Math.max(-1, Math.min(1, -imbalance * 2));
   }
 
   /**

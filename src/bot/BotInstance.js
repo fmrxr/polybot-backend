@@ -71,7 +71,7 @@ class BotInstance {
     }
 
     this.polymarket = new PolymarketFeed(privateKey, userApiKey, funderAddress);
-    this._snipeSec = parseInt(this.settings.snipe_before_close_sec) || 10;
+    this._snipeSec = parseInt(this.settings.snipe_before_close_sec) ?? 10;
     this.engine = new GBMSignalEngine({
       kelly_cap: parseFloat(this.settings.kelly_cap),
       max_trade_size: parseFloat(this.settings.max_trade_size),
@@ -444,12 +444,12 @@ class BotInstance {
           tokenId, entryPrice: signal.entry_price, size: signal.size,
           paper: true, windowTs, confidence: signal.confidence
         });
-        // Deduct trade size from paper balance
-        this.paperBalance -= signal.size;
-        await pool.query(
-          'UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2',
-          [this.paperBalance, this.userId]
+        // Deduct trade size from paper balance atomically
+        const balRes = await pool.query(
+          'UPDATE bot_settings SET paper_balance = paper_balance - $1 WHERE user_id = $2 RETURNING paper_balance',
+          [signal.size, this.userId]
         );
+        this.paperBalance = parseFloat(balRes.rows[0]?.paper_balance ?? this.paperBalance - signal.size);
         this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded | Balance: $${this.paperBalance.toFixed(2)}`);
       } catch(e) {
         this._log('ERROR', `[PAPER] Failed to record trade: ${e.message}`);
@@ -628,11 +628,14 @@ class BotInstance {
         const mode = trade.paper ? '[PAPER]' : '[LIVE]';
         this._log('INFO', `${mode} Trade #${tradeId} → ${win ? '✅ WIN' : '❌ LOSS'} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
 
-        // Add back trade size + P&L to paper balance
+        // Add back trade size + P&L to paper balance atomically
         if (trade.paper) {
-          this.paperBalance += trade.size + pnl;
-          await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2',
-            [this.paperBalance, this.userId]);
+          const returnAmt = trade.size + pnl;
+          const balRes2 = await pool.query(
+            'UPDATE bot_settings SET paper_balance = paper_balance + $1 WHERE user_id = $2 RETURNING paper_balance',
+            [returnAmt, this.userId]
+          );
+          this.paperBalance = parseFloat(balRes2.rows[0]?.paper_balance ?? this.paperBalance + returnAmt);
           this._log('INFO', `[PAPER] Balance updated: $${this.paperBalance.toFixed(2)}`);
         }
         this.openTrades.delete(tradeId);
@@ -649,7 +652,7 @@ class BotInstance {
         [this.userId, decision.verdict, decision.direction || null, decision.reason, JSON.stringify(decision)]
       );
       await pool.query(
-        `DELETE FROM bot_decisions WHERE user_id=$1 AND id NOT IN (SELECT id FROM bot_decisions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200)`,
+        `DELETE FROM bot_decisions WHERE user_id=$1 AND id NOT IN (SELECT id FROM (SELECT id FROM bot_decisions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200) AS recent)`,
         [this.userId]
       );
     } catch(e) {
@@ -661,7 +664,7 @@ class BotInstance {
     console.log(`[Bot:${this.userId}][${level}] ${message}`);
     try {
       await pool.query('INSERT INTO bot_logs (user_id, level, message) VALUES ($1,$2,$3)', [this.userId, level, message]);
-      await pool.query(`DELETE FROM bot_logs WHERE user_id=$1 AND id NOT IN (SELECT id FROM bot_logs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1000)`, [this.userId]);
+      await pool.query(`DELETE FROM bot_logs WHERE user_id=$1 AND id NOT IN (SELECT id FROM (SELECT id FROM bot_logs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1000) AS recent)`, [this.userId]);
     } catch(e) {}
   }
 

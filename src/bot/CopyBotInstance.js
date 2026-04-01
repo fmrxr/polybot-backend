@@ -155,6 +155,10 @@ class CopyBotInstance {
       }
 
       // Determine if source was UP or DOWN
+      if (!market.tokens || market.tokens.length < 2) {
+        this._log('WARN', `Market ${sourceTrade.condition_id} has incomplete token data — skipping copy`);
+        return;
+      }
       const upTokenId = market.tokens[0]?.token_id || market.tokens[0];
       const direction = sourceTrade.asset_id === upTokenId ? 'UP' : 'DOWN';
 
@@ -212,7 +216,7 @@ class CopyBotInstance {
         const result = await pool.query(
           `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, market_prob, paper, order_status, trade_type, copy_source, window_ts, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, true, 'SIMULATED', 'copy', $7, $8, NOW()) RETURNING id`,
-          [this.userId, sourceTrade.condition_id, direction, livePrice, size, livePrice, target.target_address, Math.floor(Date.now() / 1000) - (Math.floor(Date.now() / 1000) % 300)]
+          [this.userId, sourceTrade.condition_id, direction, livePrice, size, livePrice, target.target_address, (() => { const s = Math.floor(Date.now() / 1000); return s - (s % 300); })()]
         );
         // Update whale performance
         await pool.query(`
@@ -317,8 +321,11 @@ class CopyBotInstance {
          FROM whale_performance WHERE target_address=$1`,
         [address]
       );
-      if (!result.rows[0] || result.rows[0].total_trades < 5) {
+      if (!result.rows[0] || result.rows[0].total_trades <= 0) {
         return 0.5; // Default score for unproven whales
+      }
+      if (result.rows[0].total_trades < 5) {
+        return 0.5;
       }
       const row = result.rows[0];
       const winRate = row.win_trades / row.total_trades;
@@ -337,7 +344,12 @@ class CopyBotInstance {
   async _mirrorTradeWithConfirmation(sourceTrade, target) {
     const minConf = target.min_confirmations || 1;
     if (minConf <= 1) {
-      return this._mirrorTrade(sourceTrade, target);
+      try {
+        return await this._mirrorTrade(sourceTrade, target);
+      } catch (e) {
+        this._log('ERROR', `Mirror trade failed: ${e.message}`);
+        return;
+      }
     }
 
     // Multi-whale: accumulate

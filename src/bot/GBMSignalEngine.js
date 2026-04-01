@@ -540,7 +540,7 @@ class GBMSignalEngine {
 
   _rsi(prices, period) {
     let gains = 0, losses = 0;
-    for (let i = 1; i <= period; i++) {
+    for (let i = 1; i < period; i++) {
       const diff = prices[i] - prices[i-1];
       if (diff > 0) gains += diff; else losses -= diff;
     }

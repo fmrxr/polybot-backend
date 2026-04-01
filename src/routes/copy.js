@@ -76,7 +76,7 @@ router.patch('/targets/:id', async (req, res) => {
 
     const result = await pool.query(
       `UPDATE copy_targets SET ${updates.join(', ')} WHERE id=$1 AND user_id=$2 RETURNING *`,
-      [targetId, ...values.slice(2)]
+      [targetId, req.userId, ...values.slice(2)]
     );
 
     if (result.rows.length === 0) {

@@ -1,3 +1,7 @@
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
 const authSection = document.getElementById('authSection');
 const dashboardSection = document.getElementById('dashboardSection');
 const loginTab = document.getElementById('loginTab');
@@ -111,7 +115,7 @@ async function loadDashboard() {
     document.getElementById('roi').textContent = `${stats.roi ?? 0}%`;
 
     const logsList = document.getElementById('logsList');
-    logsList.innerHTML = logs.length ? logs.map(log => `<div class="log-item"><strong>${log.level}</strong><span>${new Date(log.created_at).toLocaleString()}</span><div>${log.message}</div></div>`).join('') : '<div class="log-item">No logs found.</div>';
+    logsList.innerHTML = logs.length ? logs.map(log => `<div class="log-item"><strong>${escapeHtml(log.level)}</strong><span>${new Date(log.created_at).toLocaleString()}</span><div>${escapeHtml(log.message)}</div></div>`).join('') : '<div class="log-item">No logs found.</div>';
 
     const tradesBody = document.getElementById('tradesBody');
     tradesBody.innerHTML = trades.trades.length ? trades.trades.map(trade => `

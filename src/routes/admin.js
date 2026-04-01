@@ -61,7 +61,7 @@ router.get('/users', async (req, res) => {
       FROM users u
       LEFT JOIN bot_settings bs ON bs.user_id = u.id
       LEFT JOIN trades t ON t.user_id = u.id
-      GROUP BY u.id, bs.is_active, bs.paper_trading, bs.polymarket_wallet_address, bs.max_trade_size
+      GROUP BY u.id, bs.id
       ORDER BY u.created_at DESC
     `);
     res.json({ users: result.rows });
