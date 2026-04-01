@@ -294,7 +294,8 @@ class BotInstance {
   _fallbackSignal(btcData) {
     if (!this.engine.windowOpenPrice || !btcData.price) return null;
     const direction = btcData.price >= this.engine.windowOpenPrice ? 'UP' : 'DOWN';
-    const size = Math.min(parseFloat(this.settings.max_trade_size) * 0.25, parseFloat(this.settings.max_trade_size));
+    const MIN_TRADE_SIZE = 1.0;
+    const size = Math.max(MIN_TRADE_SIZE, Math.min(parseFloat(this.settings.max_trade_size) * 0.25, parseFloat(this.settings.max_trade_size)));
     return {
       direction,
       entry_price: 0.50,
@@ -310,6 +311,14 @@ class BotInstance {
   }
 
   async _executeTrade(signal, market, tokens, windowTs) {
+    const MIN_TRADE_SIZE = 1.0; // Polymarket minimum
+
+    // Enforce minimum trade size
+    if (signal.size < MIN_TRADE_SIZE) {
+      this._log('WARN', `Trade size $${signal.size.toFixed(2)} below minimum $${MIN_TRADE_SIZE} — skipping`);
+      return;
+    }
+
     const mode = this.paperTrading ? '[PAPER]' : '[LIVE]';
     const [upToken, downToken] = tokens;
     const tokenId = signal.direction === 'UP'
