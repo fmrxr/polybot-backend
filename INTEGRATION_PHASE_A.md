@@ -25,6 +25,124 @@ Execute anyway
 
 ---
 
+## ⚠️ PRE-REFACTOR CHECKLIST (CRITICAL)
+
+### 1. Dry-Run Mode (NO EXECUTION)
+Add feature flag to BotInstance:
+```javascript
+const DRY_RUN_NEW_STRATEGY = true; // Log only, no trades
+```
+
+In evaluate():
+```javascript
+if (DRY_RUN_NEW_STRATEGY) {
+  // Log gates but don't return decision
+  log.micro_confidence = microSignal.confidence;
+  log.ev_raw = ev_raw;
+  log.ev_adjusted = ev_adjusted;
+  log.recommended = evResult.recommended;
+  this._emit(log);
+  // Fall back to old logic for actual trading
+  return oldLogic();
+}
+```
+
+**Goal**: Run ~50–100 signals, collect logs, verify:
+- ✅ Skip rate is 70-80%
+- ✅ EV_adj distribution is sensible
+- ✅ Microstructure triggers on real latency
+
+### 2. Safe Fallback (Very Important)
+Wrap refactored code in try/catch:
+```javascript
+try {
+  // New pipeline with 3 gates
+  const microSignal = this.microEngine.composite(...);
+  const evResult = this.evEngine.computeAdjustedEV(...);
+  // ... gates ...
+  return newSignal;
+} catch(e) {
+  this._log('ERROR', `New strategy failed: ${e.message}. Using fallback.`);
+  // Fall back to old logic
+  return this._oldEvaluate(params);
+}
+```
+
+### 3. Feature Flag (Instant Switchback)
+Add to GBMSignalEngine constructor:
+```javascript
+this.USE_NEW_STRATEGY = false; // Start false, flip after dry-run
+```
+
+In evaluate():
+```javascript
+if (!this.USE_NEW_STRATEGY) {
+  return this._evaluateOld(params); // Old logic unchanged
+}
+
+// New strategy
+try {
+  // ... 3 gates ...
+} catch(e) {
+  // Fallback + alert
+}
+```
+
+### 4. Integration Order (One Gate At A Time)
+**Do NOT refactor everything at once:**
+
+**Day 1:** Microstructure gate only
+- Add MicrostructureEngine
+- Log micro.confidence
+- Reject if < 0.45
+- Keep old EV logic
+
+**Day 2:** Add EV gate
+- Inject EVEngine
+- Log ev_adjusted
+- Reject if < 3%
+- Microstructure already working
+
+**Day 3:** Reduce old signals
+- Lower RSI weight
+- Make EMA confirmation only
+- Combine with new gates
+
+**Day 4:** Connect execution
+- Only pass TRADE signals to ExecutionEngine
+- Rest use old execution
+
+### 5. Expectations (Mindset)
+First 1-2 days: Weird behavior (expected)
+- Signals may be sparse
+- Distribution may look odd
+- Win rate may be random (need 50+ samples)
+
+First 50 trades: Inconsistent (normal)
+- Too few to judge
+- Could be lucky or unlucky
+- Keep logging, don't tune
+
+After 100+ trades: Signal stabilizes (real data)
+- Win rate becomes predictable
+- EV distribution becomes clear
+- NOW you can tune thresholds
+
+**👉 DON'T TUNE EARLY. Wait for 100+ trades.**
+
+### 6. Log Checklist Before Going Live
+Run dry-run, then check:
+- ✅ Skip rate 70-80%
+- ✅ EV_adj mostly < 0.03 (being filtered)
+- ✅ Rare TRADE signals (1-5% rate)
+- ✅ Microstructure confidence distribution makes sense
+- ✅ No crashes or NaN values
+- ✅ Fallback working if you manually trigger error
+
+**Only then**: Flip `USE_NEW_STRATEGY = true` and execute
+
+---
+
 ## Step 1: Inject EVEngine into GBMSignalEngine
 
 ### File: `src/bot/GBMSignalEngine.js`
@@ -87,9 +205,18 @@ log.thin_liquidity = microSignal.thin_liquidity;
 // HARD GATE: No microstructure edge → SKIP
 // ⚠️ START STRICT: 0.45 threshold (can loosen to 0.3–0.4 later if too few trades)
 const microThreshold = 0.45;
-if (!microSignal.confidence || microSignal.confidence < microThreshold) {
+
+// NaN safety check (critical for debugging threshold behavior)
+if (!microSignal?.confidence || 
+    isNaN(microSignal.confidence) || 
+    microSignal.confidence < microThreshold) {
+  
+  // Log threshold details (very useful for tuning later)
   log.verdict = 'SKIP';
-  log.reason = `Weak microstructure edge (confidence ${microSignal.confidence.toFixed(2)} < ${microThreshold})`;
+  log.micro_confidence = microSignal?.confidence ?? null;
+  log.micro_threshold = microThreshold;
+  log.reason = `Weak microstructure edge (confidence ${(microSignal?.confidence ?? 0).toFixed(2)} < ${microThreshold})`;
+  
   this._emit(log);
   return null;
 }
@@ -211,8 +338,10 @@ In `BotInstance._executeTrade()`:
 // Gate: Only execute if micro edge is real
 // ⚠️ Must match GBMSignalEngine threshold (0.45 or adjusted)
 const microThreshold = 0.45;
-if (!signal.microstructure_confidence || signal.microstructure_confidence < microThreshold) {
-  this._log('WARN', `Skipping: Weak microstructure edge (${signal.microstructure_confidence.toFixed(2)})`);
+if (!signal?.microstructure_confidence || 
+    isNaN(signal.microstructure_confidence) || 
+    signal.microstructure_confidence < microThreshold) {
+  this._log('WARN', `Skipping: Weak microstructure edge (confidence ${(signal?.microstructure_confidence ?? 0).toFixed(2)} < ${microThreshold})`);
   return;
 }
 
@@ -246,20 +375,28 @@ After integration, **target** (with 0.45 micro threshold):
 - ✅ Avg P&L per trade: +$10-20
 
 **Red flags** (indicates gates too loose):
-- ❌ More than 5-10 trades/day = loosen EV threshold from 3% to 2%
-- ❌ Win rate < 60% = tighten microstructure threshold from 0.45 to 0.50
-- ❌ Slippage > 0.2% = increase order timeout or reduce ladder size
+- ❌ More than 10 trades/day = TIGHTEN (overtrading)
+  - EV: 3% → 3.5%+
+  - Micro confidence: 0.45 → 0.50+
+- ❌ Win rate < 60% = TIGHTEN microstructure threshold (low quality)
+  - Micro confidence: 0.45 → 0.50
+- ❌ Slippage > 0.2% = TIGHTEN execution (order size too big or depth too thin)
+  - Reduce ladder entry size
+  - Increase order timeout
 
-**Tuning guide**:
-If too few trades (< 2/day):
+**Tuning guide** (DISCIPLINE: one change per 24h, measure 100+ trades):
+
+If too few trades (< 2/day) - gates too tight:
 1. Reduce microstructure threshold: 0.45 → 0.40
 2. Reduce EV threshold: 3% → 2.5%
-3. Increase BTC delta sensitivity: lower adaptive threshold
+3. Increase BTC delta sensitivity: lower adaptive threshold min (20 bps → 15 bps)
 
-If still overtrading (> 10/day):
+If overtrading (> 10/day) - gates too loose:
 1. Increase microstructure threshold: 0.45 → 0.50
 2. Increase EV threshold: 3% → 3.5%
-3. Decrease BTC delta sensitivity: higher adaptive threshold
+3. Decrease BTC delta sensitivity: higher adaptive threshold max (100 bps → 150 bps)
+
+**Always measure before and after each change**
 
 ---
 
@@ -336,4 +473,80 @@ If still overtrading (> 10/day):
 - The outcome depends on sticking to the discipline
 - Every signal you pass through that doesn't meet gates = expected value destruction
 - Tight > loose, always
+
+---
+
+## 📊 Reading the Logs (Day 1 Integration)
+
+After 24 hours of paper trading, check **Signal Decisions** log for:
+
+### Good patterns (what you want):
+```
+SKIP | micro_confidence: 0.35 | micro_threshold: 0.45 ✓ Correct rejection
+SKIP | ev_adjusted: 0.01 (2.5%) | threshold: 0.03 (3%) ✓ Cost barrier working
+TRADE | micro_confidence: 0.52 | ev_adjusted: 0.045 ✓ High quality pass
+```
+
+### Bad patterns (tighten thresholds):
+```
+TRADE | micro_confidence: 0.25 | threshold: 0.45 ❌ Got through somehow
+TRADE | ev_adjusted: 0.01 | threshold: 0.03 ❌ Below threshold
+```
+
+### Target distribution (with 0.45 threshold):
+- 80-90% SKIP (too loose micro or low EV)
+- 10-20% WAIT (micro ok, need confirmation)
+- 1-5% TRADE (high quality, passed all gates)
+
+### Metrics to log (already in code):
+```
+log.micro_confidence = ?       ← How strong is the latency signal?
+log.micro_threshold = 0.45    ← What's the gate?
+log.ev_adjusted = ?           ← After costs?
+log.reason = "..."            ← Why SKIP/TRADE?
+```
+
+If you see:
+- ❌ >5% TRADE rate = micro threshold too loose → increase to 0.50
+- ✅ 1-3% TRADE rate = micro threshold just right
+- ❌ 0% TRADE rate for 6+ hours = threshold too tight → loosen to 0.40
+
+**This gate alone will cut 50–70% of bad trades.**
+
+---
+
+## 🚨 Troubleshooting During Integration
+
+| Problem | Check | Fix |
+|---------|-------|-----|
+| Bot crashes | Error logs | Fallback working? Feature flag = false |
+| No signals (0% TRADE) | micro.confidence values | Threshold too tight? Drop to 0.40 |
+| Too many signals (>5% TRADE) | micro + EV logs | Threshold too loose? Raise to 0.50 |
+| EV_adj doesn't improve win rate | Sample size | Wait for 100+ trades |
+| Slippage jumps | Order size + depth ratio | Reduce ladder entry size |
+| Weird distribution | NaN in logs | Add null checks, fix MicrostructureEngine |
+
+**Golden rule:** If unsure, flip feature flag to old logic and run diagnostic.
+
+---
+
+## 🎯 Success Criteria
+
+**Phase A refactoring is DONE when:**
+1. ✅ Dry-run shows 70-80% skip rate
+2. ✅ EV_adj filtering working (mostly < 0.03)
+3. ✅ Microstructure gate shows clean triggers
+4. ✅ No crashes or NaN errors
+5. ✅ Fallback tested and working
+6. ✅ Feature flag switches instantly
+7. ✅ Live with new strategy shows improved metrics after 100+ trades
+
+**Outcome:**
+- Bot is now microstructure-first, cost-aware
+- Trades only on latency + positive EV
+- Skip rate 70-80% (tight filtering)
+- Win rate 65%+ (high quality)
+- Trades/day 3-5 (low frequency, high precision)
+
+This is the inflection point. From here, it's just discipline.
 
