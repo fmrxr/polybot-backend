@@ -82,6 +82,9 @@ class BotInstance {
       this._log('WARN', `Chainlink feed unavailable: ${e.message} — window delta will use Binance price`);
     }
 
+    // Initialize Polymarket CLOB client with API credentials
+    await this.polymarket.init();
+
     await this.polymarket.fetchActiveBTCMarkets();
 
     this.isRunning = true;
