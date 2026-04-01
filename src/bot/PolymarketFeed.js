@@ -44,13 +44,14 @@ class PolymarketFeed {
         console.log(`[PolymarketFeed] API credentials derived for ${this.address}`);
 
         // Step 2: Create trading client with L2 credentials
-        // Signature type 0 = EOA (standalone wallet)
+        // Signature type 2 = GNOSIS_SAFE (Polymarket proxy wallet)
+        // This is the standard type for users who log into Polymarket with MetaMask/browser wallet
         this.clobClient = new ClobClient(
           POLYMARKET_CLOB_API,
           CHAIN_ID,
           this.wallet,
           apiCreds,
-          0, // EOA wallet type
+          2, // GNOSIS_SAFE - Polymarket proxy wallet type
           this.address
         );
         console.log(`[PolymarketFeed] Trading client created`);
