@@ -8,6 +8,7 @@ const authRoutes = require('./routes/auth');
 const botRoutes = require('./routes/bot');
 const tradesRoutes = require('./routes/trades');
 const userRoutes = require('./routes/user');
+const adminRoutes = require('./routes/admin');
 const { BotManager } = require('./bot/BotManager');
 
 const app = express();
@@ -51,6 +52,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/bot', botRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
@@ -77,10 +79,24 @@ async function autoRestartBots() {
   }
 }
 
+// Seed admin user
+async function seedAdmin() {
+  const { pool } = require('./models/db');
+  try {
+    await pool.query(
+      'UPDATE users SET is_admin = true WHERE email = $1',
+      ['mereeffet@gmail.com']
+    );
+  } catch (e) {
+    console.error('Admin seed error:', e.message);
+  }
+}
+
 // Start server
 async function start() {
   await initDB();
   await addDecisionsTable();
+  await seedAdmin();
   await autoRestartBots();
   app.listen(PORT, () => {
     console.log(`🚀 PolyBot backend running on port ${PORT}`);

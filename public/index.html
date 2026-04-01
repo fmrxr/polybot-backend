@@ -217,6 +217,29 @@ input:checked+.t-slider:before{transform:translateX(20px);background:#000}
 .trade-status.open{background:rgba(245,200,66,.1);color:var(--yellow)}
 .trade-status.win{background:rgba(0,229,160,.12);color:var(--accent)}
 .trade-status.loss{background:rgba(255,77,106,.12);color:var(--red)}
+
+/* ADMIN PANEL */
+.admin-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.admin-stats .stat-card{padding:16px}
+.admin-table{margin-bottom:16px}
+.admin-table table{width:100%}
+.admin-table th,.admin-table td{padding:10px 8px;text-align:left;font-size:13px;border-bottom:1px solid var(--border)}
+.admin-table th{background:var(--bg3);font-weight:600;font-family:var(--mono);text-transform:uppercase;font-size:11px;color:var(--muted)}
+.admin-table tr:hover{background:rgba(0,229,160,.04)}
+.admin-table .bot-status{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.admin-table .bot-status.active{background:rgba(0,229,160,.12);color:var(--accent)}
+.admin-table .bot-status.inactive{background:rgba(74,96,112,.12);color:var(--muted)}
+.admin-table .winning-bot{border-left:3px solid var(--accent)}
+.tbl-wrap{overflow-x:auto;border-radius:var(--radius)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+table thead tr{background:var(--bg3)}
+table th{padding:12px 10px;text-align:left;font-weight:600;font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border)}
+table td{padding:10px;border-bottom:1px solid var(--border);color:var(--text)}
+table tbody tr:hover{background:rgba(0,229,160,.02)}
+table td.empty{text-align:center;color:var(--muted);padding:20px}
+.mono{font-family:var(--mono);font-size:12px}
+.positive{color:var(--accent)}
+.negative{color:var(--red)}
 </style>
 </head>
 <body>
@@ -268,6 +291,8 @@ input:checked+.t-slider:before{transform:translateX(20px);background:#000}
       <button class="nav-item" id="nav-trades" onclick="showTab('trades')"><span class="nav-icon">◎</span>Trades</button>
       <div class="nav-label">Config</div>
       <button class="nav-item" id="nav-settings" onclick="showTab('settings')"><span class="nav-icon">⚙</span>Settings</button>
+      <div class="nav-label hidden" id="admin-nav-label">Admin</div>
+      <button class="nav-item hidden" id="nav-admin" onclick="showTab('admin')"><span class="nav-icon">🛡</span>Admin Panel</button>
     </nav>
     <div class="sidebar-footer">
       <div class="user-pill">
@@ -480,6 +505,95 @@ input:checked+.t-slider:before{transform:translateX(20px);background:#000}
       <button class="btn btn-primary" id="save-btn" onclick="saveSettings()"><div class="btn-spinner"></div>✓ Save Settings</button>
     </div>
 
+    <!-- ADMIN PANEL -->
+    <div id="tab-admin" class="hidden">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Admin Panel</div>
+          <div class="page-sub">Platform overview and user management</div>
+        </div>
+        <button class="header-btn" onclick="loadAdmin()"><span>↻</span> Refresh</button>
+      </div>
+
+      <!-- Platform Stats -->
+      <div class="admin-stats">
+        <div class="stat-card"><div class="stat-label">Total Users</div><div class="stat-value" id="admin-total-users">—</div></div>
+        <div class="stat-card"><div class="stat-label">Active Bots</div><div class="stat-value positive" id="admin-active-bots">—</div></div>
+        <div class="stat-card"><div class="stat-label">Platform P&amp;L</div><div class="stat-value" id="admin-total-pnl">—</div></div>
+        <div class="stat-card"><div class="stat-label">24h Trades</div><div class="stat-value" id="admin-trades-24h">—</div></div>
+        <div class="stat-card"><div class="stat-label">Platform Win Rate</div><div class="stat-value" id="admin-win-rate">—</div></div>
+      </div>
+
+      <!-- All Users Table -->
+      <div class="card">
+        <div class="card-hd"><div class="card-title">All Users</div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Trades</th>
+                <th>P&amp;L</th>
+                <th>Win%</th>
+                <th>Bot</th>
+                <th>Mode</th>
+                <th>Wallet</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="admin-users-body">
+              <tr><td colspan="8" class="empty">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- All Trades -->
+      <div class="card">
+        <div class="card-hd"><div class="card-title">Platform Trades (Last 50)</div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Time</th>
+                <th>Dir</th>
+                <th>Price</th>
+                <th>Size</th>
+                <th>Prob</th>
+                <th>Result</th>
+                <th>P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody id="admin-trades-body">
+              <tr><td colspan="8" class="empty">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Audit Log -->
+      <div class="card">
+        <div class="card-hd"><div class="card-title">Audit Log (Last 50)</div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Action</th>
+                <th>Admin</th>
+                <th>Target User</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="admin-logs-body">
+              <tr><td colspan="5" class="empty">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </main>
 </div>
 
@@ -504,13 +618,14 @@ function showPage(name) {
   ['login','register','app'].forEach(p => document.getElementById('page-'+p).classList.toggle('hidden', p!==name));
 }
 function showTab(name) {
-  ['dashboard','signals','trades','settings'].forEach(t => {
+  ['dashboard','signals','trades','settings','admin'].forEach(t => {
     document.getElementById('tab-'+t).classList.toggle('hidden', t!==name);
     document.getElementById('nav-'+t).classList.toggle('active', t===name);
   });
   if(name==='trades') loadTrades(1);
   if(name==='settings') loadSettings();
   if(name==='signals') refreshSignals();
+  if(name==='admin') loadAdmin();
 }
 
 // ── CONNECTION STATUS ─────────────────────────────────────────────────────
@@ -594,6 +709,16 @@ function enterApp() {
   document.getElementById('sidebar-email').textContent = email;
   const av = document.getElementById('user-avatar');
   if(av) av.textContent = (email[0]||'?').toUpperCase();
+
+  // Show admin panel only for admins
+  if(currentUser?.is_admin) {
+    document.getElementById('nav-admin').classList.remove('hidden');
+    document.getElementById('admin-nav-label').style.display = '';
+  } else {
+    document.getElementById('nav-admin').classList.add('hidden');
+    document.getElementById('admin-nav-label').style.display = 'none';
+  }
+
   showTab('dashboard');
   refreshDashboard();
   pollInterval = setInterval(()=>refreshDashboard(), 10000);
@@ -1018,6 +1143,127 @@ async function saveSettings() {
     toast('Save failed: '+e.message,'error');
   }
   btn.classList.remove('loading'); btn.disabled=false;
+}
+
+// ── ADMIN PANEL ───────────────────────────────────────────────────────────
+async function loadAdmin() {
+  try {
+    const [analytics, users, trades, logs] = await Promise.all([
+      req('GET', '/api/admin/analytics'),
+      req('GET', '/api/admin/users'),
+      req('GET', '/api/admin/trades?limit=50'),
+      req('GET', '/api/admin/logs?limit=50')
+    ]);
+    renderAdminStats(analytics);
+    renderAdminUsers(users.users || []);
+    renderAdminTrades(trades.trades || []);
+    renderAuditLog(logs.logs || []);
+  } catch(e) {
+    toast('Failed to load admin data: '+e.message,'error');
+  }
+}
+
+function renderAdminStats(stats) {
+  const setVal = (id, val, cls) => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = val;
+    if(cls) el.className = 'stat-value ' + cls;
+  };
+  setVal('admin-total-users', stats.total_users || 0);
+  setVal('admin-active-bots', stats.active_bots || 0, 'positive');
+  const pnl = parseFloat(stats.total_pnl) || 0;
+  setVal('admin-total-pnl', (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2), pnl >= 0 ? 'positive' : 'negative');
+  setVal('admin-trades-24h', stats.trades_24h || 0);
+  const wr = parseFloat(stats.platform_win_rate) || 0;
+  setVal('admin-win-rate', wr.toFixed(1) + '%', wr > 50 ? 'positive' : 'negative');
+}
+
+function renderAdminUsers(users) {
+  const tb = document.getElementById('admin-users-body');
+  if(!users.length) {
+    tb.innerHTML = '<tr><td colspan="8" class="empty">No users</td></tr>';
+    return;
+  }
+  tb.innerHTML = users.map(u => {
+    const pnl = parseFloat(u.total_pnl) || 0;
+    const winning = pnl > 0;
+    const botStatus = u.is_active ?
+      '<span class="bot-status active">● RUNNING</span>' :
+      '<span class="bot-status inactive">○ IDLE</span>';
+    const mode = u.paper_trading !== false ?
+      '<span class="badge badge-yellow" style="font-size:9px">PAPER</span>' :
+      '<span class="badge badge-blue" style="font-size:9px">LIVE</span>';
+    const wallet = u.polymarket_wallet_address ?
+      (u.polymarket_wallet_address.slice(0,6) + '...' + u.polymarket_wallet_address.slice(-4)) :
+      '—';
+    return `<tr ${winning ? 'class="winning-bot"' : ''}>
+      <td class="mono">${u.email}</td>
+      <td class="mono">${u.trade_count || 0}</td>
+      <td class="mono ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+$' : '-$'}${Math.abs(pnl).toFixed(2)}</td>
+      <td class="mono">${u.win_rate ? u.win_rate.toFixed(1) : 0}%</td>
+      <td>${botStatus}</td>
+      <td>${mode}</td>
+      <td class="mono" style="font-size:11px">${wallet}</td>
+      <td><button class="btn btn-sm btn-ghost" onclick="adminToggleBot(${u.id}, ${!u.is_active})">${u.is_active ? 'Stop' : 'Start'}</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAdminTrades(trades) {
+  const tb = document.getElementById('admin-trades-body');
+  if(!trades.length) {
+    tb.innerHTML = '<tr><td colspan="8" class="empty">No trades</td></tr>';
+    return;
+  }
+  tb.innerHTML = trades.map(t => {
+    const dir = t.direction === 'UP' ?
+      '<span class="badge badge-green" style="font-size:9px">▲ UP</span>' :
+      '<span class="badge badge-red" style="font-size:9px">▼ DOWN</span>';
+    const res = t.result ?
+      `<span class="badge ${t.result === 'WIN' ? 'badge-green' : 'badge-red'}" style="font-size:9px">${t.result}</span>` :
+      '<span class="badge badge-yellow" style="font-size:9px">OPEN</span>';
+    const pnl = t.pnl != null ?
+      `<span class="mono ${parseFloat(t.pnl) >= 0 ? 'positive' : 'negative'}">${parseFloat(t.pnl) >= 0 ? '+$' : '-$'}${Math.abs(parseFloat(t.pnl)).toFixed(2)}</span>` :
+      '—';
+    return `<tr>
+      <td class="mono" style="font-size:11px">${t.email || '—'}</td>
+      <td class="mono" style="font-size:11px">${new Date(t.created_at).toLocaleString()}</td>
+      <td>${dir}</td>
+      <td class="mono">$${parseFloat(t.entry_price).toFixed(3)}</td>
+      <td class="mono">$${parseFloat(t.size).toFixed(2)}</td>
+      <td class="mono">${t.market_prob ? (parseFloat(t.market_prob)*100).toFixed(0)+'%' : '—'}</td>
+      <td>${res}</td>
+      <td>${pnl}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAuditLog(logs) {
+  const tb = document.getElementById('admin-logs-body');
+  if(!logs.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="empty">No audit logs</td></tr>';
+    return;
+  }
+  tb.innerHTML = logs.map(l => {
+    return `<tr>
+      <td class="mono" style="font-size:11px">${new Date(l.created_at).toLocaleString()}</td>
+      <td class="mono" style="font-size:11px;color:var(--accent)">${l.action}</td>
+      <td class="mono" style="font-size:11px">${l.admin_email || '—'}</td>
+      <td class="mono" style="font-size:11px">${l.target_email || '—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${l.details || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function adminToggleBot(userId, shouldStart) {
+  try {
+    await req('POST', `/api/admin/users/${userId}/toggle-bot`);
+    toast(shouldStart ? 'Bot started' : 'Bot stopped', 'success');
+    await loadAdmin();
+  } catch(e) {
+    toast('Failed to toggle bot: '+e.message, 'error');
+  }
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────

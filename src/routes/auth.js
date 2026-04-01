@@ -33,7 +33,7 @@ router.post('/register', async (req, res) => {
     await pool.query('INSERT INTO bot_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [user.id]);
 
     const token = jwt.sign({ userId: user.id }, getJwtSecret(), { expiresIn: '7d' });
-    res.status(201).json({ token, user: { id: user.id, email: user.email } });
+    res.status(201).json({ token, user: { id: user.id, email: user.email, is_admin: false } });
   } catch (err) {
     console.error('Register error:', err);
     res.status(500).json({ error: err.message.includes('JWT_SECRET') ? 'Server configuration error' : 'Server error' });
@@ -54,7 +54,7 @@ router.post('/login', async (req, res) => {
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
     const token = jwt.sign({ userId: user.id }, getJwtSecret(), { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, email: user.email } });
+    res.json({ token, user: { id: user.id, email: user.email, is_admin: user.is_admin || false } });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: err.message.includes('JWT_SECRET') ? 'Server configuration error' : 'Server error' });

@@ -66,6 +66,7 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_bot_logs_user_id ON bot_logs(user_id);
 
       -- Add new columns to existing tables if they don't exist yet
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT false;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_trading BOOLEAN DEFAULT true;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS encrypted_polymarket_api_key TEXT;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS polymarket_wallet_address VARCHAR(255);
@@ -95,6 +96,16 @@ async function addDecisionsTable() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_decisions_user_id ON bot_decisions(user_id);
+
+      CREATE TABLE IF NOT EXISTS admin_logs (
+        id SERIAL PRIMARY KEY,
+        admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        action VARCHAR(100),
+        target_user_id INTEGER,
+        details TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_admin_logs_created_at ON admin_logs(created_at);
     `);
   } finally {
     client.release();

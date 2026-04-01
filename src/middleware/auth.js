@@ -16,4 +16,17 @@ function authMiddleware(req, res, next) {
   }
 }
 
-module.exports = { authMiddleware };
+async function adminMiddleware(req, res, next) {
+  const { pool } = require('../models/db');
+  try {
+    const result = await pool.query('SELECT is_admin FROM users WHERE id = $1', [req.userId]);
+    if (!result.rows[0]?.is_admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+module.exports = { authMiddleware, adminMiddleware };
