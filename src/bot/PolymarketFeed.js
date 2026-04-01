@@ -1,3 +1,9 @@
+// Ensure Web Crypto API is available for ethers.js wallet signing
+if (!globalThis.crypto) {
+  const crypto = require('crypto');
+  globalThis.crypto = crypto;
+}
+
 const axios = require('axios');
 const { ethers } = require('ethers');
 
