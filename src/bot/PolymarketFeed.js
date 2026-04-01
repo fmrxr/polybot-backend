@@ -245,6 +245,8 @@ class PolymarketFeed {
 
       // Use official SDK to place order with proper authentication
       const orderSide = side === 'BUY' ? this.Side.BUY : this.Side.SELL;
+      console.log(`[PolymarketFeed] Placing order: ${orderSide} ${size} shares @ $${price}`);
+
       const response = await this.clobClient.createAndPostOrder(
         {
           tokenID: tokenId,
@@ -259,13 +261,20 @@ class PolymarketFeed {
         this.OrderType.GTC  // Good-Til-Cancelled order type
       );
 
+      console.log(`[PolymarketFeed] Order response:`, JSON.stringify(response, null, 2));
+
+      if (!response || !response.success) {
+        console.error('[PolymarketFeed] Order rejected by CLOB:', response?.errorMsg || 'Unknown error');
+      }
+
       return {
-        orderID: response.orderID,
-        id: response.orderID,
-        status: response.status
+        orderID: response?.orderID,
+        id: response?.orderID,
+        status: response?.status
       };
     } catch (err) {
       console.error('[PolymarketFeed] Order failed:', err.message);
+      console.error('[PolymarketFeed] Full error:', err);
       throw new Error(err.message || 'Order placement failed');
     }
   }
