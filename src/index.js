@@ -32,6 +32,7 @@ app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false 
 const allowedOrigins = [
   /\.netlify\.app$/,
   /\.railway\.app$/,
+  /\.vercel\.app$/,
   /^http:\/\/localhost(:\d+)?$/,
 ];
 app.use(cors({
