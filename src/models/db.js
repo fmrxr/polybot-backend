@@ -23,7 +23,7 @@ async function initDB() {
         kelly_cap DECIMAL DEFAULT 0.25,
         max_daily_loss DECIMAL DEFAULT 50.0,
         max_trade_size DECIMAL DEFAULT 20.0,
-        min_ev_threshold DECIMAL DEFAULT 0.12,
+        min_ev_threshold DECIMAL DEFAULT 0.05,
         min_prob_diff DECIMAL DEFAULT 0.08,
         direction_filter VARCHAR(10) DEFAULT 'BOTH',
         market_prob_min DECIMAL DEFAULT 0.40,
@@ -80,7 +80,7 @@ async function initDB() {
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS token_id VARCHAR(255);
 
       -- Settings for 12 improvements
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS min_edge DECIMAL DEFAULT 0.05;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS min_edge DECIMAL DEFAULT 0.03;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS snipe_before_close_sec INTEGER DEFAULT 10;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS require_whale_convergence BOOLEAN DEFAULT false;
 

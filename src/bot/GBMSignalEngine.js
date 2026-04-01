@@ -229,7 +229,7 @@ class GBMSignalEngine {
     log.confidence = (confidence * 100).toFixed(1) + '%';
     log.direction = direction;
 
-    const minConfidence = parseFloat(this.settings.min_ev_threshold) || 0.30;
+    const minConfidence = parseFloat(this.settings.min_ev_threshold) || 0.05;
 
     if (confidence < minConfidence) {
       log.verdict = 'SKIP';
@@ -256,7 +256,7 @@ class GBMSignalEngine {
     // Edge = how much better we think the outcome is vs what market prices in
     const edge = modelProb - marketProb;
     // NO TRADE ZONE (Improvement 11): skip if edge is non-positive
-    const minEdge = parseFloat(this.settings.min_edge) || 0.05;
+    const minEdge = parseFloat(this.settings.min_edge) || 0.03;
     if (edge <= minEdge) {
       log.verdict = 'SKIP';
       log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(minEdge*100).toFixed(1)}% — no trade zone`;
