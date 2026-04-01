@@ -28,7 +28,7 @@ router.put('/settings', async (req, res) => {
   const {
     private_key, polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
     min_ev_threshold, min_prob_diff, direction_filter,
-    market_prob_min, market_prob_max, paper_trading
+    market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence
   } = req.body;
 
   try {
@@ -51,8 +51,8 @@ router.put('/settings', async (req, res) => {
 
     await pool.query(`
       INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
-        min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+        min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
@@ -66,13 +66,18 @@ router.put('/settings', async (req, res) => {
         market_prob_min = COALESCE($11, bot_settings.market_prob_min),
         market_prob_max = COALESCE($12, bot_settings.market_prob_max),
         paper_trading = COALESCE($13, bot_settings.paper_trading),
+        min_edge = COALESCE($14, bot_settings.min_edge),
+        snipe_before_close_sec = COALESCE($15, bot_settings.snipe_before_close_sec),
+        require_whale_convergence = COALESCE($16, bot_settings.require_whale_convergence),
         updated_at = NOW()
     `, [
       req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
       kelly_cap || null, max_daily_loss || null, max_trade_size || null,
       min_ev_threshold || null, min_prob_diff || null, direction_filter || null,
       market_prob_min || null, market_prob_max || null,
-      paper_trading !== undefined ? paper_trading : null
+      paper_trading !== undefined ? paper_trading : null,
+      min_edge || null, snipe_before_close_sec || null,
+      require_whale_convergence !== undefined ? require_whale_convergence : null
     ]);
 
     res.json({ success: true });
@@ -162,6 +167,20 @@ router.get('/stats', async (req, res) => {
     res.json({ ...stats, win_rate: parseFloat(winRate), roi: parseFloat(roi) });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/user/reset-paper-balance — Reset paper trading balance to $10,000
+router.post('/reset-paper-balance', async (req, res) => {
+  try {
+    await pool.query(
+      'UPDATE bot_settings SET paper_balance = 10000, paper_balance_initialized = true WHERE user_id = $1',
+      [req.userId]
+    );
+    res.json({ success: true, message: 'Paper balance reset to $10,000' });
+  } catch (err) {
+    console.error('Reset paper balance error:', err);
+    res.status(500).json({ error: 'Failed to reset paper balance' });
   }
 });
 

@@ -26,6 +26,7 @@ class BotInstance {
     this.userId = userId;
     this.settings = settings;
     this.paperTrading = settings.paper_trading !== false;
+    this.paperBalance = parseFloat(settings.paper_balance) || 10000;
     this.binance = new BinanceFeed();
     this.chainlink = new ChainlinkFeed();
     this.polymarket = null;
@@ -100,9 +101,20 @@ class BotInstance {
     // Restore open trades from database (fixes orphaned trades on restart)
     await this._reloadOpenTrades();
 
+    // Initialize paper balance if not done yet
+    if (this.paperTrading && !this.settings.paper_balance_initialized) {
+      await pool.query(
+        'UPDATE bot_settings SET paper_balance = $1, paper_balance_initialized = true WHERE user_id = $2',
+        [10000, this.userId]
+      );
+      this.paperBalance = 10000;
+      this._log('INFO', 'Paper trading account initialized with $10,000');
+    }
+
     this.isRunning = true;
     const mode = this.paperTrading ? '📄 PAPER TRADING' : '💰 LIVE TRADING';
-    this._log('INFO', `Bot started [${mode}] for user ${this.userId}`);
+    const balanceStr = this.paperTrading ? ` | Balance: $${this.paperBalance.toFixed(2)}` : '';
+    this._log('INFO', `Bot started [${mode}] for user ${this.userId}${balanceStr}`);
 
     // Main loop: check timing every second
     this.mainTimer = setInterval(() => this._tick(), 1000);
@@ -399,6 +411,12 @@ class BotInstance {
       }
     }
 
+    // Check paper trading balance
+    if (this.paperTrading && this.paperBalance < signal.size) {
+      this._log('WARN', `Insufficient paper balance: $${this.paperBalance.toFixed(2)} < $${signal.size.toFixed(2)} — SKIP`);
+      return;
+    }
+
     if (this.paperTrading) {
       try {
         const result = await pool.query(
@@ -413,7 +431,13 @@ class BotInstance {
           tokenId, entryPrice: signal.entry_price, size: signal.size,
           paper: true, windowTs, confidence: signal.confidence
         });
-        this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded`);
+        // Deduct trade size from paper balance
+        this.paperBalance -= signal.size;
+        await pool.query(
+          'UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2',
+          [this.paperBalance, this.userId]
+        );
+        this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded | Balance: $${this.paperBalance.toFixed(2)}`);
       } catch(e) {
         this._log('ERROR', `[PAPER] Failed to record trade: ${e.message}`);
       }
@@ -550,6 +574,13 @@ class BotInstance {
             `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2, exit_reason=$2 WHERE id=$3`,
             [unrealizedPnL, exitReason, tradeId]
           );
+          // Add back trade size + P&L to paper balance
+          if (trade.paper) {
+            this.paperBalance += tradeSize + unrealizedPnL;
+            await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2',
+              [this.paperBalance, this.userId]);
+            this._log('INFO', `[PAPER] Balance updated: $${this.paperBalance.toFixed(2)}`);
+          }
           this.openTrades.delete(tradeId);
         }
       } catch(e) {
@@ -583,6 +614,14 @@ class BotInstance {
 
         const mode = trade.paper ? '[PAPER]' : '[LIVE]';
         this._log('INFO', `${mode} Trade #${tradeId} → ${win ? '✅ WIN' : '❌ LOSS'} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+
+        // Add back trade size + P&L to paper balance
+        if (trade.paper) {
+          this.paperBalance += trade.size + pnl;
+          await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2',
+            [this.paperBalance, this.userId]);
+          this._log('INFO', `[PAPER] Balance updated: $${this.paperBalance.toFixed(2)}`);
+        }
         this.openTrades.delete(tradeId);
       } catch(err) {
         this._log('ERROR', `Resolution check failed trade #${tradeId}: ${err.message}`);
@@ -617,6 +656,7 @@ class BotInstance {
     return {
       is_running: this.isRunning,
       paper_trading: this.paperTrading,
+      paper_balance: this.paperBalance,
       open_trades: this.openTrades.size,
       in_snipe_loop: this.inSnipeLoop,
       last_window_ts: this.lastWindowTs,

@@ -381,6 +381,7 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
           <div class="mon-cell"><div class="mon-key">Momentum</div><div class="mon-val" id="m-mom">—</div></div>
           <div class="mon-cell"><div class="mon-key">OB Imbalance</div><div class="mon-val" id="m-ob">—</div></div>
           <div class="mon-cell"><div class="mon-key">Open Trades</div><div class="mon-val" id="m-open">—</div></div>
+          <div class="mon-cell"><div class="mon-key">Paper Balance</div><div class="mon-val" id="m-balance">—</div></div>
           <div class="mon-cell"><div class="mon-key">Mode</div><div class="mon-val" id="m-mode">—</div></div>
           <div class="mon-cell"><div class="mon-key">Last Updated</div><div class="mon-val" id="m-updated" style="font-size:11px">—</div></div>
         </div>
@@ -564,6 +565,15 @@ table td.empty{text-align:center;color:var(--muted);padding:20px}
           <div class="form-group"><label>Market Prob Max</label><input id="s-prob-max" type="number" step="0.01" min="0.5" max="0.9"/><div class="hint">0.40–0.60 sweet spot</div></div>
           <div class="form-group"><label>Min Edge (NO TRADE ZONE)</label><input id="s-min-edge" type="number" step="0.01" min="0.01" max="0.50"/><div class="hint">0.05 = skip when model edge &lt; 5% above market</div></div>
           <div class="form-group"><label>Snipe Window (seconds)</label><select id="s-snipe-sec"><option value="10">T-10s (default)</option><option value="30">T-30s (wider window)</option><option value="60">T-60s (max info)</option></select><div class="hint">How early before window close to start evaluating</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-title">Paper Trading</div>
+        <div style="padding:15px 0">
+          <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="s-paper"/> Paper Trading Mode</label>
+          <div class="hint">Run trades with virtual $10,000 balance — no real money</div>
+          <button class="btn btn-secondary" id="reset-balance-btn" onclick="resetPaperBalance()" style="margin-top:10px">↻ Reset Balance to $10,000</button>
         </div>
       </div>
 
@@ -1055,6 +1065,9 @@ function updateMarketSnapshot(md,status) {
   }
   setMon('m-updated', md.updated_at?new Date(md.updated_at).toLocaleTimeString():'—');
   setMon('m-open', status.open_trades!=null?status.open_trades:'—');
+  const balanceStr = status.paper_balance!=null?'$'+parseFloat(status.paper_balance).toFixed(0):'—';
+  const balanceColor = status.paper_balance!=null?(status.paper_balance>10000?'up':status.paper_balance<10000?'dn':'nt'):'';
+  setMon('m-balance', balanceStr, balanceColor);
   setMon('m-mode', status.paper_trading===false?'LIVE 💰':'PAPER 📄', status.paper_trading===false?'dn':'nt');
 }
 
@@ -1341,6 +1354,20 @@ async function saveSettings() {
     toast('Save failed: '+e.message,'error');
   }
   btn.classList.remove('loading'); btn.disabled=false;
+}
+
+async function resetPaperBalance() {
+  if(!confirm('Reset paper balance to $10,000? This will clear all paper trading history.')) return;
+  const btn=document.getElementById('reset-balance-btn');
+  btn.disabled=true;
+  try {
+    await req('POST','/api/user/reset-paper-balance',{});
+    toast('Paper balance reset to $10,000','success');
+    await refreshDashboard();
+  } catch(e) {
+    toast('Reset failed: '+e.message,'error');
+  }
+  btn.disabled=false;
 }
 
 // ── ADMIN PANEL ───────────────────────────────────────────────────────────

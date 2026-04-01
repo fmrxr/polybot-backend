@@ -87,6 +87,10 @@ async function initDB() {
       -- Copy trading enhancements
       ALTER TABLE copy_targets ADD COLUMN IF NOT EXISTS whale_score DECIMAL DEFAULT 0.5;
       ALTER TABLE copy_targets ADD COLUMN IF NOT EXISTS min_confirmations INTEGER DEFAULT 1;
+
+      -- Paper trading wallet system
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_balance DECIMAL DEFAULT 10000;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false;
     `);
     console.log('✅ Database initialized');
   } finally {
