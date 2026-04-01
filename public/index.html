@@ -1167,6 +1167,45 @@
       <div id="trades" class="page">
         <h2 style="margin-bottom: 20px; font-size: 24px; font-weight: bold;">Trade History with Gate Data</h2>
 
+        <!-- Pro Metrics Card -->
+        <div id="proMetricsCard" style="background: rgba(26, 31, 58, 0.5); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; margin-bottom: 20px; display: none;">
+          <div style="font-size: 13px; font-weight: bold; color: var(--text-muted); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 1px;">Pro Metrics</div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px;">
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Sharpe Ratio</div>
+              <div id="metricSharpe" style="font-size: 22px; font-weight: bold;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Max Drawdown</div>
+              <div id="metricDrawdown" style="font-size: 22px; font-weight: bold; color: #ef4444;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Expectancy</div>
+              <div id="metricExpectancy" style="font-size: 22px; font-weight: bold;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Profit Factor</div>
+              <div id="metricProfitFactor" style="font-size: 22px; font-weight: bold;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Win Streak</div>
+              <div id="metricWinStreak" style="font-size: 22px; font-weight: bold; color: #22c55e;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Loss Streak</div>
+              <div id="metricLossStreak" style="font-size: 22px; font-weight: bold; color: #ef4444;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Avg Win</div>
+              <div id="metricAvgWin" style="font-size: 22px; font-weight: bold; color: #22c55e;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">Avg Loss</div>
+              <div id="metricAvgLoss" style="font-size: 22px; font-weight: bold; color: #ef4444;">—</div>
+            </div>
+          </div>
+        </div>
+
         <div style="background: rgba(26, 31, 58, 0.5); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden;">
           <table>
             <thead>
@@ -1626,16 +1665,47 @@
     async function loadTrades() {
       const token = localStorage.getItem('token');
       try {
-        const res = await fetch(`${window.API_BASE||''}/api/trades?page=${currentPage}&limit=${tradesPerPage}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const data = await res.json();
+        const [tradesRes, statsRes] = await Promise.all([
+          fetch(`${window.API_BASE||''}/api/trades?page=${currentPage}&limit=${tradesPerPage}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          }),
+          fetch(`${window.API_BASE||''}/api/trades/stats`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          })
+        ]);
+        const data = await tradesRes.json();
         trades = data.trades || [];
-
         renderTrades(data);
+
+        if (statsRes.ok) {
+          const stats = await statsRes.json();
+          renderProMetrics(stats);
+        }
       } catch (err) {
         console.error('Load trades error:', err);
       }
+    }
+
+    function renderProMetrics(s) {
+      if (!s || s.total_trades === 0) return;
+      document.getElementById('proMetricsCard').style.display = 'block';
+
+      const fmt = (v, prefix='', suffix='') => v == null ? '—' : `${prefix}${v}${suffix}`;
+      const sharpeColor = s.sharpe >= 1 ? '#22c55e' : s.sharpe >= 0 ? '#f59e0b' : '#ef4444';
+      const pfColor = s.profit_factor >= 1.5 ? '#22c55e' : s.profit_factor >= 1 ? '#f59e0b' : '#ef4444';
+      const expColor = s.expectancy >= 0 ? '#22c55e' : '#ef4444';
+
+      document.getElementById('metricSharpe').textContent = fmt(s.sharpe);
+      document.getElementById('metricSharpe').style.color = sharpeColor;
+      document.getElementById('metricDrawdown').textContent = fmt(s.max_drawdown, '-$');
+      document.getElementById('metricExpectancy').textContent = fmt(s.expectancy, '$');
+      document.getElementById('metricExpectancy').style.color = expColor;
+      document.getElementById('metricProfitFactor').textContent = s.profit_factor >= 99 ? '∞' : fmt(s.profit_factor);
+      document.getElementById('metricProfitFactor').style.color = pfColor;
+      document.getElementById('metricWinStreak').textContent = fmt(s.win_streak);
+      document.getElementById('metricLossStreak').textContent = fmt(s.loss_streak);
+      document.getElementById('metricAvgWin').textContent = fmt(s.avg_win, '+$');
+      document.getElementById('metricAvgLoss').textContent = fmt(s.avg_loss, '-$');
     }
 
     async function loadClaudeAnalysis() {
