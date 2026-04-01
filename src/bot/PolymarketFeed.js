@@ -1,5 +1,4 @@
 const axios = require('axios');
-const { ClobClient } = require('@polymarket/clob-client');
 const { ethers } = require('ethers');
 
 const POLYMARKET_CLOB_API = 'https://clob.polymarket.com';
@@ -20,6 +19,9 @@ class PolymarketFeed {
 
   async init() {
     try {
+      // Dynamic import for ESM module
+      const { ClobClient } = await import('@polymarket/clob-client');
+
       // Initialize CLOB client and derive API credentials
       this.clobClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
       const apiCreds = await this.clobClient.createOrDeriveApiKey();
