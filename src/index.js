@@ -10,6 +10,7 @@ const tradesRoutes = require('./routes/trades');
 const userRoutes = require('./routes/user');
 const adminRoutes = require('./routes/admin');
 const copyRoutes = require('./routes/copy');
+const claudeRoutes = require('./routes/claude');
 const { BotManager } = require('./bot/BotManager');
 
 const app = express();
@@ -55,6 +56,7 @@ app.use('/api/trades', tradesRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/copy', copyRoutes);
+app.use('/api/claude', claudeRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 

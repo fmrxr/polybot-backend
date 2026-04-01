@@ -14,9 +14,11 @@ router.get('/settings', async (req, res) => {
     const settings = result.rows[0];
     const hasKey = !!settings.encrypted_private_key;
     const hasApiKey = !!settings.encrypted_polymarket_api_key;
+    const hasClaudeKey = !!settings.claude_api_key;
     delete settings.encrypted_private_key;
     delete settings.encrypted_polymarket_api_key;
-    res.json({ ...settings, has_private_key: hasKey, has_polymarket_api_key: hasApiKey });
+    delete settings.claude_api_key;
+    res.json({ ...settings, has_private_key: hasKey, has_polymarket_api_key: hasApiKey, has_claude_api_key: hasClaudeKey });
   } catch (err) {
     console.error('Settings GET error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -28,7 +30,8 @@ router.put('/settings', async (req, res) => {
   const {
     private_key, polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
     min_ev_threshold, min_prob_diff, direction_filter,
-    market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence
+    market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
+    claude_api_key, claude_model, auto_claude_analysis
   } = req.body;
 
   try {
@@ -49,10 +52,19 @@ router.put('/settings', async (req, res) => {
       encryptedApiKey = encrypt(polymarket_api_key);
     }
 
+    let encryptedClaudeKey = null;
+    if (claude_api_key) {
+      if (claude_api_key.trim().length === 0) {
+        return res.status(400).json({ error: 'Claude API key cannot be empty' });
+      }
+      encryptedClaudeKey = encrypt(claude_api_key);
+    }
+
     await pool.query(`
       INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
-        min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+        min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
+        claude_api_key, claude_model, auto_claude_analysis, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
@@ -69,6 +81,9 @@ router.put('/settings', async (req, res) => {
         min_edge = COALESCE($14, bot_settings.min_edge),
         snipe_before_close_sec = COALESCE($15, bot_settings.snipe_before_close_sec),
         require_whale_convergence = COALESCE($16, bot_settings.require_whale_convergence),
+        claude_api_key = COALESCE($17, bot_settings.claude_api_key),
+        claude_model = COALESCE($18, bot_settings.claude_model),
+        auto_claude_analysis = COALESCE($19, bot_settings.auto_claude_analysis),
         updated_at = NOW()
     `, [
       req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
@@ -77,7 +92,9 @@ router.put('/settings', async (req, res) => {
       market_prob_min || null, market_prob_max || null,
       paper_trading !== undefined ? paper_trading : null,
       min_edge || null, snipe_before_close_sec || null,
-      require_whale_convergence !== undefined ? require_whale_convergence : null
+      require_whale_convergence !== undefined ? require_whale_convergence : null,
+      encryptedClaudeKey, claude_model || null,
+      auto_claude_analysis !== undefined ? auto_claude_analysis : null
     ]);
 
     res.json({ success: true });

@@ -91,6 +91,13 @@ async function initDB() {
       -- Paper trading wallet system
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_balance DECIMAL DEFAULT 10000;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false;
+
+      -- Claude AI Integration
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_api_key TEXT;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_model VARCHAR(50) DEFAULT 'claude-opus-4-6';
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_claude_analysis BOOLEAN DEFAULT false;
+      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback TEXT;
+      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback_at TIMESTAMPTZ;
     `);
     console.log('✅ Database initialized');
   } finally {
