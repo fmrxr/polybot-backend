@@ -13,6 +13,9 @@ class CopyBotInstance {
   constructor(userId, settings) {
     this.userId = userId;
     this.settings = settings;
+    this.userLabel = settings.user_email
+      ? settings.user_email.split('@')[0]
+      : String(userId);
     this.polymarket = null;
     this.pollTimer = null;
     this.isRunning = false;
@@ -395,7 +398,7 @@ class CopyBotInstance {
   }
 
   _log(level, msg) {
-    console.log(`[CopyBot ${this.userId}] [${level}] ${msg}`);
+    console.log(`[CopyBot:${this.userLabel}][${level}] ${msg}`);
     // Optionally insert into bot_logs table
     pool.query('INSERT INTO bot_logs (user_id, level, message) VALUES ($1, $2, $3)', [this.userId, level, msg]).catch(e => {
       console.error('Log insert failed:', e.message);

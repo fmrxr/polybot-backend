@@ -108,7 +108,10 @@ router.post('/users/:id/toggle-bot', async (req, res) => {
     const botManager = global.botManager;
     if (newActive && botManager) {
       try {
-        const botSettings = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [targetId]);
+        const botSettings = await pool.query(
+          `SELECT bs.*, u.email AS user_email FROM bot_settings bs JOIN users u ON u.id = bs.user_id WHERE bs.user_id = $1`,
+          [targetId]
+        );
         await botManager.startBot(targetId, botSettings.rows[0]);
       } catch (e) {
         console.error('Bot start error:', e.message);

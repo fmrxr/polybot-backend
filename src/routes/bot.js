@@ -8,7 +8,10 @@ router.use(authMiddleware);
 // POST /api/bot/start
 router.post('/start', async (req, res) => {
   try {
-    const settingsResult = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [req.userId]);
+    const settingsResult = await pool.query(
+      `SELECT bs.*, u.email AS user_email FROM bot_settings bs JOIN users u ON u.id = bs.user_id WHERE bs.user_id = $1`,
+      [req.userId]
+    );
     const settings = settingsResult.rows[0];
 
     if (!settings?.encrypted_private_key) {

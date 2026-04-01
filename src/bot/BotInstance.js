@@ -25,6 +25,10 @@ class BotInstance {
   constructor(userId, settings) {
     this.userId = userId;
     this.settings = settings;
+    // Friendly label for logs: "alice" from "alice@gmail.com", fallback to user ID
+    this.userLabel = settings.user_email
+      ? settings.user_email.split('@')[0]
+      : String(userId);
     this.paperTrading = settings.paper_trading !== false;
     this.paperBalance = parseFloat(settings.paper_balance) || 10000;
     this.binance = new BinanceFeed();
@@ -661,7 +665,7 @@ class BotInstance {
   }
 
   async _log(level, message) {
-    console.log(`[Bot:${this.userId}][${level}] ${message}`);
+    console.log(`[Bot:${this.userLabel}][${level}] ${message}`);
     try {
       await pool.query('INSERT INTO bot_logs (user_id, level, message) VALUES ($1,$2,$3)', [this.userId, level, message]);
       await pool.query(`DELETE FROM bot_logs WHERE user_id=$1 AND id NOT IN (SELECT id FROM (SELECT id FROM bot_logs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1000) AS recent)`, [this.userId]);

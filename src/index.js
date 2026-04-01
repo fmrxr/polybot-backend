@@ -71,27 +71,33 @@ async function autoRestartBots() {
   try {
     // Restart GBM bots
     const result = await pool.query(
-      'SELECT bs.*, bs.user_id FROM bot_settings bs WHERE bs.is_active = true AND bs.encrypted_private_key IS NOT NULL'
+      `SELECT bs.*, bs.user_id, u.email AS user_email
+       FROM bot_settings bs JOIN users u ON u.id = bs.user_id
+       WHERE bs.is_active = true AND bs.encrypted_private_key IS NOT NULL`
     );
     for (const settings of result.rows) {
       try {
         await global.botManager.startBot(settings.user_id, settings);
-        console.log(`✅ Auto-restarted GBM bot for user ${settings.user_id}`);
+        console.log(`✅ Auto-restarted GBM bot for ${settings.user_email}`);
       } catch(e) {
-        console.error(`❌ Failed to auto-restart GBM bot for user ${settings.user_id}:`, e.message);
+        console.error(`❌ Failed to auto-restart GBM bot for ${settings.user_email}:`, e.message);
       }
     }
 
     // Restart copy bots
     const copyResult = await pool.query(
-      'SELECT DISTINCT ct.user_id, bs.* FROM copy_targets ct JOIN bot_settings bs ON ct.user_id=bs.user_id WHERE ct.is_active=true'
+      `SELECT DISTINCT ct.user_id, bs.*, u.email AS user_email
+       FROM copy_targets ct
+       JOIN bot_settings bs ON ct.user_id = bs.user_id
+       JOIN users u ON u.id = ct.user_id
+       WHERE ct.is_active = true`
     );
     for (const settings of copyResult.rows) {
       try {
         await global.botManager.startCopyBot(settings.user_id, settings);
-        console.log(`✅ Auto-restarted copy bot for user ${settings.user_id}`);
+        console.log(`✅ Auto-restarted copy bot for ${settings.user_email}`);
       } catch(e) {
-        console.error(`❌ Failed to auto-restart copy bot for user ${settings.user_id}:`, e.message);
+        console.error(`❌ Failed to auto-restart copy bot for ${settings.user_email}:`, e.message);
       }
     }
   } catch(e) {
