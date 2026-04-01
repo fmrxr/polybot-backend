@@ -133,8 +133,9 @@ class BotInstance {
         volatility: btcData.volatility,
         momentum: btcData.momentum,
         ob_imbalance: btcData.obImbalance,
-        chainlink_price: chainlinkData?.price || null,
-        chainlink_age: chainlinkData?.ageSeconds || null,
+        // Use Chainlink price if available, otherwise fallback to Binance price
+        chainlink_price: chainlinkData?.price || btcData.price,
+        chainlink_age: chainlinkData?.ageSeconds || 0,
         updated_at: new Date().toISOString()
       };
     }

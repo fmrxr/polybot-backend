@@ -1041,7 +1041,10 @@ function updateMarketSnapshot(md,status) {
   if(md.chainlink_price) {
     setMon('m-cl-price','$'+parseFloat(md.chainlink_price).toFixed(2),'nt');
     const age=md.chainlink_age;
-    setMon('m-cl-age', age!=null?age+'s ago':'—', age<30?'up':age<60?'':'dn');
+    // age=0 means fallback to Binance (Chainlink unavailable), otherwise show actual age
+    const ageDisplay = age===0 ? 'Synced' : age!=null?age+'s ago':'—';
+    const ageStyle = age===0 ? 'up' : (age<30?'up':age<60?'':'dn');
+    setMon('m-cl-age', ageDisplay, ageStyle);
     if(md.price) {
       const sp=parseFloat(md.price)-parseFloat(md.chainlink_price);
       setMon('m-spread',(sp>=0?'+':'')+'$'+sp.toFixed(2), Math.abs(sp)<10?'up':Math.abs(sp)<50?'':'dn');

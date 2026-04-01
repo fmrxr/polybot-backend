@@ -23,11 +23,13 @@ const AGGREGATOR_ABI = [
   'function description() view returns (string)',
 ];
 
-// Polygon RPC endpoints (fallback chain)
+// Polygon RPC endpoints (fallback chain) — ordered by reliability
 const RPC_ENDPOINTS = [
-  'https://polygon-rpc.com',
-  'https://rpc-mainnet.matic.network',
-  'https://rpc-mainnet.maticvigil.com',
+  'https://rpc.ankr.com/polygon',                    // Ankr (very reliable)
+  'https://polygon-rpc.com',                          // Polygon public
+  'https://1rpc.io/matic',                            // 1RPC (reliable)
+  'https://rpc-mainnet.matic.network',               // Official Matic
+  'https://rpc-mainnet.maticvigil.com',              // MaticVigil
 ];
 
 class ChainlinkFeed {
@@ -66,32 +68,43 @@ class ChainlinkFeed {
           this.provider = new ethers.JsonRpcProvider(rpc);
           this.contract = new ethers.Contract(BTC_USD_AGGREGATOR, AGGREGATOR_ABI, this.provider);
 
-          // Test connection with a timeout — don't wait forever
+          // Test connection with a timeout — don't wait forever (5s for slower providers)
           const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Timeout')), 3000)
+            setTimeout(() => reject(new Error('Timeout')), 5000)
           );
           const descPromise = this.contract.description();
-          await Promise.race([descPromise, timeoutPromise]);
+          const result = await Promise.race([descPromise, timeoutPromise]);
 
+          // Success — log and break
+          console.log(`[ChainlinkFeed] Connected to ${rpc}`);
           this.isInitialized = true;
           break;
         } catch(e) {
-          // Silently fail and try next endpoint
+          // Try next endpoint
         }
       }
 
       if (!this.isInitialized) {
         // Chainlink is optional — bot works fine without it
+        console.log('[ChainlinkFeed] Could not connect to any Polygon RPC endpoint — Chainlink disabled');
         return;
       }
 
-      // Initial fetch
-      try {
-        await this.fetchPrice();
-      } catch(e) {
-        // Initial fetch failed — disable
-        this.isInitialized = false;
-        return;
+      // Initial fetch with retry
+      let fetchAttempts = 0;
+      while (fetchAttempts < 3) {
+        try {
+          await this.fetchPrice();
+          break; // Success
+        } catch(e) {
+          fetchAttempts++;
+          if (fetchAttempts < 3) {
+            await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+          } else {
+            console.log('[ChainlinkFeed] Initial fetch failed after 3 attempts — will retry on poll');
+            break; // Will retry on next poll
+          }
+        }
       }
 
       // Poll every 15s
