@@ -76,6 +76,7 @@ async function initDB() {
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS window_ts BIGINT;
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_type VARCHAR(20) DEFAULT 'gbm';
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS copy_source VARCHAR(255);
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(50);
     `);
     console.log('✅ Database initialized');
   } finally {

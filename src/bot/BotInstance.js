@@ -109,6 +109,8 @@ class BotInstance {
         .catch(e => this._log('WARN', `Market refresh failed: ${e.message}`));
     }, MARKET_REFRESH_MS);
     this.resolutionTimer = setInterval(() => this._checkResolutions(), RESOLUTION_CHECK_MS);
+    // Position management: check for early exits every 10s
+    this.positionMgmtTimer = setInterval(() => this._manageOpenPositions(), 10000);
   }
 
   async _tick() {
@@ -441,6 +443,74 @@ class BotInstance {
     }
   }
 
+  async _manageOpenPositions() {
+    // Check live trades for early exit conditions
+    // Exit winners at +30%, exit losers at -5%
+    for (const [tradeId, trade] of this.openTrades.entries()) {
+      try {
+        // Only manage trades that are actually active
+        if (!trade || !trade.conditionId) continue;
+
+        // Calculate unrealized P&L
+        // Note: simplified calculation. Real P&L requires knowing current market price
+        // For now, we'll use a basic approach: shares * (market_price - entry_price)
+        // This is approximate since we don't have live market price easily available here
+
+        // Query trade from DB to get entry_price and size
+        const result = await pool.query(
+          'SELECT id, entry_price, size, result FROM trades WHERE id=$1',
+          [tradeId]
+        );
+
+        if (!result.rows[0] || result.rows[0].result) {
+          // Trade already resolved or doesn't exist
+          this.openTrades.delete(tradeId);
+          continue;
+        }
+
+        const dbTrade = result.rows[0];
+        const entryPrice = parseFloat(dbTrade.entry_price);
+        const tradeSize = parseFloat(dbTrade.size);
+
+        // Estimate current market price (simplified: use last known price)
+        // In production, would fetch live market data
+        const lastMarketPrice = this.lastMarketData?.price || entryPrice;
+
+        // Calculate shares and unrealized P&L
+        const shares = tradeSize / entryPrice;
+        const unrealizedPnL = shares * (lastMarketPrice - entryPrice) - (tradeSize * 0.02); // Account for ~2% fees
+
+        // Exit thresholds
+        const profitThreshold = tradeSize * 0.30; // +30%
+        const lossThreshold = tradeSize * -0.05;  // -5%
+
+        let shouldExit = false;
+        let exitReason = null;
+
+        if (unrealizedPnL >= profitThreshold) {
+          shouldExit = true;
+          exitReason = 'auto_closed_profit';
+          this._log('INFO', `🎯 TAKE PROFIT | Trade #${tradeId} | Profit: $${unrealizedPnL.toFixed(2)} (+${(unrealizedPnL/tradeSize*100).toFixed(1)}%)`);
+        } else if (unrealizedPnL <= lossThreshold) {
+          shouldExit = true;
+          exitReason = 'auto_closed_loss';
+          this._log('WARN', `🛑 STOP LOSS | Trade #${tradeId} | Loss: $${unrealizedPnL.toFixed(2)} (${(unrealizedPnL/tradeSize*100).toFixed(1)}%)`);
+        }
+
+        if (shouldExit) {
+          // Close the position
+          await pool.query(
+            `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2 WHERE id=$3`,
+            [unrealizedPnL, exitReason, tradeId]
+          );
+          this.openTrades.delete(tradeId);
+        }
+      } catch(e) {
+        this._log('WARN', `Position management error for trade ${tradeId}: ${e.message}`);
+      }
+    }
+  }
+
   async _checkResolutions() {
     for (const [tradeId, trade] of this.openTrades.entries()) {
       try {
@@ -512,6 +582,7 @@ class BotInstance {
     clearInterval(this.mainTimer);
     clearInterval(this.marketRefreshTimer);
     clearInterval(this.resolutionTimer);
+    clearInterval(this.positionMgmtTimer);
     this.binance.disconnect();
     this.chainlink.stop();
     if (this.polymarket) this.polymarket.disconnect();
