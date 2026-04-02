@@ -96,8 +96,6 @@ async function initDB() {
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_api_key TEXT;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_model VARCHAR(50) DEFAULT 'claude-opus-4-6';
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_claude_analysis BOOLEAN DEFAULT false;
-      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback TEXT;
-      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback_at TIMESTAMPTZ;
     `);
     console.log('✅ Database initialized');
   } finally {
@@ -121,6 +119,8 @@ async function addDecisionsTable() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_decisions_user_id ON bot_decisions(user_id);
+      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback TEXT;
+      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback_at TIMESTAMPTZ;
 
       CREATE TABLE IF NOT EXISTS admin_logs (
         id SERIAL PRIMARY KEY,

@@ -40,12 +40,13 @@ router.post('/analyze', async (req, res) => {
       return res.status(400).json({ error: 'No completed trades to analyze' });
     }
 
-    // Calculate statistics
+    // Calculate statistics (pg returns DECIMAL as strings — parse to float)
     const winTrades = trades.filter(t => t.result === 'WIN').length;
     const lossTrades = trades.filter(t => t.result === 'LOSS').length;
-    const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+    const totalPnL = trades.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0);
     const avgPnL = totalPnL / trades.length;
     const winRate = (winTrades / trades.length * 100).toFixed(1);
+    const avgModelProb = trades.reduce((sum, t) => sum + parseFloat(t.model_prob || 0), 0) / trades.length;
 
     // Build prompt for Claude
     const analysisPrompt = `You are an expert trading strategy analyst. I've executed ${trades.length} trades with the following results:
@@ -56,14 +57,14 @@ Trade Statistics:
 - Total Losses: ${lossTrades}
 - Total P&L: $${totalPnL.toFixed(2)}
 - Average P&L per trade: $${avgPnL.toFixed(2)}
-- Average Entry Probability: ${(trades.reduce((sum, t) => sum + t.model_prob, 0) / trades.length * 100).toFixed(1)}%
+- Average Entry Probability: ${(avgModelProb * 100).toFixed(1)}%
 
 Recent Trade Details:
 ${trades.slice(0, 10).map((t, i) => `
-Trade ${i + 1}: ${t.direction} @ $${parseFloat(t.entry_price).toFixed(3)}
-- Result: ${t.result} (P&L: $${t.pnl.toFixed(2)})
-- Model Prob: ${(t.model_prob * 100).toFixed(1)}% | Market: ${(t.market_prob * 100).toFixed(1)}%
-- Expected Value: ${(t.expected_value * 100).toFixed(2)}%
+Trade ${i + 1}: ${t.direction} @ $${parseFloat(t.entry_price || 0).toFixed(3)}
+- Result: ${t.result} (P&L: $${parseFloat(t.pnl || 0).toFixed(2)})
+- Model Prob: ${(parseFloat(t.model_prob || 0) * 100).toFixed(1)}% | Market: ${(parseFloat(t.market_prob || 0) * 100).toFixed(1)}%
+- Expected Value: ${(parseFloat(t.expected_value || 0) * 100).toFixed(2)}%
 `).join('\n')}
 
 Based on this data, please provide:
