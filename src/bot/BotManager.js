@@ -1,75 +1,108 @@
-const { BotInstance } = require('./BotInstance');
-const { CopyBotInstance } = require('./CopyBotInstance');
+const BotInstance = require('./BotInstance');
+const CopyBotInstance = require('./CopyBotInstance');
 
 class BotManager {
   constructor() {
-    this.instances = new Map(); // userId -> BotInstance (GBM bot)
-    this.copyInstances = new Map(); // userId -> CopyBotInstance
+    this.instances = new Map();       // userId -> BotInstance
+    this.copyInstances = new Map();   // userId -> CopyBotInstance
   }
 
   async startBot(userId, settings) {
+    // Stop existing instance if running
     if (this.instances.has(userId)) {
-      throw new Error('Bot already running');
+      await this.stopBot(userId);
     }
-    const instance = new BotInstance(userId, settings);
-    await instance.start();
-    this.instances.set(userId, instance);
-    return instance;
+
+    const bot = new BotInstance(userId, settings);
+    this.instances.set(userId, bot);
+    await bot.start();
+    return bot;
   }
 
   async stopBot(userId) {
-    const instance = this.instances.get(userId);
-    if (instance) {
-      await instance.stop();
+    const bot = this.instances.get(userId);
+    if (bot) {
+      await bot.stop();
       this.instances.delete(userId);
     }
   }
 
-  isRunning(userId) {
-    return this.instances.has(userId) && this.instances.get(userId).isRunning;
-  }
-
-  getStatus(userId) {
-    const instance = this.instances.get(userId);
-    return instance ? instance.getStatus() : { is_running: false, open_trades: 0 };
-  }
-
-  async stopAll() {
-    for (const [userId] of this.instances) {
-      await this.stopBot(userId);
-    }
-    for (const [userId] of this.copyInstances) {
-      await this.stopCopyBot(userId);
-    }
-  }
-
-  // Copy bot methods
   async startCopyBot(userId, settings) {
     if (this.copyInstances.has(userId)) {
-      throw new Error('Copy bot already running');
+      await this.stopCopyBot(userId);
     }
-    const instance = new CopyBotInstance(userId, settings);
-    await instance.start();
-    this.copyInstances.set(userId, instance);
-    return instance;
+
+    const bot = new CopyBotInstance(userId, settings);
+    this.copyInstances.set(userId, bot);
+    await bot.start();
+    return bot;
   }
 
   async stopCopyBot(userId) {
-    const instance = this.copyInstances.get(userId);
-    if (instance) {
-      await instance.stop();
+    const bot = this.copyInstances.get(userId);
+    if (bot) {
+      await bot.stop();
       this.copyInstances.delete(userId);
     }
   }
 
-  isCopyRunning(userId) {
-    return this.copyInstances.has(userId) && this.copyInstances.get(userId).isRunning;
+  getBotStatus(userId) {
+    const bot = this.instances.get(userId);
+    return bot ? bot.getStatus() : null;
   }
 
-  getCopyStatus(userId) {
-    const instance = this.copyInstances.get(userId);
-    return instance ? instance.getStatus() : { is_running: false, targets_count: 0 };
+  getCopyBotStatus(userId) {
+    const bot = this.copyInstances.get(userId);
+    return bot ? bot.getStatus() : null;
+  }
+
+  getActiveCount() {
+    return this.instances.size + this.copyInstances.size;
+  }
+
+  isRunning(userId) {
+    const bot = this.instances.get(userId);
+    return bot ? bot.isRunning : false;
+  }
+
+  isCopyRunning(userId) {
+    const bot = this.copyInstances.get(userId);
+    return bot ? bot.isRunning : false;
+  }
+
+  /**
+   * Stop all bot instances — used for graceful shutdown
+   */
+  async stopAll() {
+    console.log(`[BotManager] Stopping all instances (${this.instances.size} signal, ${this.copyInstances.size} copy)...`);
+
+    const stopPromises = [];
+
+    // Stop signal bots
+    for (const [userId, instance] of this.instances) {
+      stopPromises.push(
+        instance.stop().catch(err => {
+          console.error(`[BotManager] Error stopping signal bot for user ${userId}:`, err.message);
+        })
+      );
+    }
+
+    // Stop copy bots
+    for (const [userId, instance] of this.copyInstances) {
+      stopPromises.push(
+        instance.stop().catch(err => {
+          console.error(`[BotManager] Error stopping copy bot for user ${userId}:`, err.message);
+        })
+      );
+    }
+
+    await Promise.all(stopPromises);
+
+    this.instances.clear();
+    this.copyInstances.clear();
+
+    console.log('[BotManager] All instances stopped.');
   }
 }
 
-module.exports = { BotManager };
+module.exports = BotManager;
