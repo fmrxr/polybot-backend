@@ -886,7 +886,7 @@
               <p id="statusSubtitle">All systems operational</p>
             </div>
           </div>
-          <div class="status-mode" id="modeIndicator">⚙ REAL EDGE MODE v1.0 ACTIVE</div>
+          <div class="status-mode" id="modeIndicator">⚙ Loading...</div>
           <div class="status-buttons">
             <button class="success" id="startBtn" onclick="startBot()" style="display:none;">Start Bot</button>
             <button class="danger" id="stopBtn" onclick="stopBot()">Stop Bot</button>
@@ -1402,19 +1402,19 @@
             <h4 style="margin-bottom: 15px; color: var(--gate2-green);">📋 Paper Trading Mode</h4>
             <div class="form-group">
               <label>
-                <input type="checkbox" id="paperTradingEnabled" checked onchange="updateSetting()">
-                Paper Trading ACTIVE (no real money)
+                <input type="checkbox" id="paperTradingEnabled" checked onchange="onPaperTradingToggle()">
+                Paper Trading (uncheck = LIVE real money)
               </label>
             </div>
-            <div class="form-group">
+            <div class="form-group" id="paperBalanceSection">
               <label>Paper Balance</label>
               <div style="display: flex; gap: 10px;">
-                <input type="text" value="$10,000.00" disabled style="flex: 1;">
-                <button class="secondary" onclick="resetPaperBalance()">Reset Balance</button>
+                <input type="text" id="paperBalanceDisplay" value="Loading..." disabled style="flex: 1;">
+                <button class="secondary" onclick="resetPaperBalance()">Reset</button>
               </div>
             </div>
-            <div style="padding: 12px; background: rgba(0, 229, 160, 0.2); border-radius: 4px; color: var(--gate2-green); font-size: 13px;">
-              🟢 Paper trading ACTIVE - all trades are simulated
+            <div id="tradingModeNotice" style="padding: 12px; background: rgba(0, 229, 160, 0.2); border-radius: 4px; color: var(--gate2-green); font-size: 13px;">
+              🟢 Paper trading ACTIVE — all trades are simulated, no real money
             </div>
           </div>
 
@@ -1998,7 +1998,27 @@
       if (settings.kelly_cap) document.getElementById('kellyCap').value = settings.kelly_cap;
       if (settings.max_trade_size) document.getElementById('maxTradeSize').value = settings.max_trade_size;
       if (settings.max_daily_loss) document.getElementById('maxDailyLoss').value = settings.max_daily_loss;
-      if (settings.paper_trading !== undefined) document.getElementById('paperTradingEnabled').checked = settings.paper_trading;
+      if (settings.paper_trading !== undefined) {
+        document.getElementById('paperTradingEnabled').checked = settings.paper_trading;
+        onPaperTradingToggle();
+        // Mode indicator in status banner
+        const modeEl = document.getElementById('modeIndicator');
+        if (modeEl) {
+          if (settings.paper_trading) {
+            modeEl.textContent = '📋 PAPER MODE';
+            modeEl.style.borderColor = 'var(--gate2-green)';
+            modeEl.style.color = 'var(--gate2-green)';
+          } else {
+            modeEl.textContent = '🔴 LIVE TRADING';
+            modeEl.style.borderColor = 'var(--danger)';
+            modeEl.style.color = 'var(--danger)';
+          }
+        }
+      }
+      if (settings.paper_balance != null) {
+        const balEl = document.getElementById('paperBalanceDisplay');
+        if (balEl) balEl.value = '$' + parseFloat(settings.paper_balance).toFixed(2);
+      }
       if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
       if (settings.min_edge) document.getElementById('minEdge').value = settings.min_edge;
 
@@ -2041,6 +2061,23 @@
 
     function updateSetting() {}
     function updateClaudeSetting() {}
+
+    function onPaperTradingToggle() {
+      const isPaper = document.getElementById('paperTradingEnabled').checked;
+      const notice = document.getElementById('tradingModeNotice');
+      const balSection = document.getElementById('paperBalanceSection');
+      if (isPaper) {
+        notice.style.background = 'rgba(0, 229, 160, 0.2)';
+        notice.style.color = 'var(--gate2-green)';
+        notice.textContent = '🟢 Paper trading ACTIVE — all trades are simulated, no real money';
+        balSection.style.display = 'block';
+      } else {
+        notice.style.background = 'rgba(255, 77, 106, 0.2)';
+        notice.style.color = 'var(--danger)';
+        notice.textContent = '🔴 LIVE TRADING — real money will be used. Click "Save Advanced Settings" then restart the bot.';
+        balSection.style.display = 'none';
+      }
+    }
 
     async function saveClaudeSettings() {
       const token = localStorage.getItem('token');
