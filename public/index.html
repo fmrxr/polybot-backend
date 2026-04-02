@@ -554,15 +554,29 @@
     .claude-feedback-text {
       background: rgba(0, 102, 255, 0.05);
       border: 1px solid var(--border-color);
-      padding: 12px;
+      padding: 16px 20px;
       border-radius: 6px;
       font-size: 13px;
+      line-height: 1.7;
       margin: 12px 0;
       color: var(--text-light);
       min-height: 60px;
-      max-height: 150px;
-      overflow-y: auto;
     }
+    .claude-feedback-text h1, .claude-feedback-text h2 {
+      color: var(--gate2-green); font-size: 15px; margin: 16px 0 8px 0; font-weight: bold;
+    }
+    .claude-feedback-text h3 {
+      color: var(--gate1-cyan); font-size: 14px; margin: 12px 0 6px 0; font-weight: bold;
+    }
+    .claude-feedback-text ul, .claude-feedback-text ol {
+      margin: 4px 0 8px 20px; padding: 0;
+    }
+    .claude-feedback-text li { margin: 3px 0; }
+    .claude-feedback-text strong { color: var(--text-light); font-weight: 600; }
+    .claude-feedback-text code {
+      background: rgba(255,255,255,0.1); padding: 1px 5px; border-radius: 3px; font-size: 12px;
+    }
+    .claude-feedback-text p { margin: 4px 0 8px 0; }
 
     .claude-actions {
       display: flex;
@@ -1571,6 +1585,9 @@
 
       document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
       event?.target.classList.add('active');
+
+      if (pageId === 'claude') loadClaudeAnalysis();
+      if (pageId === 'trades') loadTrades();
     }
 
     function switchSettingsTab(tabId) {
@@ -1837,21 +1854,116 @@
       document.getElementById('metricAvgLoss').textContent = fmt(s.avg_loss, '-$');
     }
 
+    function mdToHtml(text) {
+      if (!text) return '';
+      // Escape HTML then render markdown
+      let s = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const lines = s.split('\n');
+      const out = [];
+      let inUl = false, inOl = false;
+      const inline = t => t
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`(.+?)`/g, '<code>$1</code>');
+      for (const line of lines) {
+        if (inUl && !line.match(/^[-*] /)) { out.push('</ul>'); inUl = false; }
+        if (inOl && !line.match(/^\d+\. /)) { out.push('</ol>'); inOl = false; }
+        if      (line.match(/^### /)) out.push(`<h3>${inline(line.slice(4))}</h3>`);
+        else if (line.match(/^## /))  out.push(`<h2>${inline(line.slice(3))}</h2>`);
+        else if (line.match(/^# /))   out.push(`<h1>${inline(line.slice(2))}</h1>`);
+        else if (line.match(/^[-*] /)) {
+          if (!inUl) { out.push('<ul>'); inUl = true; }
+          out.push(`<li>${inline(line.slice(2))}</li>`);
+        } else if (line.match(/^\d+\. /)) {
+          if (!inOl) { out.push('<ol>'); inOl = true; }
+          out.push(`<li>${inline(line.replace(/^\d+\. /, ''))}</li>`);
+        } else if (line.trim() === '') {
+          out.push('<br>');
+        } else {
+          out.push(`<p>${inline(line)}</p>`);
+        }
+      }
+      if (inUl) out.push('</ul>');
+      if (inOl) out.push('</ol>');
+      return out.join('');
+    }
+
     async function loadClaudeAnalysis() {
       const token = localStorage.getItem('token');
       try {
         const res = await fetch((window.API_BASE||'')+'/api/claude/latest-feedback', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (res.ok) {
-          const data = await res.json();
-          if (data) {
-            document.getElementById('claudeFeedback').textContent = data.feedback?.substring(0, 200) || 'No feedback yet';
-            document.getElementById('claudeAnalysisTime').textContent = `Last Analysis: ${new Date(data.created_at).toLocaleString()}`;
-          }
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data) return;
+
+        const html = mdToHtml(data.feedback);
+        const timeStr = `Last Analysis: ${new Date(data.created_at).toLocaleString()}`;
+
+        // Dashboard widget
+        const feedbackEl = document.getElementById('claudeFeedback');
+        if (feedbackEl) { feedbackEl.innerHTML = html; }
+        const timeEl = document.getElementById('claudeAnalysisTime');
+        if (timeEl) timeEl.textContent = timeStr;
+
+        // Claude page — latest analysis
+        const latestEl = document.getElementById('latestAnalysisContent');
+        if (latestEl) {
+          const d = data.data || {};
+          latestEl.innerHTML = `
+            <div style="display:flex; gap:20px; margin-bottom:16px; flex-wrap:wrap;">
+              <div style="color:var(--text-muted); font-size:12px;">${timeStr}</div>
+              ${d.trades_count ? `<div style="color:var(--text-muted); font-size:12px;">Trades: <strong style="color:var(--text-light);">${d.trades_count}</strong></div>` : ''}
+              ${d.win_rate    ? `<div style="color:var(--text-muted); font-size:12px;">Win Rate: <strong style="color:var(--text-light);">${d.win_rate}%</strong></div>` : ''}
+              ${d.total_pnl   != null ? `<div style="color:var(--text-muted); font-size:12px;">Total P&amp;L: <strong style="color:${d.total_pnl >= 0 ? 'var(--trade-green)' : 'var(--danger)'};">$${parseFloat(d.total_pnl).toFixed(2)}</strong></div>` : ''}
+            </div>
+            <div class="claude-feedback-text">${html}</div>`;
         }
+
+        await loadClaudeHistory();
       } catch (err) {
         console.log('Claude feedback not available');
+      }
+    }
+
+    async function loadClaudeHistory() {
+      const token = localStorage.getItem('token');
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/claude/history?limit=10', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const history = await res.json();
+        const tbody = document.getElementById('analysisHistory');
+        if (!tbody) return;
+        if (!history.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">No analysis history yet</td></tr>';
+          return;
+        }
+        tbody.innerHTML = history.map((item, i) => `
+          <tr>
+            <td>${new Date(item.created_at).toLocaleString()}</td>
+            <td>${item.trade_count || '—'}</td>
+            <td style="color:${parseFloat(item.total_pnl) >= 0 ? 'var(--trade-green)' : 'var(--danger)'};">$${parseFloat(item.total_pnl || 0).toFixed(2)} P&L</td>
+            <td><span style="background:rgba(0,229,160,0.2);color:var(--gate2-green);padding:2px 8px;border-radius:4px;font-size:11px;">COMPLETE</span></td>
+            <td><button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="showHistoryAnalysis(${i})">View</button></td>
+          </tr>`).join('');
+        window._claudeHistory = history;
+      } catch (err) {
+        console.log('Claude history not available');
+      }
+    }
+
+    function showHistoryAnalysis(i) {
+      const item = window._claudeHistory?.[i];
+      if (!item) return;
+      const latestEl = document.getElementById('latestAnalysisContent');
+      if (latestEl) {
+        latestEl.innerHTML = `
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">${new Date(item.created_at).toLocaleString()} — ${item.trade_count || '?'} trades</div>
+          <div class="claude-feedback-text">${mdToHtml(item.feedback)}</div>`;
+        latestEl.scrollIntoView({ behavior: 'smooth' });
       }
     }
 
@@ -2255,24 +2367,28 @@
 
     async function triggerClaudeAnalysis() {
       const token = localStorage.getItem('token');
+      const btns = document.querySelectorAll('[onclick="triggerClaudeAnalysis()"]');
+      btns.forEach(b => { b.disabled = true; b.textContent = 'Analyzing...'; });
+      const feedbackEl = document.getElementById('claudeFeedback');
+      if (feedbackEl) feedbackEl.innerHTML = '<p style="color:var(--text-muted);">⏳ Claude is analyzing your trades — this may take 10–20 seconds...</p>';
       try {
         const res = await fetch((window.API_BASE||'')+'/api/claude/analyze', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({})
         });
-
         if (res.ok) {
-          showAlert('Analysis requested. Claude is analyzing your trades...', 'success');
-          setTimeout(() => loadClaudeAnalysis(), 2000);
+          showAlert('Analysis complete!', 'success');
+          await loadClaudeAnalysis();
         } else {
-          showAlert('Failed to trigger analysis', 'error');
+          const err = await res.json().catch(() => ({}));
+          showAlert(err.error || 'Failed to get analysis', 'error');
+          if (feedbackEl) feedbackEl.innerHTML = '';
         }
       } catch (err) {
-        showAlert('Error triggering analysis', 'error');
+        showAlert('Error contacting Claude', 'error');
+      } finally {
+        btns.forEach(b => { b.disabled = false; b.textContent = b.closest('#claude') ? 'Analyze Now' : 'Get Analysis Now'; });
       }
     }
 
@@ -2281,9 +2397,23 @@
       document.getElementById('autoStatus').textContent = enabled ? 'ON' : 'OFF';
     }
 
-    function resetPaperBalance() {
-      if (confirm('Reset paper balance to $10,000?')) {
-        showAlert('Paper balance reset to $10,000', 'success');
+    async function resetPaperBalance() {
+      if (!confirm('Reset paper balance to $10,000?')) return;
+      const token = localStorage.getItem('token');
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/user/reset-paper-balance', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          showAlert('Paper balance reset to $10,000', 'success');
+          const el = document.getElementById('paperBalanceDisplay');
+          if (el) el.value = '$10,000.00';
+        } else {
+          showAlert('Failed to reset balance', 'error');
+        }
+      } catch (err) {
+        showAlert('Error resetting balance', 'error');
       }
     }
 
