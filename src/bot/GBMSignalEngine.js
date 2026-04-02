@@ -1,674 +1,324 @@
-/**
- * Signal Engine — Phase A: Three-Gate Cost-Aware Decision Logic
- *
- * GATE SEQUENCE (unbreakable order):
- * 1. Microstructure Edge (BTC/Poly latency) → confidence >= 0.45
- * 2. EV Cost Adjustment (fees + spread + slippage) → recommend() == 'TRADE'
- * 3. Signal Confirmation (weak RSI/EMA only) → direction match
- *
- * Then execute with dynamic position sizing.
- *
- * Historical scoring still active as fallback confirmation.
- */
-
-const { EVEngine } = require('./EVEngine');
-const { MicrostructureEngine } = require('./MicrostructureEngine');
+const EVEngine = require('./EVEngine');
+const MicrostructureEngine = require('./MicrostructureEngine');
 
 class GBMSignalEngine {
-  constructor(settings) {
+  constructor(polymarket, binance, chainlink, settings) {
+    this.polymarket = polymarket;
+    this.binance = binance;
+    this.chainlink = chainlink;
     this.settings = settings;
-    this.onDecision = null;
-
-    // Phase A engines
     this.evEngine = new EVEngine();
     this.microEngine = new MicrostructureEngine();
-    this.USE_NEW_STRATEGY = true; // Feature flag: toggle on/off instantly
 
-    // Tick accumulator for real-time micro-trend (updated every 10s eval cycle)
-    this.recentTicks = [];
-    this.windowOpenPrice = null;
-    this.windowTs = null;
+    // EMA for BTC trend (used as confirmation, not primary signal)
+    this.emaShort = null;
+    this.emaLong = null;
+    this.emaAlpha = 0.1;
 
-    // Performance stats — updated by BotInstance every 5 minutes from DB
-    this.recentWinRate = 0.5;
-    this.avgSlippage = 0.005;
-
-    // EV trend tracking — detect decaying setups
-    this.lastEV = null;           // EV from previous evaluation this window
-    this.lastSignalPrice = null;  // BTC price when last signal fired (no-chase reference)
-    this.lastSignalTs = null;     // Timestamp of last signal (lag freshness)
+    // Track signal timestamps for freshness
+    this.lastSignalPrices = {}; // marketId -> { price, timestamp }
   }
 
-  /**
-   * Update live performance stats for adaptive thresholds.
-   * Called by BotInstance after querying recent trades from DB.
-   */
-  updatePerformanceStats(winRate, avgSlippage) {
-    this.recentWinRate = winRate;
-    this.avgSlippage = avgSlippage;
-  }
-
-  /**
-   * Update window open price when a new 5-min window starts
-   */
-  updateWindowOpen(currentPrice, chainlinkPrice) {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const windowTs = nowSec - (nowSec % 300);
-    if (windowTs !== this.windowTs) {
-      this.windowTs = windowTs;
-      // Prefer Chainlink as window open price — it's what Polymarket uses for resolution
-      this.windowOpenPrice = chainlinkPrice || currentPrice;
-      this.chainlinkOpenPrice = chainlinkPrice;
-      this.recentTicks = [];
-      // Reset per-window EV tracking state
-      this.lastEV = null;
-      this.lastSignalTs = null;
-      this.lastSignalPrice = null;
-    }
-    // Accumulate ticks for micro-trend
-    this.recentTicks.push(currentPrice);
-    if (this.recentTicks.length > 30) this.recentTicks.shift(); // Keep last ~5 min of ticks
-  }
-
-  /**
-   * Main signal evaluation — Phase A: Three-Gate Decision Logic
-   *
-   * GATE SEQUENCE:
-   * 1. Microstructure Edge Detection (requires latency + depth signal)
-   * 2. EV Cost Adjustment (fees + spread + slippage)
-   * 3. Signal Confirmation (weak RSI/EMA)
-   */
-  evaluate({ currentPrice, binancePrice, chainlinkPrice, priceHistory, volumeHistory, timeToResolutionSec, obImbalance = 0, drift = 0, volatility = 0, bid = null, ask = null, bidDepth = null, askDepth = null, totalDepth = null }) {
-    const { direction_filter, max_trade_size, kelly_cap } = this.settings;
-
-    if (!currentPrice || priceHistory.length < 5) return null;
-
-    // Don't evaluate in first 60 seconds of window — delta is not meaningful yet
-    if (timeToResolutionSec > 240) {
-      const log = { timestamp: new Date().toISOString(), verdict: 'WAIT', reason: `Too early in window (${(300-timeToResolutionSec).toFixed(0)}s elapsed) — waiting for delta to form` };
-      this._emit(log);
-      return null;
-    }
-
-    // Update window open tracking — use Chainlink as ground truth when available
-    this.updateWindowOpen(currentPrice, chainlinkPrice);
-
-    const log = { timestamp: new Date().toISOString(), btc_price: currentPrice.toFixed(2), binance_price: binancePrice?.toFixed(2), chainlink_price: chainlinkPrice?.toFixed(2), time_to_res: Math.round(timeToResolutionSec) + 's' };
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PHASE A: THREE-GATE DECISION LOGIC (Feature-flagged, safe fallback)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    if (this.USE_NEW_STRATEGY) {
-      try {
-        // ── PRE-GATE FILTERS (EV-context filters, not hard blocks) ─────────────
-
-        // Compute spread for EV cost logging (NOT a gating condition —
-        // spread is already baked into EV_adj via EVEngine.estimateSpreadCost)
-        if (bid != null && ask != null && bid > 0 && ask > 0 && bid < 1 && ask < 1) {
-          const mid = (bid + ask) / 2;
-          const spreadPct = mid > 0 ? (ask - bid) / mid : 0;
-          log.spread_pct = (spreadPct * 100).toFixed(1) + '%';
-          // Warn only — EV gate will handle rejection if cost makes EV negative
-          if (spreadPct > 0.20) log.spread_warning = 'wide spread (>20%) — EV gate will likely reject';
-        }
-
-        // 🔵 FILTER A: LAG FRESHNESS — signal must be fresh (seconds, not ms)
-        // If the lag between BTC signal formation and now exceeds threshold, skip.
-        // Uses windowOpenPrice formation time as signal timestamp proxy.
-        const LAG_MAX_SEC = parseFloat(this.settings.lag_max_sec) || 20;
-        const signalAgeSec = this.lastSignalTs ? (Date.now() - this.lastSignalTs) / 1000 : 0;
-        // Only enforce freshness after we have a prior signal this window
-        if (this.lastSignalTs && signalAgeSec > LAG_MAX_SEC) {
-          log.verdict = 'SKIP';
-          log.reason = `Filter A: Lag freshness — signal age ${signalAgeSec.toFixed(0)}s > ${LAG_MAX_SEC}s max — stale setup`;
-          log.lag_age_sec = signalAgeSec.toFixed(0);
-          log.gate_failed = 0.2;
-          this._emit(log);
-          return null;
-        }
-        log.lag_age_sec = signalAgeSec.toFixed(1) + 's';
-
-        // 🔵 FILTER B: NO-CHASE — skip if price already moved significantly since signal formed
-        // Prevents entering after the inefficiency has been priced in
-        const NO_CHASE_PCT = parseFloat(this.settings.no_chase_pct) || 0.08; // 8% of token price move
-        if (this.lastSignalPrice != null && bid != null && ask != null && bid < 1 && ask < 1) {
-          const currentMid = (bid + ask) / 2;
-          const priceMoveSinceSignal = Math.abs(currentMid - this.lastSignalPrice) / Math.max(this.lastSignalPrice, 0.01);
-          if (priceMoveSinceSignal > NO_CHASE_PCT) {
-            log.verdict = 'SKIP';
-            log.reason = `Filter B: No-chase — price moved ${(priceMoveSinceSignal*100).toFixed(1)}% since signal (>${(NO_CHASE_PCT*100).toFixed(0)}%) — opportunity priced in`;
-            log.price_move_pct = (priceMoveSinceSignal*100).toFixed(1) + '%';
-            log.gate_failed = 0.3;
-            this._emit(log);
-            return null;
-          }
-        }
-
-        // 🔴 GATE 1: MICROSTRUCTURE EDGE DETECTION
-        // Requires: BTC moves fast AND Polymarket lags (latency + order imbalance)
-        const micro = this.microEngine.composite({
-          btcPrice: currentPrice,
-          polyPrice: chainlinkPrice || currentPrice,
-          bidSize: bidDepth || 100,
-          askSize: askDepth || 100,
-          largestBid: bid || (currentPrice * 0.995),
-          largestAsk: ask || (currentPrice * 1.005),
-          totalDepth: totalDepth || 1000,
-          avgOrderSize: totalDepth ? totalDepth / 50 : 20,
-          volatility: volatility
-        });
-
-        if (!micro || micro.confidence < 0.45) {
-          const reason = `Gate 1 FAILED: Microstructure confidence ${micro ? (micro.confidence*100).toFixed(1) : '0'}% < 45% threshold (no latency edge)`;
-          log.verdict = 'SKIP';
-          log.reason = reason;
-          log.micro_confidence = micro ? (micro.confidence*100).toFixed(1) + '%' : 'N/A';
-          log.micro_threshold = '45%';
-          log.gate_failed = 1;
-          this._emit(log);
-          return null;
-        }
-
-        // ⚠️ CRITICAL: Add market lag condition (not just confidence)
-        // Without this → still trading fake signals
-        if (!micro.hasMarketLag) {
-          const reason = `Gate 1.5 FAILED: No market lag detected (confidence ${(micro.confidence*100).toFixed(1)}% alone is not enough)`;
-          log.verdict = 'SKIP';
-          log.reason = reason;
-          log.micro_confidence = (micro.confidence*100).toFixed(1) + '%';
-          log.micro_has_lag = false;
-          log.gate_failed = 1.5;
-          this._emit(log);
-          return null;
-        }
-
-        // ✅ Gate 1 passed — we have REAL microstructure edge (confidence + market lag)
-
-        // 🟡 GATE 2: EV COST ADJUSTMENT
-        // Calculate: EV_raw - (spread + slippage) >= 3% minimum
-        // Use modelProb tied directly to latency edge strength
-        const modelProb = 0.5 + (micro.confidence - 0.5) * 0.6; // ties to edge strength
-        // Token price is a probability (0–1). Use orderbook mid if available,
-        // otherwise default to 0.50 (fair coin at window open). BTC price must NOT be used here.
-        const tokenMid = (bid != null && bid < 1 && ask != null && ask < 1)
-          ? (bid + ask) / 2
-          : 0.50;
-        const marketProb = tokenMid;
-
-        const ev = this.evEngine.recommend({
-          priceYes: tokenMid,
-          bid: (bid != null && bid < 1) ? bid : 0.48,
-          ask: (ask != null && ask < 1) ? ask : 0.52,
-          modelProb,
-          direction: obImbalance > 0 ? 'UP' : 'DOWN',
-          orderSize: 20,
-          marketDepth: totalDepth || 1000,
-          volatility: volatility,
-          btcDelta: this.windowOpenPrice ? (currentPrice - this.windowOpenPrice) / this.windowOpenPrice : 0,
-          hasMarketLag: true, // Gate 1 confirmed this
-          recentWinRate: this.recentWinRate, // Live from DB (adaptive thresholds)
-          avgSlippage: this.avgSlippage      // Live from DB (adaptive thresholds)
-        });
-
-        if (ev.recommended !== 'TRADE') {
-          const reason = `Gate 2 FAILED: ${ev.reason}`;
-          log.verdict = 'SKIP';
-          log.reason = reason;
-          log.ev_adjusted = (ev.ev_adjusted*100).toFixed(2) + '%';
-          log.ev_threshold = (ev.threshold*100).toFixed(2) + '%';
-          log.total_cost = (ev.total_cost*100).toFixed(2) + '%';
-          log.gate_failed = 2;
-          this._emit(log);
-          return null;
-        }
-
-        // ⚠️ CRITICAL: Hard floor on EV_adj (even if recommend() says TRADE)
-        // Protects against borderline noise trades at the margin
-        if (ev.ev_adjusted < 0.03) {
-          const reason = `Gate 2.5 FAILED: EV_adj ${(ev.ev_adjusted*100).toFixed(2)}% below hard floor 3% (recommend says TRADE but signal is marginal)`;
-          log.verdict = 'SKIP';
-          log.reason = reason;
-          log.ev_adjusted = (ev.ev_adjusted*100).toFixed(2) + '%';
-          log.ev_hard_floor = '3%';
-          log.gate_failed = 2.5;
-          this._emit(log);
-          return null;
-        }
-
-        // ✅ Gate 2 passed — EV is solid positive after costs (≥3%)
-
-        // 🔵 FILTER C: EV TREND — require EV to be stable or improving, not decaying
-        // Prevents entering a deteriorating setup just because EV is still positive
-        if (this.lastEV !== null) {
-          const evDrop = this.lastEV - ev.ev_adjusted;
-          const EV_DECAY_THRESHOLD = 0.015; // 1.5% drop = decaying setup
-          if (evDrop > EV_DECAY_THRESHOLD && ev.ev_adjusted < 0.05) {
-            log.verdict = 'SKIP';
-            log.reason = `Filter C: EV trend — EV decaying (${(this.lastEV*100).toFixed(1)}% → ${(ev.ev_adjusted*100).toFixed(1)}%), drop=${(evDrop*100).toFixed(1)}%`;
-            log.ev_prev = (this.lastEV*100).toFixed(1) + '%';
-            log.ev_now = (ev.ev_adjusted*100).toFixed(1) + '%';
-            log.gate_failed = 0.4;
-            this._emit(log);
-            return null;
-          }
-        }
-        // Update EV trend tracker
-        this.lastEV = ev.ev_adjusted;
-
-        // 🟢 GATE 3: SIGNAL CONFIRMATION (WEAK)
-        // Compute old signal for directional confirmation only
-        // Use reduced weight: score / 10.0 instead of 7.0
-        // Only confirm if direction aligns with macro signal
-
-      } catch (gateError) {
-        console.error('[Phase A] Gate system error:', gateError.message, gateError.stack);
-        // Safe fallback: if new system fails, skip trade
-        const log_error = { timestamp: new Date().toISOString(), verdict: 'SKIP', reason: `Gate system error: ${gateError.message}`, error: true };
-        this._emit(log_error);
-        return null;
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CONFIRMATION: Historical signal scoring (reduced weight, confirmation only)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-
-    let score = 0;
-    let microData = null;
-    let evData = null;
-
-    // If gates passed (new strategy), reuse gate data for sizing
-    if (this.USE_NEW_STRATEGY && log.gate_failed === undefined) {
-      // Gates passed — derive direction from microstructure signal
-      microData = {
-        confidence: micro?.confidence || 0,
-        signal: micro?.signal || 0
-      };
-      evData = ev;
-      // Direction confirmed by gates
-      const gateDirection = obImbalance > 0 ? 'UP' : 'DOWN';
-      log.gates_passed = true;
-      log.gate_direction = gateDirection;
-    }
-
-    // ── 1. WINDOW DELTA (weight 5-7) — THE dominant signal ─────────────────
-    let windowDeltaScore = 0;
-    if (this.windowOpenPrice) {
-      // Use Chainlink price for window delta if available — same oracle as resolution
-      const deltaPrice = chainlinkPrice || currentPrice;
-      const windowPct = (deltaPrice - this.windowOpenPrice) / this.windowOpenPrice * 100;
-      if (Math.abs(windowPct) > 0.10) windowDeltaScore = Math.sign(windowPct) * 7;
-      else if (Math.abs(windowPct) > 0.02) windowDeltaScore = Math.sign(windowPct) * 5;
-      else if (Math.abs(windowPct) > 0.005) windowDeltaScore = Math.sign(windowPct) * 3;
-      else if (Math.abs(windowPct) > 0.001) windowDeltaScore = Math.sign(windowPct) * 1;
-      log.window_open = this.windowOpenPrice.toFixed(2);
-      log.window_pct = windowPct.toFixed(4) + '%';
-      log.window_delta_score = windowDeltaScore;
-    }
-    score += windowDeltaScore;
-
-    // ── HYBRID MODE DETECTION ────────────────────────────────────────────────
-    // Large window delta (>0.10%) = MOMENTUM mode — ride the trend
-    // Small window delta (<0.02%) = MEAN REVERSION mode — fade extremes
-    let windowPctAbs = 0;
-    if (this.windowOpenPrice) {
-      const deltaPrice = chainlinkPrice || currentPrice;
-      windowPctAbs = Math.abs((deltaPrice - this.windowOpenPrice) / this.windowOpenPrice * 100);
-    }
-    const mode = windowPctAbs > 0.10 ? 'MOMENTUM' : windowPctAbs < 0.02 ? 'MEAN_REVERSION' : 'NEUTRAL';
-    log.strategy_mode = mode;
-
-    // ── 2. MICRO MOMENTUM (weight 2) — Last 2 candles ──────────────────────
-    let momentumScore = 0;
-    if (priceHistory.length >= 3) {
-      const last = priceHistory[priceHistory.length - 1];
-      const prev = priceHistory[priceHistory.length - 2];
-      const prev2 = priceHistory[priceHistory.length - 3];
-      if (last > prev && prev > prev2) momentumScore = 2;
-      else if (last < prev && prev < prev2) momentumScore = -2;
-      else momentumScore = last > prev ? 0.5 : last < prev ? -0.5 : 0;
-    }
-    score += momentumScore;
-    log.momentum_score = momentumScore;
-
-    // ── 3. ACCELERATION (weight 1.5) — Is momentum building or fading? ─────
-    let accelScore = 0;
-    if (priceHistory.length >= 4) {
-      const move1 = priceHistory[priceHistory.length - 1] - priceHistory[priceHistory.length - 2];
-      const move2 = priceHistory[priceHistory.length - 2] - priceHistory[priceHistory.length - 3];
-      if (Math.sign(move1) === Math.sign(move2) && Math.abs(move1) > Math.abs(move2)) {
-        accelScore = Math.sign(move1) * 1.5; // Accelerating
-      } else if (Math.sign(move1) === Math.sign(move2) && Math.abs(move1) < Math.abs(move2)) {
-        accelScore = Math.sign(move1) * 0.5; // Decelerating
-      }
-    }
-    score += accelScore;
-    log.accel_score = accelScore;
-
-    // ── 4. VELOCITY-WEIGHTED EMA (weight 1-2) ──────────────────────────────
-    let emaScore = 0;
-    if (priceHistory.length >= 21) {
-      const ema9 = this._ema(priceHistory.slice(-9), 9);
-      const ema21 = this._ema(priceHistory.slice(-21), 21);
-      const ema9Prev = priceHistory.length >= 12 ? this._ema(priceHistory.slice(-12, -3), 9) : ema9;
-      const emaVelocity = Math.abs((ema9 - ema9Prev) / ema9Prev);
-      if (ema9 > ema21) {
-        emaScore = emaVelocity > 0.001 ? 2 : 1;
-      } else {
-        emaScore = emaVelocity > 0.001 ? -2 : -1;
-      }
-    }
-    score += emaScore;
-    log.ema_score = emaScore;
-
-    // ⚠️ GATE 3: ASYMMETRIC CONFIRMATION (forces directional alignment)
-    // After gates 1-2 pass, require EMA to actually align with direction
-    // No neutral signals allowed — only aligned pressure
-    if (this.USE_NEW_STRATEGY && log.gates_passed) {
-      const gateDir = log.gate_direction; // Set by gates 1-2
-      const isBullishEMA = emaScore > 0;
-      const isBearishEMA = emaScore < 0;
-
-      if (gateDir === 'UP' && !isBullishEMA) {
-        log.verdict = 'SKIP';
-        log.reason = `Gate 3 FAILED: Direction UP but EMA_score ${emaScore} is not bullish (no aligned pressure)`;
-        log.ema_confirmation = 'MISALIGNED';
-        log.gate_failed = 3;
-        this._emit(log);
-        return null;
-      }
-
-      if (gateDir === 'DOWN' && !isBearishEMA) {
-        log.verdict = 'SKIP';
-        log.reason = `Gate 3 FAILED: Direction DOWN but EMA_score ${emaScore} is not bearish (no aligned pressure)`;
-        log.ema_confirmation = 'MISALIGNED';
-        log.gate_failed = 3;
-        this._emit(log);
-        return null;
-      }
-
-      log.ema_confirmation = 'ALIGNED';
-    }
-
-    // ── 5. MOMENTUM RSI (weight 1-3) — Confirm momentum, not just extremes ──
-    let rsiScore = 0;
-    if (priceHistory.length >= 15) {
-      const rsi = this._rsi(priceHistory.slice(-15), 14);
-      log.rsi = rsi.toFixed(1);
-      if (rsi > 75) rsiScore = -2;        // Overbought reversal signal
-      else if (rsi < 25) rsiScore = 2;    // Oversold bounce signal
-      else if (rsi > 60 && rsi <= 75) rsiScore = 1;   // Strong upward momentum
-      else if (rsi < 40 && rsi >= 25) rsiScore = -1;  // Strong downward momentum
-      // 40-60 neutral: 0 weight
-
-      // Hybrid mode: mean-reversion doubles RSI weight, momentum suppresses contradictory RSI
-      if (mode === 'MEAN_REVERSION') {
-        rsiScore *= 2;
-        log.rsi_mode = 'MEAN_REV_2x';
-      } else if (mode === 'MOMENTUM' && Math.sign(rsiScore) !== Math.sign(windowDeltaScore)) {
-        rsiScore = 0;
-        log.rsi_mode = 'SUPPRESSED';
-      }
-    }
-    score += rsiScore;
-    log.rsi_score = rsiScore;
-
-    // ── 6. VOLUME SURGE (weight 1) ───────────────────────────────────────────
-    let volScore = 0;
-    if (volumeHistory.length >= 6) {
-      const recentAvg = volumeHistory.slice(-3).reduce((a, b) => a + b, 0) / 3;
-      const priorAvg = volumeHistory.slice(-6, -3).reduce((a, b) => a + b, 0) / 3;
-      if (priorAvg > 0 && recentAvg > priorAvg * 1.5) {
-        // Volume surge confirms current direction
-        volScore = Math.sign(momentumScore) * 1;
-      }
-    }
-    score += volScore;
-    log.vol_score = volScore;
-
-    // ── 7. TICK TREND (weight 2) — Real-time micro-trend ────────────────────
-    let tickScore = 0;
-    if (this.recentTicks.length >= 5) {
-      const ticks = this.recentTicks.slice(-10);
-      let ups = 0, downs = 0;
-      for (let i = 1; i < ticks.length; i++) {
-        if (ticks[i] > ticks[i-1]) ups++;
-        else if (ticks[i] < ticks[i-1]) downs++;
-      }
-      const total = ups + downs;
-      const tickMove = ticks[ticks.length-1] - ticks[0];
-      const tickPct = Math.abs(tickMove) / ticks[0] * 100;
-      if (total > 0 && tickPct > 0.005) {
-        const consistency = Math.max(ups, downs) / total;
-        if (consistency >= 0.6) {
-          tickScore = ups > downs ? 2 : -2;
-        }
-      }
-    }
-    score += tickScore;
-    log.tick_score = tickScore;
-
-    // ── 8. ORDER BOOK IMBALANCE (weight 1.5) ────────────────────────────────
-    let obScore = 0;
-    if (Math.abs(obImbalance) > 0.15) {
-      obScore = obImbalance > 0 ? 1.5 : -1.5;
-    } else if (Math.abs(obImbalance) > 0.05) {
-      obScore = obImbalance > 0 ? 0.5 : -0.5;
-    }
-    score += obScore;
-    log.ob_score = obScore;
-    log.ob_imbalance = typeof obImbalance === 'number' ? obImbalance.toFixed(3) : obImbalance;
-
-    // ── 9. GBM DIVERGENCE (weight 2) — Model prob vs market price ───────────
-    let divergenceScore = 0;
-    if (this.windowOpenPrice && timeToResolutionSec > 0 && volatility) {
-      const gbmProb = this._gbmProb(currentPrice, this.windowOpenPrice, drift, volatility, timeToResolutionSec);
-      const estimatedMarketProb = this._estimateTokenPrice(Math.abs(score));
-      const divergence = gbmProb - estimatedMarketProb;
-      log.gbm_prob = (gbmProb * 100).toFixed(1) + '%';
-      log.gbm_divergence = (divergence * 100).toFixed(1) + '%';
-      if (Math.abs(divergence) > 0.10) divergenceScore = Math.sign(divergence) * 2;
-      else if (Math.abs(divergence) > 0.05) divergenceScore = Math.sign(divergence) * 1;
-      // Only apply if direction agrees with main signal direction
-      if (Math.sign(divergenceScore) !== Math.sign(score)) divergenceScore = 0;
-    }
-    score += divergenceScore;
-    log.divergence_score = divergenceScore;
-
-    // ── COMPOSITE SCORE → CONFIDENCE ────────────────────────────────────────
-    // Divide by 10 — accounts for 9 indicators: delta, momentum, accel, ema, rsi, vol, tick, ob, divergence
-    const confidence = Math.min(Math.abs(score) / 10.0, 1.0);
-    const direction = score > 0 ? 'UP' : 'DOWN';
-
-    log.total_score = score.toFixed(2);
-    log.confidence = (confidence * 100).toFixed(1) + '%';
-    log.direction = direction;
-
-    // Adaptive thresholds based on volatility
-    const baseMinConfidence = parseFloat(this.settings.min_ev_threshold) || 0.05;
-    const typicalVolatility = 0.02; // ~2% considered "normal"
-    const volatilityRatio = Math.max(0.5, Math.min(2.0, Math.sqrt((volatility || 0.01) / typicalVolatility)));
-    const minConfidence = baseMinConfidence * volatilityRatio;
-
-    log.volatility_ratio = volatilityRatio.toFixed(2);
-    log.adapted_min_confidence = (minConfidence * 100).toFixed(1) + '%';
-
-    if (confidence < minConfidence) {
-      log.verdict = 'SKIP';
-      log.reason = `Confidence ${(confidence*100).toFixed(1)}% below threshold ${(minConfidence*100).toFixed(1)}% (vol-adjusted from ${(baseMinConfidence*100).toFixed(1)}%)`;
-      this._emit(log);
-      return null;
-    }
-
-    // Gate on absolute score — only trade with clear directional signal
-    const minAbsScore = 3.0;
-    if (Math.abs(score) < minAbsScore) {
-      log.verdict = 'SKIP';
-      log.reason = `Score |${score.toFixed(1)}| below minimum |${minAbsScore}| — weak signal`;
-      this._emit(log);
-      return null;
-    }
-
-    // ── FINAL DECISION: Use gate data if available, otherwise use scoring ────
-    let entryPrice, marketProb, modelProb, edge, size, finalConfidence, expectedValue, finalDirection;
-
-    if (evData && log.gates_passed) {
-      // Gates passed: use EV data for final decision
-      finalDirection = log.gate_direction;
-      entryPrice = chainlinkPrice || currentPrice;
-      marketProb = entryPrice;
-      modelProb = 0.5 + (microData.confidence - 0.5) * 0.6;
-      edge = modelProb - marketProb;
-      finalConfidence = microData.confidence;
-      expectedValue = evData.ev_adjusted;
-
-      // Size based on gate EV + Kelly
-      const b = (1 / marketProb) - 1;
-      const kellyFraction = (modelProb * b - (1 - modelProb)) / b;
-      size = Math.min(Math.max(0, kellyFraction) * kelly_cap * max_trade_size, max_trade_size);
-
-      log.verdict = 'TRADE';
-      log.reason = `✅ Gates passed | Micro ${(microData.confidence*100).toFixed(1)}% | EV_adj ${(evData.ev_adjusted*100).toFixed(1)}% | ${finalDirection}`;
-      log.entry_price = entryPrice.toFixed(3);
-      log.size = '$' + size.toFixed(2);
-      log.model_prob = (modelProb*100).toFixed(1) + '%';
-      log.market_prob = (marketProb*100).toFixed(1) + '%';
-      log.edge = (edge*100).toFixed(1) + '%';
-      log.micro_confidence = (microData.confidence*100).toFixed(1) + '%';
-      log.ev_adjusted = (evData.ev_adjusted*100).toFixed(2) + '%';
-
+  updateEMA(price) {
+    if (!price) return;
+    if (this.emaShort === null) {
+      this.emaShort = price;
+      this.emaLong = price;
     } else {
-      // Fallback: use old scoring system
-      entryPrice = this._estimateTokenPrice(Math.abs(score));
-      marketProb = entryPrice;
-      modelProb = 0.5 + (confidence * 0.4);
-      edge = modelProb - marketProb;
-      finalConfidence = confidence;
-      finalDirection = direction;
-
-      const baseMinEdge = parseFloat(this.settings.min_edge) || 0.03;
-      const adaptiveMinEdge = baseMinEdge * volatilityRatio;
-
-      log.edge = (edge * 100).toFixed(1) + '%';
-      log.adapted_min_edge = (adaptiveMinEdge * 100).toFixed(1) + '%';
-
-      if (edge <= adaptiveMinEdge) {
-        log.verdict = 'SKIP';
-        log.reason = `Edge ${(edge*100).toFixed(1)}% below minEdge ${(adaptiveMinEdge*100).toFixed(1)}%`;
-        this._emit(log);
-        return null;
-      }
-
-      const b = (1 / marketProb) - 1;
-      const kellyFraction = (modelProb * b - (1 - modelProb)) / b;
-      size = Math.min(Math.max(0, kellyFraction) * kelly_cap * max_trade_size, max_trade_size);
-
-      if (size < 0.50) {
-        log.verdict = 'SKIP';
-        log.reason = `Size $${size.toFixed(2)} too small`;
-        this._emit(log);
-        return null;
-      }
-
-      expectedValue = modelProb * (1 / marketProb - 1) - (1 - modelProb);
-      log.verdict = 'TRADE';
-      log.entry_price = entryPrice.toFixed(3);
-      log.size = '$' + size.toFixed(2);
-      log.model_prob = (modelProb*100).toFixed(1) + '%';
-      log.market_prob = (marketProb*100).toFixed(1) + '%';
-      log.edge = (edge*100).toFixed(1) + '%';
-      log.reason = `Score ${score.toFixed(1)} | Conf ${(confidence*100).toFixed(0)}% | Edge ${(edge*100).toFixed(1)}% | ${direction} @ $${entryPrice.toFixed(3)}`;
+      this.emaShort = this.emaAlpha * price + (1 - this.emaAlpha) * this.emaShort;
+      this.emaLong = (this.emaAlpha / 2) * price + (1 - this.emaAlpha / 2) * this.emaLong;
     }
-
-    if (size < 0.50) {
-      log.verdict = 'SKIP';
-      log.reason = `Size $${size.toFixed(2)} too small`;
-      this._emit(log);
-      return null;
-    }
-
-    // Record signal reference point for lag freshness + no-chase tracking
-    this.lastSignalTs = Date.now();
-    const tokenMidNow = (bid != null && bid < 1 && ask != null && ask < 1) ? (bid + ask) / 2 : null;
-    if (tokenMidNow !== null) this.lastSignalPrice = tokenMidNow;
-
-    this._emit(log);
-
-    return {
-      direction: finalDirection,
-      entry_price: entryPrice,
-      model_prob: modelProb,
-      market_prob: marketProb,
-      edge,
-      expected_value: expectedValue,
-      ev_adjusted: evData?.ev_adjusted || expectedValue,
-      lag_age_sec: parseFloat(log.lag_age_sec) || 0,
-      size,
-      fee: marketProb * 0.25 * Math.pow(marketProb * (1 - marketProb), 2) * size,
-      confidence: finalConfidence,
-      score,
-      gates_passed: log.gates_passed || false,
-      micro_confidence: microData?.confidence || 0
-    };
   }
 
   /**
-   * Estimate token price based on signal strength (from PolymarketBot.md pricing model)
-   * delta < 0.005% → $0.50, delta ~ 0.15%+ → $0.92-0.97
+   * Main evaluation pipeline
+   * 
+   * Architecture:
+   *   Pre-filters → Model Probability → EV (primary signal) → Confirmation → Trade
+   * 
+   * This is NOT a scalping bot. It trades on:
+   *   - EV as primary signal
+   *   - Market inefficiency (lag vs model)
+   *   - Dynamic position flipping (YES ↔ NO)
+   *   - Short-term probabilistic resolution
    */
-  _estimateTokenPrice(absScore) {
-    if (absScore >= 7) return 0.92;
-    if (absScore >= 5) return 0.80;
-    if (absScore >= 3) return 0.65;
-    if (absScore >= 1) return 0.55;
-    return 0.50;
-  }
+  async evaluate() {
+    const log = {
+      timestamp: new Date().toISOString(),
+      gates: {},
+      verdict: 'SKIP',
+      reason: ''
+    };
 
-  _ema(prices, period) {
-    const k = 2 / (period + 1);
-    let ema = prices[0];
-    for (let i = 1; i < prices.length; i++) ema = prices[i] * k + ema * (1 - k);
-    return ema;
-  }
+    try {
+      // --- Get current BTC data ---
+      const btcPrice = this.binance.getPrice();
+      const chainlinkPrice = this.chainlink.getPrice();
 
-  _rsi(prices, period) {
-    let gains = 0, losses = 0;
-    for (let i = 1; i < period; i++) {
-      const diff = prices[i] - prices[i-1];
-      if (diff > 0) gains += diff; else losses -= diff;
+      if (!btcPrice) {
+        log.reason = 'No BTC price available from Binance';
+        return { verdict: 'SKIP', log };
+      }
+
+      this.updateEMA(btcPrice);
+
+      // --- Fetch active markets ---
+      const markets = await this.polymarket.fetchActiveBTCMarkets();
+      if (!markets || markets.length === 0) {
+        log.reason = 'No active BTC markets found';
+        return { verdict: 'SKIP', log };
+      }
+
+      // --- Evaluate each market ---
+      for (const market of markets) {
+        const marketId = market.id || market.condition_id;
+        const yesToken = market.tokens?.[0];
+        const noToken = market.tokens?.[1];
+
+        if (!yesToken?.token_id) continue;
+
+        // ==========================================
+        // STEP 1: GET REAL MARKET DATA
+        // ==========================================
+        const orderBook = await this.polymarket.getOrderBook(yesToken.token_id);
+
+        if (!orderBook || orderBook.bestBid === null || orderBook.bestAsk === null) {
+          continue; // Can't evaluate without real data
+        }
+
+        const yesPrice = orderBook.midPrice;
+        const spread = orderBook.spread || 0;
+
+        // ==========================================
+        // PRE-FILTER A: Signal Freshness (Lag Age)
+        // This is critical — stale signals are the #1 loss source
+        // ==========================================
+        const lagAgeSeconds = this._getLagAge(chainlinkPrice, btcPrice);
+        const maxLagAge = this.settings.stale_lag_seconds || 20;
+
+        if (lagAgeSeconds > maxLagAge) {
+          log.gates.freshness = { lagAge: lagAgeSeconds, max: maxLagAge, passed: false };
+          continue;
+        }
+
+        // ==========================================
+        // PRE-FILTER B: No-Chase Rule
+        // If price moved significantly since we first spotted opportunity, skip
+        // ==========================================
+        const chaseThreshold = (this.settings.chase_threshold || 8) / 100; // Convert to decimal
+
+        if (this.lastSignalPrices[marketId]) {
+          const prevPrice = this.lastSignalPrices[marketId].price;
+          const priceMove = Math.abs(yesPrice - prevPrice);
+          if (priceMove > chaseThreshold) {
+            log.gates.chase = { priceMove, threshold: chaseThreshold, passed: false };
+            continue;
+          }
+        }
+
+        // Record current price for future chase detection
+        this.lastSignalPrices[marketId] = { price: yesPrice, timestamp: Date.now() };
+
+        // ==========================================
+        // STEP 2: MODEL PROBABILITY
+        // Derive from microstructure + BTC trend
+        // ==========================================
+
+        // Record prices for latency detection
+        this.microEngine.recordPrices(btcPrice, yesPrice);
+
+        const micro = this.microEngine.composite({
+          btcPrice: btcPrice,
+          polyPrice: yesPrice,
+          bidSize: orderBook.bidDepth,
+          askSize: orderBook.askDepth,
+          largestBid: orderBook.largestBid,
+          largestAsk: orderBook.largestAsk,
+          totalDepth: orderBook.totalDepth,
+          avgOrderSize: orderBook.totalDepth > 0 ? orderBook.totalDepth / (orderBook.bidCount + orderBook.askCount) : 20,
+          bestBid: orderBook.bestBid,
+          bestAsk: orderBook.bestAsk
+        });
+
+        // Model probability = market price + edge from model confidence
+        // Higher micro confidence → more edge → higher model prob deviation from market
+        const edgeEstimate = micro.confidence * 0.08; // Scale: 0-8% edge based on confidence
+        const lagBonus = micro.hasMarketLag ? 0.03 : 0; // Extra edge when market is lagging
+
+        // Determine direction from BTC movement (what should the probability do?)
+        const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
+
+        let modelProb;
+        if (btcDelta > 0) {
+          // BTC going up → YES probability should increase
+          modelProb = Math.min(0.99, Math.max(0.01, yesPrice + edgeEstimate + lagBonus));
+        } else {
+          // BTC going down → YES probability should decrease (NO is better)
+          modelProb = Math.min(0.99, Math.max(0.01, yesPrice - edgeEstimate - lagBonus));
+        }
+
+        // ==========================================
+        // GATE 1: MICROSTRUCTURE CONFIDENCE
+        // Not a hard block — informs model probability
+        // Low confidence = lower edge estimate = lower EV
+        // ==========================================
+        const gate1Threshold = parseFloat(this.settings.gate1_threshold) || 0.45;
+
+        log.gates.gate1 = {
+          confidence: micro.confidence,
+          threshold: gate1Threshold,
+          hasLag: micro.hasMarketLag,
+          passed: micro.confidence >= gate1Threshold
+        };
+
+        if (micro.confidence < gate1Threshold) {
+          continue; // Not enough microstructure signal
+        }
+
+        // ==========================================
+        // GATE 2: EV ANALYSIS (PRIMARY SIGNAL)
+        // Spread is a COST COMPONENT, not a gate
+        // ==========================================
+        const costs = {
+          spread: spread,
+          estimatedSlippage: 0.005,
+          fees: 0.002
+        };
+
+        // Evaluate BOTH sides — pick the better one
+        const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
+
+        log.gates.gate2 = {
+          evYes: evAnalysis.evYes,
+          evNo: evAnalysis.evNo,
+          bestDirection: evAnalysis.bestDirection,
+          bestEV: evAnalysis.bestEV,
+          evFloor: parseFloat(this.settings.gate2_ev_floor) || 3.0,
+          spread: spread,
+          modelProb: modelProb,
+          passed: false
+        };
+
+        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
+
+        if (evAnalysis.bestEV < evFloor) {
+          log.gates.gate2.passed = false;
+          continue; // EV too low (including costs)
+        }
+
+        log.gates.gate2.passed = true;
+
+        // ==========================================
+        // EV TREND FILTER: Is EV decaying?
+        // ==========================================
+        this.evEngine.recordEV(marketId, evAnalysis.bestEV, evAnalysis.bestDirection);
+
+        if (this.evEngine.isEVDecaying(marketId)) {
+          log.gates.evTrend = { status: 'DECAYING', passed: false };
+          continue; // EV is declining — don't enter decaying setup
+        }
+
+        // ==========================================
+        // GATE 3: EMA TREND CONFIRMATION (optional)
+        // ==========================================
+        const direction = evAnalysis.bestDirection;
+        let emaEdge = 0;
+
+        if (this.settings.gate3_enabled !== false) {
+          emaEdge = this.emaShort && this.emaLong
+            ? ((this.emaShort - this.emaLong) / this.emaLong) * 100
+            : 0;
+
+          const minEdge = parseFloat(this.settings.gate3_min_edge) || 5.0;
+          const isBullish = emaEdge > 0;
+
+          log.gates.gate3 = {
+            emaEdge,
+            minEdge,
+            direction,
+            passed: false
+          };
+
+          // Check alignment: YES direction needs bullish EMA, NO needs bearish
+          if (direction === 'YES' && !isBullish) {
+            log.gates.gate3.passed = false;
+            continue;
+          }
+          if (direction === 'NO' && isBullish) {
+            log.gates.gate3.passed = false;
+            continue;
+          }
+
+          // Check strength
+          if (Math.abs(emaEdge) < minEdge / 100) {
+            log.gates.gate3.passed = false;
+            continue;
+          }
+
+          log.gates.gate3.passed = true;
+        }
+
+        // ==========================================
+        // ALL GATES PASSED — GENERATE SIGNAL
+        // ==========================================
+        const entryPrice = direction === 'YES' ? orderBook.bestAsk : (1 - orderBook.bestBid);
+        const tokenId = direction === 'YES' ? yesToken.token_id : (noToken?.token_id || yesToken.token_id);
+
+        log.verdict = 'TRADE';
+        log.reason = `EV-driven signal: ${direction} @ EV ${evAnalysis.bestEV.toFixed(2)}%, micro=${micro.confidence.toFixed(3)}, modelProb=${modelProb.toFixed(3)}`;
+
+        return {
+          verdict: 'TRADE',
+          market: market,
+          marketId: marketId,
+          direction: direction,        // 'YES' or 'NO'
+          confidence: micro.confidence,
+          evRaw: direction === 'YES' ? evAnalysis.evYes + (costs.spread + costs.estimatedSlippage + costs.fees) * 100 : evAnalysis.evNo + (costs.spread + costs.estimatedSlippage + costs.fees) * 100,
+          evAdj: evAnalysis.bestEV,
+          evYes: evAnalysis.evYes,
+          evNo: evAnalysis.evNo,
+          emaEdge: emaEdge,
+          modelProb: modelProb,
+          entryPrice: entryPrice,
+          tokenId: tokenId,
+          orderBook: orderBook,
+          microstructure: micro,
+          costs: costs,
+          log: log
+        };
+      }
+
+      // No market passed
+      log.verdict = 'SKIP';
+      log.reason = 'No market passed all gates';
+      return { verdict: 'SKIP', log };
+
+    } catch (err) {
+      console.error('[GBMSignalEngine] evaluate error:', err.message);
+      log.verdict = 'ERROR';
+      log.reason = `Evaluation error: ${err.message}`;
+      return { verdict: 'ERROR', log };
     }
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
   }
 
-  _normalCDF(x) {
-    // Abramowitz and Stegun approximation
-    const a = [0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429];
-    const p = 0.3275911;
-    const sign = x < 0 ? -1 : 1;
-    x = Math.abs(x) / Math.sqrt(2);
-    const t = 1 / (1 + p * x);
-    const y = 1 - ((((a[4]*t+a[3])*t+a[2])*t+a[1])*t+a[0])*t*Math.exp(-x*x);
-    return 0.5 * (1 + sign * y);
-  }
+  /**
+   * Estimate lag age between Chainlink and Binance
+   * Returns seconds of estimated lag
+   */
+  _getLagAge(chainlinkPrice, binancePrice) {
+    if (!chainlinkPrice || !binancePrice) return 0;
 
-  _gbmProb(currentPrice, windowOpenPrice, drift, volatility, T) {
-    // P(S_T > S_0) using GBM formula
-    // drift and volatility are per-second (from BinanceFeed)
-    T = Math.max(T, 1);
-    const vol = Math.max(volatility, 0.0001);
-    const d = (Math.log(currentPrice/windowOpenPrice) + (drift - 0.5*vol*vol)*T) / (vol*Math.sqrt(T));
-    return this._normalCDF(d);
-  }
+    // Price divergence as proxy for lag
+    const divergence = Math.abs(chainlinkPrice - binancePrice) / binancePrice;
 
-  _emit(log) {
-    if (this.onDecision) this.onDecision(log);
+    // Rough estimate: 0.1% divergence ≈ 5-10 seconds of lag
+    // This is a heuristic — real lag tracking would use timestamps
+    if (this.chainlink.lastUpdate) {
+      return (Date.now() - this.chainlink.lastUpdate.getTime()) / 1000;
+    }
+
+    return divergence > 0.005 ? 30 : 0; // >0.5% divergence = likely stale
   }
 }
 
-module.exports = { GBMSignalEngine };
+module.exports = GBMSignalEngine;
