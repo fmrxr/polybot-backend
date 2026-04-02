@@ -3,119 +3,140 @@ const WebSocket = require('ws');
 class BinanceFeed {
   constructor() {
     this.ws = null;
-    this.data = {
-      price: null,
-      vwap: null,
-      volatility: null,
-      momentum: null,
-      obImbalance: null,
-      drift: null,
-      priceHistory: [],
-      volumeHistory: []
-    };
-    this.reconnectDelay = 5000;
-    this.isConnected = false;
+    this.price = null;
+    this.bestBid = null;
+    this.bestAsk = null;
+    this.bidQty = null;
+    this.askQty = null;
+    this.volume24h = null;
+    this.reconnectDelay = 1000;
+    this.isConnecting = false;
+    this.priceHistory = [];
+    this.maxHistoryLength = 120; // 2 minutes of 1s ticks
   }
 
   connect() {
-    return new Promise((resolve) => {
-      // Combined stream: kline 1m + bookTicker for order flow
-      this.ws = new WebSocket('wss://stream.binance.com:9443/stream?streams=btcusdt@kline_1m/btcusdt@bookTicker/btcusdt@depth5@100ms');
+    if (this.isConnecting) {
+      return Promise.reject(new Error('BinanceFeed already connecting'));
+    }
+    this.isConnecting = true;
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.isConnecting = false;
+        reject(new Error('BinanceFeed WebSocket connection timeout (10s)'));
+      }, 10000);
+
+      // Clean up any existing connection
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        try { this.ws.terminate(); } catch (e) {}
+        this.ws = null;
+      }
+
+      this.ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@ticker');
 
       this.ws.on('open', () => {
-        this.isConnected = true;
-        console.log('[BinanceFeed] Connected');
+        clearTimeout(timeout);
+        this.isConnecting = false;
+        this.reconnectDelay = 1000; // Reset backoff
+        console.log('[BinanceFeed] Connected to Binance WebSocket');
         resolve();
       });
 
-      this.ws.on('message', (raw) => {
+      this.ws.on('message', (data) => {
         try {
-          const msg = JSON.parse(raw);
-          this._handleMessage(msg);
-        } catch (e) {}
+          const parsed = JSON.parse(data);
+          this.price = parseFloat(parsed.c);
+          this.bestBid = parseFloat(parsed.b);
+          this.bestAsk = parseFloat(parsed.a);
+          this.bidQty = parseFloat(parsed.B);
+          this.askQty = parseFloat(parsed.A);
+          this.volume24h = parseFloat(parsed.v);
+
+          // Track price history
+          this.priceHistory.push({
+            price: this.price,
+            timestamp: Date.now()
+          });
+          if (this.priceHistory.length > this.maxHistoryLength) {
+            this.priceHistory.shift();
+          }
+        } catch (e) {
+          // Ignore parse errors on non-ticker messages
+        }
       });
 
-      this.ws.on('close', () => {
-        this.isConnected = false;
-        console.log('[BinanceFeed] Disconnected, reconnecting...');
-        setTimeout(() => this.connect(), this.reconnectDelay);
+      this.ws.on('close', (code, reason) => {
+        this.isConnecting = false;
+        console.log(`[BinanceFeed] Disconnected (code: ${code}). Reconnecting in ${this.reconnectDelay}ms...`);
+
+        // Clean up listeners before reconnecting
+        if (this.ws) {
+          this.ws.removeAllListeners();
+        }
+
+        setTimeout(() => {
+          this.connect().catch(err => {
+            console.error('[BinanceFeed] Reconnect failed:', err.message);
+          });
+        }, this.reconnectDelay);
+
+        // Exponential backoff, max 30s
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
       });
 
       this.ws.on('error', (err) => {
-        console.error('[BinanceFeed] Error:', err.message);
+        clearTimeout(timeout);
+        this.isConnecting = false;
+        console.error('[BinanceFeed] WebSocket error:', err.message);
+        // Don't reject if already resolved (error during established connection)
+        reject(err);
       });
     });
-  }
-
-  _handleMessage(msg) {
-    if (!msg.data) return;
-    const { stream, data } = msg;
-
-    if (stream === 'btcusdt@kline_1m') {
-      const k = data.k;
-      const close = parseFloat(k.c);
-      const open = parseFloat(k.o);
-      const volume = parseFloat(k.v);
-      const quoteVolume = parseFloat(k.q);
-
-      this.data.price = close;
-
-      // VWAP approximation from kline
-      const typicalPrice = (parseFloat(k.h) + parseFloat(k.l) + close) / 3;
-      this.data.priceHistory.push(typicalPrice);
-      this.data.volumeHistory.push(volume);
-      if (this.data.priceHistory.length > 30) {
-        this.data.priceHistory.shift();
-        this.data.volumeHistory.shift();
-      }
-
-      // VWAP
-      const totalPV = this.data.priceHistory.reduce((s, p, i) => s + p * this.data.volumeHistory[i], 0);
-      const totalV = this.data.volumeHistory.reduce((s, v) => s + v, 0);
-      this.data.vwap = totalV > 0 ? totalPV / totalV : close;
-
-      // Volatility: rolling std dev of returns (annualized to per-second for GBM)
-      if (this.data.priceHistory.length >= 5) {
-        const returns = [];
-        for (let i = 1; i < this.data.priceHistory.length; i++) {
-          returns.push(Math.log(this.data.priceHistory[i] / this.data.priceHistory[i - 1]));
-        }
-        const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
-        const variance = returns.reduce((s, r) => s + Math.pow(r - mean, 2), 0) / returns.length;
-        const volPerMinute = Math.sqrt(variance);
-        // Convert to per-second volatility for GBM (5min window)
-        this.data.volatility = volPerMinute * Math.sqrt(60); // annualized per sqrt(second)
-        this.data.drift = mean / 60; // per-second drift
-      }
-
-      // Momentum: rate of change over last 5 bars
-      if (this.data.priceHistory.length >= 5) {
-        const recent = this.data.priceHistory.slice(-5);
-        this.data.momentum = (recent[recent.length - 1] - recent[0]) / recent[0];
-      }
-    }
-
-    if (stream === 'btcusdt@depth5@100ms') {
-      // Order book imbalance: (bid volume - ask volume) / (bid + ask)
-      const bids = data.bids || [];
-      const asks = data.asks || [];
-      const bidVol = bids.reduce((s, b) => s + parseFloat(b[1]), 0);
-      const askVol = asks.reduce((s, a) => s + parseFloat(a[1]), 0);
-      const total = bidVol + askVol;
-      this.data.obImbalance = total > 0 ? (bidVol - askVol) / total : 0;
-    }
-  }
-
-  getMarketData() {
-    return { ...this.data };
   }
 
   disconnect() {
     if (this.ws) {
       this.ws.removeAllListeners();
-      this.ws.close();
+      try { this.ws.terminate(); } catch (e) {}
+      this.ws = null;
     }
+    this.isConnecting = false;
+    console.log('[BinanceFeed] Disconnected');
+  }
+
+  getPrice() {
+    return this.price;
+  }
+
+  getOrderBookImbalance() {
+    if (!this.bidQty || !this.askQty) return 0;
+    return (this.bidQty - this.askQty) / (this.bidQty + this.askQty);
+  }
+
+  getPriceHistory() {
+    return this.priceHistory;
+  }
+
+  // Get price from N seconds ago
+  getPriceSecondsAgo(seconds) {
+    const targetTime = Date.now() - (seconds * 1000);
+    for (let i = this.priceHistory.length - 1; i >= 0; i--) {
+      if (this.priceHistory[i].timestamp <= targetTime) {
+        return this.priceHistory[i].price;
+      }
+    }
+    return this.priceHistory.length > 0 ? this.priceHistory[0].price : null;
+  }
+
+  // Calculate window delta score (% change over window)
+  getWindowDeltaScore(windowSeconds = 30) {
+    const currentPrice = this.price;
+    const pastPrice = this.getPriceSecondsAgo(windowSeconds);
+    if (!currentPrice || !pastPrice || pastPrice === 0) return 0;
+    return ((currentPrice - pastPrice) / pastPrice) * 100;
   }
 }
 
-module.exports = { BinanceFeed };
+module.exports = BinanceFeed;
