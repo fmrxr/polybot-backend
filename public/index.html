@@ -945,72 +945,88 @@
           </div>
         </div>
 
-        <h3 style="margin-bottom: 20px; font-size: 18px; font-weight: bold;">Gate Performance</h3>
-        <div class="gates-grid">
+        <h3 style="margin-bottom: 16px; font-size: 18px; font-weight: bold;">Gate Performance (24h)</h3>
+        <div class="gates-grid" style="grid-template-columns: repeat(4, 1fr);">
+          <div class="gate-card" style="border-color: #a855f7; background: rgba(168,85,247,0.08);">
+            <div class="gate-title" style="color: #a855f7;">🔍 Pre-Filters</div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">A: Stale lag</span>
+              <span class="gate-stat-value" id="dbSfLag">—</span>
+            </div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">B: Chase</span>
+              <span class="gate-stat-value" id="dbSfChase">—</span>
+            </div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">C: EV decay</span>
+              <span class="gate-stat-value" id="dbSfEvTrend">—</span>
+            </div>
+            <div class="gate-stat" style="margin-top:6px;border-top:1px solid rgba(255,255,255,0.1);padding-top:6px;">
+              <span class="gate-stat-label">Avg lag age</span>
+              <span class="gate-stat-value" id="dbAvgLag">—</span>
+            </div>
+          </div>
+
           <div class="gate-card gate1">
-            <div class="gate-title gate1">🎯 Gate 1: Microstructure</div>
+            <div class="gate-title gate1">🎯 Gate 1: Micro</div>
             <div class="gate-stat">
               <span class="gate-stat-label">Trigger Rate</span>
-              <span class="gate-stat-value"><span id="gate1Rate">—</span></span>
+              <span class="gate-stat-value" id="gate1Rate">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Target Range</span>
-              <span class="gate-stat-value">15-20%</span>
-            </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">Market Lag Detected</span>
-              <span class="gate-stat-value"><span class="check-mark">✓</span></span>
+              <span class="gate-stat-label">Fails (G1+G1.5)</span>
+              <span class="gate-stat-value" id="dbSfGate1">—</span>
             </div>
             <div class="gate-stat">
               <span class="gate-stat-label">Last Detected</span>
-              <span class="gate-stat-value"><span id="gate1Last">—</span></span>
+              <span class="gate-stat-value" id="gate1Last">—</span>
             </div>
           </div>
 
           <div class="gate-card gate2">
-            <div class="gate-title gate2">💰 Gate 2: EV Cost</div>
+            <div class="gate-title gate2">💰 Gate 2: EV+Cost</div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">EV_adjusted (avg)</span>
+              <span class="gate-stat-value" id="gate2EV">—</span>
+            </div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">Total cost (avg)</span>
+              <span class="gate-stat-value" id="gate2Cost">—</span>
+            </div>
             <div class="gate-stat">
               <span class="gate-stat-label">Pass Rate</span>
-              <span class="gate-stat-value"><span id="gate2Rate">—</span></span>
+              <span class="gate-stat-value" id="gate2Rate">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Target Range</span>
-              <span class="gate-stat-value">3-5%</span>
-            </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">EV_adjusted</span>
-              <span class="gate-stat-value"><span id="gate2EV">—</span></span>
-            </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">Total Cost</span>
-              <span class="gate-stat-value"><span id="gate2Cost">—</span></span>
+              <span class="gate-stat-label">Fails (G2/2.5)</span>
+              <span class="gate-stat-value" id="dbSfGate2">—</span>
             </div>
           </div>
 
           <div class="gate-card gate3">
-            <div class="gate-title gate3">📊 Gate 3: Confirmation</div>
+            <div class="gate-title gate3">📊 Gate 3: EMA</div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EMA Alignment</span>
-              <span class="gate-stat-value"><span class="check-mark">✓ ALIGNED</span></span>
+              <span class="gate-stat-label">Trades executed</span>
+              <span class="gate-stat-value" id="dbTradeCount">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EMA9</span>
-              <span class="gate-stat-value"><span id="gate3EMA9">—</span></span>
+              <span class="gate-stat-label">Trade rate</span>
+              <span class="gate-stat-value" id="dbTradeRate">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EMA21</span>
-              <span class="gate-stat-value"><span id="gate3EMA21">—</span></span>
+              <span class="gate-stat-label">Fails (G3)</span>
+              <span class="gate-stat-value" id="dbSfGate3">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">RSI</span>
-              <span class="gate-stat-value"><span id="gate3RSI">62</span> (neutral)</span>
+              <span class="gate-stat-label">Avg spread</span>
+              <span class="gate-stat-value" id="dbAvgSpread">—</span>
             </div>
           </div>
         </div>
 
         <h3 style="margin: 30px 0 20px 0; font-size: 18px; font-weight: bold;">Recent Signals (Last 10)</h3>
         <div class="signals-container">
-          <div class="signals-header">Time | Direction | Gate 1 | Gate 2 | Gate 3 | Verdict | Reason</div>
+          <div class="signals-header" style="grid-template-columns:70px 40px 70px 70px 1fr;">Time | Dir | EV_adj | Verdict | Reason</div>
           <div class="signals-list" id="dashboardSignals">
             <div class="signal-row" style="justify-items: center; color: var(--text-muted);">No signals yet</div>
           </div>
@@ -1202,7 +1218,7 @@
 
       <!-- TRADES PAGE -->
       <div id="trades" class="page">
-        <h2 style="margin-bottom: 20px; font-size: 24px; font-weight: bold;">Trade History with Gate Data</h2>
+        <h2 style="margin-bottom: 20px; font-size: 24px; font-weight: bold;">Trade History</h2>
 
         <!-- Pro Metrics Card -->
         <div id="proMetricsCard" style="background: rgba(26, 31, 58, 0.5); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; margin-bottom: 20px; display: none;">
@@ -1251,12 +1267,12 @@
                 <th>Dir</th>
                 <th>Entry</th>
                 <th>Size</th>
-                <th>Market %</th>
                 <th>EV_adj</th>
-                <th>Model %</th>
+                <th>Lag</th>
+                <th>Slippage</th>
+                <th>Result</th>
                 <th>P&L</th>
-                <th>Status</th>
-                <th>Action</th>
+                <th>Exit</th>
               </tr>
             </thead>
             <tbody id="tradesTable">
@@ -1863,6 +1879,37 @@
         if (el('gate3Rate'))     el('gate3Rate').textContent    = s.total > 0 ? fmt1(100 - s.skip_rate) + '%' : '—';
         if (el('gate2_pass_rate_label')) el('gate2_pass_rate_label').textContent = fmt1(s.gate2_pass_rate) + '%';
 
+        // Dashboard gate cards (db-prefixed IDs)
+        if (el('dbSfLag'))      el('dbSfLag').textContent      = fmtN(s.skip_lag);
+        if (el('dbSfChase'))    el('dbSfChase').textContent    = fmtN(s.skip_chase);
+        if (el('dbSfEvTrend'))  el('dbSfEvTrend').textContent  = fmtN(s.skip_ev_trend);
+        if (el('dbAvgLag'))     el('dbAvgLag').textContent     = s.avg_lag_age != null ? fmt1(s.avg_lag_age)+'s' : '—';
+        if (el('dbAvgSpread'))  el('dbAvgSpread').textContent  = s.avg_spread_pct != null ? fmt2(s.avg_spread_pct)+'%' : '—';
+        if (el('dbSfGate1'))    el('dbSfGate1').textContent    = fmtN((s.skip_gate1||0)+(s.skip_gate1_5||0));
+        if (el('dbSfGate2'))    el('dbSfGate2').textContent    = fmtN(s.skip_gate2);
+        if (el('dbSfGate3'))    el('dbSfGate3').textContent    = fmtN(s.skip_gate3);
+        if (el('dbTradeCount')) el('dbTradeCount').textContent = fmtN(s.trade_count);
+        if (el('dbTradeRate'))  el('dbTradeRate').textContent  = fmt1(s.gate2_pass_rate)+'%';
+
+        // Dynamic status badges on dashboard metric cards
+        const skipRateEl = el('skipRateStatus');
+        if (skipRateEl && s.skip_rate != null) {
+          const ok = s.skip_rate >= 70 && s.skip_rate <= 95;
+          skipRateEl.textContent = ok ? '✓ On Target' : s.skip_rate < 70 ? '⚠ Too low' : '⚠ Too high';
+          skipRateEl.className = 'metric-status ' + (ok ? 'green' : 'yellow');
+        }
+        const avgEVEl = el('avgEVStatus');
+        if (avgEVEl && s.avg_ev_adj != null) {
+          const ok = s.avg_ev_adj >= 3 && s.avg_ev_adj <= 15;
+          avgEVEl.textContent = ok ? '✓ On Target' : s.avg_ev_adj < 3 ? '⚠ Below threshold' : '⚠ Check signal';
+          avgEVEl.className = 'metric-status ' + (ok ? 'green' : 'yellow');
+        }
+        const lagEl = el('marketLagStatus');
+        if (lagEl) {
+          lagEl.textContent = s.gate1_rate > 0 ? '✓ Active' : '— No data';
+          lagEl.className = 'metric-status ' + (s.gate1_rate > 0 ? 'green' : '');
+        }
+
         // Pre-filter counts
         if (el('sfLagCount'))     el('sfLagCount').textContent     = fmtN(s.skip_lag);
         if (el('sfChaseCount'))   el('sfChaseCount').textContent   = fmtN(s.skip_chase);
@@ -2178,22 +2225,35 @@
       let html = '';
       trades.forEach((trade, idx) => {
         const time = new Date(trade.created_at).toLocaleTimeString();
-        const dir = trade.direction === 'YES' ? '▲' : '▼';
+        const dir = trade.direction === 'YES'  ? '<span style="color:#22c55e">▲ YES</span>'
+                  : trade.direction === 'UP'   ? '<span style="color:#22c55e">▲ UP</span>'
+                  : trade.direction === 'NO'   ? '<span style="color:#ef4444">▼ NO</span>'
+                  : trade.direction === 'DOWN' ? '<span style="color:#ef4444">▼ DOWN</span>'
+                  : trade.direction;
         const pnl = parseFloat(trade.pnl) || 0;
-        const pnlClass = pnl > 0 ? 'trade-green' : 'skip-red';
+        const pnlColor = pnl > 0 ? '#22c55e' : pnl < 0 ? '#ef4444' : '#94a3b8';
+        const evAdj = trade.ev_at_entry != null
+          ? (parseFloat(trade.ev_at_entry) * 100).toFixed(1) + '%'
+          : (trade.expected_value != null ? (parseFloat(trade.expected_value)*100).toFixed(1)+'%' : '—');
+        const lag = trade.lag_age_sec != null ? parseInt(trade.lag_age_sec) + 's' : '—';
+        const slip = trade.slippage != null && parseFloat(trade.slippage) > 0
+          ? (parseFloat(trade.slippage)*100).toFixed(2)+'%' : '—';
+        const result = trade.result || '…';
+        const resultColor = result === 'WIN' ? '#22c55e' : result === 'LOSS' ? '#ef4444' : '#94a3b8';
+        const exitReason = (trade.exit_reason || trade.order_status || 'open').replace(/_/g,' ');
 
         html += `
-          <tr onclick="showTradeDetail(${idx})">
+          <tr onclick="showTradeDetail(${idx})" style="cursor:pointer;">
             <td>${time}</td>
             <td>${dir}</td>
             <td>$${parseFloat(trade.entry_price).toFixed(3)}</td>
             <td>$${parseFloat(trade.size).toFixed(2)}</td>
-            <td>${trade.market_prob != null ? (parseFloat(trade.market_prob)*100).toFixed(0)+'%' : '—'}</td>
-            <td>${trade.expected_value != null ? (parseFloat(trade.expected_value)*100).toFixed(1)+'%' : '—'}</td>
-            <td>${(parseFloat(trade.model_prob || 0) * 100).toFixed(1)}%</td>
-            <td style="color: var(--${pnlClass});">$${pnl.toFixed(2)}</td>
-            <td>${trade.order_status || 'pending'}</td>
-            <td><button class="secondary" style="padding: 4px 8px; font-size: 12px;">View</button></td>
+            <td style="color:#38bdf8">${evAdj}</td>
+            <td style="color:#94a3b8">${lag}</td>
+            <td style="color:#f59e0b">${slip}</td>
+            <td style="color:${resultColor};font-weight:bold">${result}</td>
+            <td style="color:${pnlColor};font-weight:bold">$${pnl.toFixed(2)}</td>
+            <td style="color:#94a3b8;font-size:11px">${exitReason}</td>
           </tr>
         `;
       });
@@ -2203,9 +2263,7 @@
       const totalPages = Math.ceil(data.total / tradesPerPage);
       let paginationHtml = '';
       for (let i = 1; i <= totalPages; i++) {
-        paginationHtml += `
-          <button class="${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>
-        `;
+        paginationHtml += `<button class="${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
       }
       document.getElementById('tradesPagination').innerHTML = paginationHtml;
     }
@@ -2253,11 +2311,17 @@
         </div>`;
         })()}
 
-        <h4 style="margin-top: 20px; margin-bottom: 12px;">Execution</h4>
-        <p style="font-size: 13px; color: var(--text-muted);">
-          Filled at ${parseFloat(trade.entry_price).toFixed(3)}<br>
-          Time: ${new Date(trade.created_at).toLocaleString()}
-        </p>
+        <h4 style="margin-top: 20px; margin-bottom: 12px;">EV + Execution</h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
+          <div><span style="color:var(--text-muted)">EV at entry:</span> <strong>${trade.ev_at_entry != null ? (parseFloat(trade.ev_at_entry)*100).toFixed(2)+'%' : '—'}</strong></div>
+          <div><span style="color:var(--text-muted)">EV peak:</span> <strong>${trade.ev_peak != null ? (parseFloat(trade.ev_peak)*100).toFixed(2)+'%' : '—'}</strong></div>
+          <div><span style="color:var(--text-muted)">Lag age:</span> <strong>${trade.lag_age_sec != null ? trade.lag_age_sec+'s' : '—'}</strong></div>
+          <div><span style="color:var(--text-muted)">Slippage:</span> <strong>${trade.slippage != null ? (parseFloat(trade.slippage)*100).toFixed(3)+'%' : '—'}</strong></div>
+          <div><span style="color:var(--text-muted)">Exit reason:</span> <strong>${(trade.exit_reason || trade.order_status || '—').replace(/_/g,' ')}</strong></div>
+          <div><span style="color:var(--text-muted)">Result:</span> <strong style="color:${trade.result==='WIN'?'#22c55e':trade.result==='LOSS'?'#ef4444':'#94a3b8'}">${trade.result || '…'}</strong></div>
+          <div><span style="color:var(--text-muted)">Filled at:</span> <strong>$${parseFloat(trade.entry_price).toFixed(3)}</strong></div>
+          <div><span style="color:var(--text-muted)">Time:</span> <strong>${new Date(trade.created_at).toLocaleString()}</strong></div>
+        </div>
       `;
 
       modal.classList.add('active');
