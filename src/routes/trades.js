@@ -179,4 +179,30 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// GET /api/trades/audit — find phantom P&L sources
+router.get('/audit', async (req, res) => {
+  try {
+    const suspicious = await pool.query(`
+      SELECT id, created_at, direction, entry_price, size, pnl, result, model_prob, market_prob, order_status
+      FROM trades WHERE user_id = $1 AND ABS(COALESCE(pnl,0)) > 10
+      ORDER BY ABS(pnl) DESC LIMIT 50
+    `, [req.userId]);
+
+    const totals = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COALESCE(SUM(pnl), 0) as total_pnl,
+        COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as clean_pnl,
+        COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) >= 100000), 0) as phantom_pnl,
+        COUNT(*) FILTER (WHERE ABS(pnl) >= 100000) as phantom_count,
+        COUNT(*) FILTER (WHERE ABS(pnl) >= 10) as suspicious_count
+      FROM trades WHERE user_id = $1
+    `, [req.userId]);
+
+    res.json({ suspicious_trades: suspicious.rows, totals: totals.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
