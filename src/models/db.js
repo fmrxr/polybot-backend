@@ -1,11 +1,27 @@
 const { Pool } = require('pg');
+require('dotenv').config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === 'production' ? {
+    rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
+    ca: process.env.DB_CA_CERT || undefined
+  } : false,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
-async function initDB() {
+pool.on('error', (err) => {
+  console.error('[DB] Unexpected pool error:', err.message);
+});
+
+pool.on('connect', () => {
+  console.log('[DB] New client connected to pool');
+});
+
+// Initialize tables
+const initDB = async () => {
   const client = await pool.connect();
   try {
     await client.query(`
@@ -13,192 +29,130 @@ async function initDB() {
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        role VARCHAR(50) DEFAULT 'user',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS bot_settings (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-        encrypted_private_key TEXT,
-        kelly_cap DECIMAL DEFAULT 0.25,
-        max_daily_loss DECIMAL DEFAULT 50.0,
-        max_trade_size DECIMAL DEFAULT 20.0,
-        min_ev_threshold DECIMAL DEFAULT 0.05,
-        min_prob_diff DECIMAL DEFAULT 0.08,
-        direction_filter VARCHAR(10) DEFAULT 'BOTH',
-        market_prob_min DECIMAL DEFAULT 0.40,
-        market_prob_max DECIMAL DEFAULT 0.60,
-        is_active BOOLEAN DEFAULT false,
+        user_id INTEGER UNIQUE REFERENCES users(id),
         paper_trading BOOLEAN DEFAULT true,
+        paper_balance DECIMAL(20, 2) DEFAULT 1000.00,
+        is_active BOOLEAN DEFAULT false,
+        copy_bot_active BOOLEAN DEFAULT false,
+        gate1_threshold DECIMAL(5, 3) DEFAULT 0.450,
+        gate2_ev_floor DECIMAL(5, 2) DEFAULT 3.00,
+        gate3_enabled BOOLEAN DEFAULT true,
+        gate3_min_edge DECIMAL(5, 2) DEFAULT 5.00,
+        kelly_cap DECIMAL(5, 2) DEFAULT 0.10,
+        max_daily_loss DECIMAL(20, 2) DEFAULT 50.00,
+        max_drawdown_pct DECIMAL(5, 2) DEFAULT 15.00,
+        snipe_timer_seconds INTEGER DEFAULT 10,
+        stale_lag_seconds INTEGER DEFAULT 20,
+        chase_threshold DECIMAL(5, 2) DEFAULT 8.00,
+        whale_convergence BOOLEAN DEFAULT false,
+        encrypted_private_key TEXT,
+        polymarket_wallet_address VARCHAR(255),
+        claude_api_key_encrypted TEXT,
+        claude_auto_analysis BOOLEAN DEFAULT false,
+        claude_last_analysis TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS trades (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        condition_id VARCHAR(255),
-        direction VARCHAR(10) NOT NULL,
-        entry_price DECIMAL NOT NULL,
-        size DECIMAL NOT NULL,
-        model_prob DECIMAL,
-        market_prob DECIMAL,
-        expected_value DECIMAL,
-        result VARCHAR(10),
-        pnl DECIMAL,
-        fee DECIMAL,
-        paper BOOLEAN DEFAULT false,
-        order_id VARCHAR(255),
-        order_status VARCHAR(20),
-        resolved_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS bot_logs (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        level VARCHAR(10) DEFAULT 'INFO',
-        message TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id);
-      CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
-      CREATE INDEX IF NOT EXISTS idx_bot_logs_user_id ON bot_logs(user_id);
-
-      -- Add new columns to existing tables if they don't exist yet
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT false;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_trading BOOLEAN DEFAULT true;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS encrypted_polymarket_api_key TEXT;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS polymarket_wallet_address VARCHAR(255);
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS paper BOOLEAN DEFAULT false;
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_id VARCHAR(255);
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_status VARCHAR(20);
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS window_ts BIGINT;
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_type VARCHAR(20) DEFAULT 'gbm';
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS copy_source VARCHAR(255);
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(50);
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS token_id VARCHAR(255);
-
-      -- Settings for 12 improvements
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS min_edge DECIMAL DEFAULT 0.03;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS snipe_before_close_sec INTEGER DEFAULT 10;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS require_whale_convergence BOOLEAN DEFAULT false;
-
-      -- Copy trading enhancements
-      ALTER TABLE copy_targets ADD COLUMN IF NOT EXISTS whale_score DECIMAL DEFAULT 0.5;
-      ALTER TABLE copy_targets ADD COLUMN IF NOT EXISTS min_confirmations INTEGER DEFAULT 1;
-
-      -- Paper trading wallet system
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_balance DECIMAL DEFAULT 10000;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false;
-
-      -- Claude AI Integration
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_api_key TEXT;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_model VARCHAR(50) DEFAULT 'claude-opus-4-6';
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_claude_analysis BOOLEAN DEFAULT false;
-
-      -- Cached Polymarket CLOB balance (updated on demand or when bot runs)
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS cached_polymarket_balance DECIMAL;
-      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS cached_balance_at TIMESTAMPTZ;
-
-      -- Slippage tracking (actual fill price vs expected entry price)
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage DECIMAL DEFAULT 0;
-
-      -- EV peak tracking (for EV-decay exit and feedback agent)
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS ev_at_entry DECIMAL;
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS ev_peak DECIMAL;
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS lag_age_sec INTEGER;
-    `);
-    console.log('✅ Database initialized');
-  } finally {
-    client.release();
-  }
-}
-
-
-// Note: call addDecisionsTable() after initDB() if upgrading existing DB
-async function addDecisionsTable() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS bot_decisions (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        verdict VARCHAR(10),
+        user_id INTEGER REFERENCES users(id),
+        market_id VARCHAR(255),
+        market_question TEXT,
+        token_id VARCHAR(255),
         direction VARCHAR(10),
+        entry_price DECIMAL(20, 8),
+        exit_price DECIMAL(20, 8),
+        trade_size DECIMAL(20, 2),
+        pnl DECIMAL(20, 2),
+        status VARCHAR(50) DEFAULT 'open',
+        trade_type VARCHAR(50) DEFAULT 'signal',
+        signal_confidence DECIMAL(5, 3),
+        ev_adj DECIMAL(10, 4),
+        gate1_score DECIMAL(5, 3),
+        gate2_score DECIMAL(10, 4),
+        gate3_score DECIMAL(10, 4),
+        close_reason VARCHAR(100),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        closed_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS signals (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        market_id VARCHAR(255),
+        market_question TEXT,
+        verdict VARCHAR(50),
         reason TEXT,
-        data JSONB,
+        direction VARCHAR(10),
+        confidence DECIMAL(5, 3),
+        ev_raw DECIMAL(10, 4),
+        ev_adj DECIMAL(10, 4),
+        ema_edge DECIMAL(10, 4),
+        gate1_passed BOOLEAN,
+        gate2_passed BOOLEAN,
+        gate3_passed BOOLEAN,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE INDEX IF NOT EXISTS idx_decisions_user_id ON bot_decisions(user_id);
-      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback TEXT;
-      ALTER TABLE bot_decisions ADD COLUMN IF NOT EXISTS claude_feedback_at TIMESTAMPTZ;
+
+      CREATE TABLE IF NOT EXISTS copy_targets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        wallet_address VARCHAR(255) NOT NULL,
+        label VARCHAR(255),
+        multiplier DECIMAL(5, 2) DEFAULT 1.00,
+        max_trade_size DECIMAL(20, 2) DEFAULT 100.00,
+        min_whale_score DECIMAL(5, 2) DEFAULT 0.50,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS copy_trades (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        copy_target_id INTEGER REFERENCES copy_targets(id),
+        source_wallet VARCHAR(255),
+        market_id VARCHAR(255),
+        token_id VARCHAR(255),
+        direction VARCHAR(10),
+        entry_price DECIMAL(20, 8),
+        trade_size DECIMAL(20, 2),
+        whale_score DECIMAL(5, 2),
+        status VARCHAR(50) DEFAULT 'executed',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
 
       CREATE TABLE IF NOT EXISTS admin_logs (
         id SERIAL PRIMARY KEY,
-        admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        action VARCHAR(100),
+        admin_user_id INTEGER REFERENCES users(id),
+        action VARCHAR(255),
         target_user_id INTEGER,
-        details TEXT,
+        details JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE INDEX IF NOT EXISTS idx_admin_logs_created_at ON admin_logs(created_at);
-    `);
-  } finally {
-    client.release();
-  }
-}
 
-// Copy trading schema — call after addDecisionsTable() on server start
-async function addCopyTradingSchema() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS copy_targets (
+      CREATE TABLE IF NOT EXISTS refresh_tokens (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        target_address VARCHAR(255) NOT NULL,
-        label VARCHAR(100),
-        is_active BOOLEAN DEFAULT true,
-        multiplier DECIMAL DEFAULT 1.0,
-        max_trade_size DECIMAL DEFAULT 20.0,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(user_id, target_address)
-      );
-      CREATE INDEX IF NOT EXISTS idx_copy_targets_user ON copy_targets(user_id);
-
-      CREATE TABLE IF NOT EXISTS copy_target_state (
-        target_address VARCHAR(255) PRIMARY KEY,
-        last_trade_ts TIMESTAMPTZ,
-        last_checked_at TIMESTAMPTZ DEFAULT NOW()
+        user_id INTEGER UNIQUE REFERENCES users(id),
+        token TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
-    console.log('✅ Copy trading schema initialized');
+    console.log('[DB] Tables initialized successfully');
+  } catch (err) {
+    console.error('[DB] Table initialization error:', err.message);
   } finally {
     client.release();
   }
-}
+};
 
-// Whale performance tracking for copy trading scoring
-async function addWhalePerformanceSchema() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS whale_performance (
-        id SERIAL PRIMARY KEY,
-        target_address VARCHAR(255) NOT NULL UNIQUE,
-        total_trades INTEGER DEFAULT 0,
-        win_trades INTEGER DEFAULT 0,
-        total_pnl DECIMAL DEFAULT 0,
-        avg_latency_ms INTEGER DEFAULT 0,
-        last_updated TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_whale_perf_address ON whale_performance(target_address);
-    `);
-    console.log('✅ Whale performance schema initialized');
-  } finally {
-    client.release();
-  }
-}
-
-module.exports = { pool, initDB, addDecisionsTable, addCopyTradingSchema, addWhalePerformanceSchema };
+module.exports = { pool, initDB };
