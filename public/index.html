@@ -1068,122 +1068,134 @@
 
       <!-- SIGNALS PAGE -->
       <div id="signals" class="page">
-        <h2 style="margin-bottom: 20px; font-size: 24px; font-weight: bold;">Signal Monitor - Real-Time Gate Analysis</h2>
+        <h2 style="margin-bottom: 20px; font-size: 24px; font-weight: bold;">Signal Monitor — Gate Analysis</h2>
 
-        <h3 style="margin: 30px 0 20px 0; font-size: 18px; font-weight: bold;">Gate Status Dashboard</h3>
-        <div class="gates-grid">
+        <!-- Summary Row -->
+        <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 24px;">
+          <div style="background: rgba(26,31,58,0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Decisions (24h)</div>
+            <div id="smTrades" style="font-size: 22px; font-weight: bold;">—</div>
+          </div>
+          <div style="background: rgba(26,31,58,0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Skip Rate</div>
+            <div id="smSkipRate" style="font-size: 22px; font-weight: bold;">—</div>
+          </div>
+          <div style="background: rgba(26,31,58,0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Avg EV_adj</div>
+            <div id="smAvgEV" style="font-size: 22px; font-weight: bold;">—</div>
+          </div>
+          <div style="background: rgba(26,31,58,0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Avg Lag Age</div>
+            <div id="smAvgLag" style="font-size: 22px; font-weight: bold;">—</div>
+          </div>
+          <div style="background: rgba(26,31,58,0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Avg Spread</div>
+            <div id="smAvgSpread" style="font-size: 22px; font-weight: bold;">—</div>
+          </div>
+          <div style="background: rgba(26,31,58,0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Last Signal</div>
+            <div id="smLastSignal" style="font-size: 16px; font-weight: bold;">—</div>
+          </div>
+        </div>
+
+        <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: bold;">Gate Status</h3>
+        <div class="gates-grid" style="grid-template-columns: repeat(4, 1fr);">
+
+          <!-- Pre-filters card -->
+          <div class="gate-card" style="border-color: #a855f7; background: rgba(168,85,247,0.08);">
+            <div class="gate-title" style="color: #a855f7;">🔍 Pre-Filters (A/B/C)</div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">A: Lag stale (&gt;20s)</span>
+              <span class="gate-stat-value" id="sfLagCount">—</span>
+            </div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">B: Chase (&gt;8%)</span>
+              <span class="gate-stat-value" id="sfChaseCount">—</span>
+            </div>
+            <div class="gate-stat">
+              <span class="gate-stat-label">C: EV decaying</span>
+              <span class="gate-stat-value" id="sfEvTrendCount">—</span>
+            </div>
+            <div class="gate-stat" style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+              <span class="gate-stat-label">Avg Lag Age</span>
+              <span class="gate-stat-value" id="sfAvgLag">—</span>
+            </div>
+          </div>
+
           <div class="gate-card gate1">
-            <div class="gate-title gate1">🎯 Gate 1: Microstructure Edge</div>
+            <div class="gate-title gate1">🎯 Gate 1: Microstructure</div>
             <div class="gate-stat">
               <span class="gate-stat-label">Confidence</span>
-              <span class="gate-stat-value">62% <span class="check-mark">✓</span></span>
+              <span class="gate-stat-value" id="gate1Conf">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Target: ≥45%</span>
-              <span class="gate-stat-value">Passing</span>
+              <span class="gate-stat-label">Pass Rate</span>
+              <span class="gate-stat-value" id="gate1Rate">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Market Lag</span>
-              <span class="gate-stat-value"><span class="check-mark">✓ YES</span></span>
+              <span class="gate-stat-label">Fails (G1 + G1.5)</span>
+              <span class="gate-stat-value" id="sfGate1Count">—</span>
             </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">Last Detected</span>
-              <span class="gate-stat-value">45 seconds ago</span>
-            </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">Latency (BTC↔Poly)</span>
-              <span class="gate-stat-value">250ms</span>
+            <div class="gate-stat" style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+              <span class="gate-stat-label">Last detected</span>
+              <span class="gate-stat-value" id="gate1Last">—</span>
             </div>
           </div>
 
           <div class="gate-card gate2">
-            <div class="gate-title gate2">💰 Gate 2: EV Cost Adjustment</div>
+            <div class="gate-title gate2">💰 Gate 2: EV + Cost</div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EV_adjusted</span>
-              <span class="gate-stat-value">5.2% <span class="check-mark">✓</span></span>
+              <span class="gate-stat-label">EV_adjusted (avg)</span>
+              <span class="gate-stat-value" id="gate2EV">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Target: ≥3%</span>
-              <span class="gate-stat-value">Passing</span>
+              <span class="gate-stat-label">Total cost (avg)</span>
+              <span class="gate-stat-value" id="gate2Cost">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Spread Cost</span>
-              <span class="gate-stat-value">0.15%</span>
+              <span class="gate-stat-label">Pass Rate</span>
+              <span class="gate-stat-value" id="gate2Rate">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">Slippage</span>
-              <span class="gate-stat-value">0.5%</span>
-            </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">Total Cost</span>
-              <span class="gate-stat-value">0.65%</span>
+              <span class="gate-stat-label">Fails (G2/2.5)</span>
+              <span class="gate-stat-value" id="sfGate2Count">—</span>
             </div>
           </div>
 
           <div class="gate-card gate3">
-            <div class="gate-title gate3">📊 Gate 3: Confirmation</div>
+            <div class="gate-title gate3">📊 Gate 3: EMA Confirm</div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EMA Status</span>
-              <span class="gate-stat-value"><span class="check-mark">✓ ALIGNED</span></span>
+              <span class="gate-stat-label">EMA pass rate</span>
+              <span class="gate-stat-value" id="gate3Rate">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EMA9</span>
-              <span class="gate-stat-value">$93,425</span>
+              <span class="gate-stat-label">Fails (G3)</span>
+              <span class="gate-stat-value" id="sfGate3Count">—</span>
             </div>
             <div class="gate-stat">
-              <span class="gate-stat-label">EMA21</span>
-              <span class="gate-stat-value">$93,420</span>
+              <span class="gate-stat-label">Trades executed</span>
+              <span class="gate-stat-value" id="smTrades2">—</span>
             </div>
-            <div class="gate-stat">
-              <span class="gate-stat-label">RSI</span>
-              <span class="gate-stat-value">62 (neutral)</span>
+            <div class="gate-stat" style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+              <span class="gate-stat-label">Trade rate</span>
+              <span class="gate-stat-value" id="gate2_pass_rate_label">—</span>
             </div>
           </div>
         </div>
 
-        <h3 style="margin: 30px 0 20px 0; font-size: 18px; font-weight: bold;">Decision Stream (Real-Time)</h3>
+        <!-- Skip Breakdown Bar Chart -->
+        <h3 style="margin: 30px 0 12px 0; font-size: 18px; font-weight: bold;">Skip Breakdown (24h)</h3>
+        <div id="skipBreakdownBars" style="background: rgba(26,31,58,0.5); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
+          <div style="color: var(--text-muted); text-align: center; font-size: 13px;">Loading…</div>
+        </div>
+
+        <h3 style="margin: 30px 0 12px 0; font-size: 18px; font-weight: bold;">Decision Stream</h3>
         <div class="signals-container">
-          <div class="signals-header">Time | Dir | G1 | G2 | G3 | Verdict | Reason</div>
+          <div class="signals-header" style="grid-template-columns: 80px 50px 80px 60px 70px 70px 65px 1fr;">
+            <span>Time</span><span>Dir</span><span>Filter</span><span>Lag</span><span>EV_adj</span><span>Spread</span><span>Verdict</span><span>Reason</span>
+          </div>
           <div class="signals-list" id="signalStream">
             <div class="signal-row" style="justify-items: center; color: var(--text-muted);">No signals yet</div>
-          </div>
-        </div>
-
-        <h3 style="margin: 30px 0 20px 0; font-size: 18px; font-weight: bold;">Phase A Metrics (Last 100 Signals)</h3>
-        <div class="metrics-grid">
-          <div class="metric-card">
-            <div class="metric-label">Skip Rate</div>
-            <div class="metric-value">
-              <span id="phaseSkipRate">—</span>
-              <span class="metric-unit">/ 85% target</span>
-            </div>
-            <div class="metric-status green">✓ GREEN</div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-label">Avg EV_adj</div>
-            <div class="metric-value">
-              <span id="phaseAvgEV">—</span>
-              <span class="metric-unit">/ 3-10% range</span>
-            </div>
-            <div class="metric-status green">✓ GREEN</div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-label">Market Lag %</div>
-            <div class="metric-value">
-              <span id="phaseMarketLag">—</span>
-              <span class="metric-unit">/ 10-20% target</span>
-            </div>
-            <div class="metric-status green">✓ GREEN</div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-label">Gate Failures</div>
-            <div class="metric-value" style="font-size: 16px;">
-              G1: 42% | G2: 38% | G3: 5%
-            </div>
-            <div class="metric-status" style="background: transparent; color: var(--text-muted);">Distribution</div>
           </div>
         </div>
       </div>
@@ -1827,25 +1839,86 @@
 
         const fmt1 = v => v != null ? parseFloat(v).toFixed(1) : '—';
         const fmt2 = v => v != null ? parseFloat(v).toFixed(2) : '—';
+        const fmtN = v => v != null ? parseInt(v) : '—';
 
-        document.getElementById('skipRate').textContent    = fmt1(s.skip_rate)       + '%';
-        document.getElementById('avgEV').textContent       = fmt1(s.avg_ev_adj)      + '%';
-        document.getElementById('marketLag').textContent   = fmt1(s.gate1_rate)      + '%';
-        document.getElementById('gate1Rate').textContent   = fmt1(s.gate1_rate)      + '%';
-        document.getElementById('gate2Rate').textContent   = fmt1(s.gate2_pass_rate) + '%';
-        document.getElementById('gate2EV').textContent     = fmt1(s.avg_ev_adj)      + '%';
-        document.getElementById('gate2Cost').textContent   = fmt2(s.avg_total_cost)  + '%';
-        document.getElementById('phaseSkipRate').textContent  = fmt1(s.skip_rate)  + '%';
-        document.getElementById('phaseAvgEV').textContent     = fmt1(s.avg_ev_adj) + '%';
-        document.getElementById('phaseMarketLag').textContent = fmt1(s.gate1_rate) + '%';
+        // Dashboard summary stats (still on dashboard page)
+        const el = id => document.getElementById(id);
+        if (el('skipRate'))    el('skipRate').textContent  = fmt1(s.skip_rate) + '%';
+        if (el('avgEV'))       el('avgEV').textContent     = fmt1(s.avg_ev_adj) + '%';
+        if (el('marketLag'))   el('marketLag').textContent = fmt1(s.gate1_rate) + '%';
 
+        // Signal Monitor summary row
+        if (el('smTrades'))      el('smTrades').textContent     = fmtN(s.total);
+        if (el('smTrades2'))     el('smTrades2').textContent    = fmtN(s.trade_count);
+        if (el('smSkipRate'))    el('smSkipRate').textContent   = fmt1(s.skip_rate) + '%';
+        if (el('smAvgEV'))       el('smAvgEV').textContent      = fmt1(s.avg_ev_adj) + '%';
+        if (el('smAvgLag'))      el('smAvgLag').textContent     = s.avg_lag_age != null ? fmt1(s.avg_lag_age) + 's' : '—';
+        if (el('smAvgSpread'))   el('smAvgSpread').textContent  = s.avg_spread_pct != null ? fmt2(s.avg_spread_pct) + '%' : '—';
+
+        // Gate cards
+        if (el('gate1Rate'))     el('gate1Rate').textContent    = fmt1(s.gate1_rate) + '%';
+        if (el('gate2EV'))       el('gate2EV').textContent      = fmt1(s.avg_ev_adj) + '%';
+        if (el('gate2Cost'))     el('gate2Cost').textContent    = fmt2(s.avg_total_cost) + '%';
+        if (el('gate2Rate'))     el('gate2Rate').textContent    = fmt1(s.gate2_pass_rate) + '%';
+        if (el('gate3Rate'))     el('gate3Rate').textContent    = s.total > 0 ? fmt1(100 - s.skip_rate) + '%' : '—';
+        if (el('gate2_pass_rate_label')) el('gate2_pass_rate_label').textContent = fmt1(s.gate2_pass_rate) + '%';
+
+        // Pre-filter counts
+        if (el('sfLagCount'))     el('sfLagCount').textContent     = fmtN(s.skip_lag);
+        if (el('sfChaseCount'))   el('sfChaseCount').textContent   = fmtN(s.skip_chase);
+        if (el('sfEvTrendCount')) el('sfEvTrendCount').textContent = fmtN(s.skip_ev_trend);
+        if (el('sfAvgLag'))       el('sfAvgLag').textContent       = s.avg_lag_age != null ? fmt1(s.avg_lag_age) + 's' : '—';
+        if (el('sfGate1Count'))   el('sfGate1Count').textContent   = fmtN((s.skip_gate1||0) + (s.skip_gate1_5||0));
+        if (el('sfGate2Count'))   el('sfGate2Count').textContent   = fmtN(s.skip_gate2);
+        if (el('sfGate3Count'))   el('sfGate3Count').textContent   = fmtN(s.skip_gate3);
+
+        // Last signal time
         if (s.last_decision_at) {
           const secs = Math.round((Date.now() - new Date(s.last_decision_at).getTime()) / 1000);
-          document.getElementById('gate1Last').textContent = secs < 60 ? secs + 's ago' : Math.round(secs / 60) + 'm ago';
+          const label = secs < 60 ? secs + 's ago' : Math.round(secs / 60) + 'm ago';
+          if (el('gate1Last'))     el('gate1Last').textContent    = label;
+          if (el('smLastSignal'))  el('smLastSignal').textContent = label;
         }
+
+        // Skip breakdown bar chart
+        renderSkipBreakdown(s);
       } catch (err) {
         console.error('Gate stats error:', err);
       }
+    }
+
+    function renderSkipBreakdown(s) {
+      const el = document.getElementById('skipBreakdownBars');
+      if (!el) return;
+      const total = (s.skip_lag||0) + (s.skip_chase||0) + (s.skip_ev_trend||0) +
+                    (s.skip_gate1||0) + (s.skip_gate1_5||0) + (s.skip_gate2||0) + (s.skip_gate3||0);
+      if (total === 0) {
+        el.innerHTML = '<div style="color: var(--text-muted); text-align: center; font-size: 13px;">No skip data in last 24h</div>';
+        return;
+      }
+      const bars = [
+        { label: 'A: Stale lag',    count: s.skip_lag     || 0, color: '#a855f7' },
+        { label: 'B: Chase',        count: s.skip_chase   || 0, color: '#f59e0b' },
+        { label: 'C: EV decay',     count: s.skip_ev_trend|| 0, color: '#fb923c' },
+        { label: 'G1 Micro',        count: (s.skip_gate1||0) + (s.skip_gate1_5||0), color: '#38bdf8' },
+        { label: 'G2 EV',           count: s.skip_gate2   || 0, color: '#4ade80' },
+        { label: 'G3 EMA',          count: s.skip_gate3   || 0, color: '#f87171' },
+      ];
+      let html = '<div style="display: flex; flex-direction: column; gap: 8px;">';
+      bars.forEach(b => {
+        const pct = total > 0 ? (b.count / total * 100).toFixed(1) : 0;
+        const barW = total > 0 ? Math.max(b.count / total * 100, 2) : 0;
+        html += `
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 100px; font-size: 12px; color: var(--text-muted); flex-shrink: 0;">${b.label}</div>
+            <div style="flex: 1; background: rgba(255,255,255,0.06); border-radius: 3px; height: 18px; position: relative;">
+              <div style="width: ${barW}%; background: ${b.color}; height: 100%; border-radius: 3px; transition: width 0.4s;"></div>
+            </div>
+            <div style="width: 60px; font-size: 12px; text-align: right; color: #e2e8f0;">${b.count} (${pct}%)</div>
+          </div>`;
+      });
+      html += '</div>';
+      el.innerHTML = html;
     }
 
     async function loadSignals() {
@@ -2023,41 +2096,74 @@
     }
 
     function renderSignals() {
-      const container = document.getElementById('dashboardSignals');
+      const dashContainer = document.getElementById('dashboardSignals');
       const streamContainer = document.getElementById('signalStream');
 
+      const noSignal = '<div style="color: var(--text-muted); text-align: center; padding: 12px; font-size: 13px;">No signals yet</div>';
+
       if (signals.length === 0) {
-        const noSignal = '<div class="signal-row" style="justify-items: center; color: var(--text-muted);">No signals yet</div>';
-        container.innerHTML = noSignal;
-        streamContainer.innerHTML = noSignal;
+        if (dashContainer) dashContainer.innerHTML = noSignal;
+        if (streamContainer) streamContainer.innerHTML = noSignal;
         return;
       }
 
-      const recentSignals = signals.slice(0, 10);
-      let html = '';
+      // Filter out ANALYSIS verdicts (Claude feedback rows)
+      const filtered = signals.filter(s => s.verdict !== 'ANALYSIS');
+      const recentDash = filtered.slice(0, 10);
+      const recentStream = filtered.slice(0, 50);
 
-      recentSignals.forEach(signal => {
+      // Helper: derive filter label from data.gate_failed
+      function filterLabel(d) {
+        if (!d) return '';
+        const gf = parseFloat(d.gate_failed);
+        if (gf === 0.2) return '<span style="color:#a855f7">A:Lag</span>';
+        if (gf === 0.3) return '<span style="color:#f59e0b">B:Chase</span>';
+        if (gf === 0.4) return '<span style="color:#fb923c">C:EV↓</span>';
+        if (gf === 1 || gf === 1.5) return '<span style="color:#38bdf8">G1</span>';
+        if (gf === 2 || gf === 2.5) return '<span style="color:#4ade80">G2</span>';
+        if (gf === 3) return '<span style="color:#f87171">G3</span>';
+        return '';
+      }
+
+      function buildRow(signal, cols) {
+        const d = signal.data || {};
         const time = new Date(signal.created_at).toLocaleTimeString();
-        const dir = signal.direction === 'UP' ? '▲' : '▼';
-        const dirClass = signal.direction === 'UP' ? 'up' : 'down';
+        const dir = signal.direction === 'UP' ? '<span style="color:#22c55e">▲</span>'
+                  : signal.direction === 'DOWN' ? '<span style="color:#ef4444">▼</span>'
+                  : '<span style="color:#94a3b8">—</span>';
+        const filter = filterLabel(d);
+        const lag = d.lag_age_sec != null ? parseFloat(d.lag_age_sec).toFixed(0) + 's' : '—';
+        const evAdj = d.ev_adjusted != null ? (parseFloat(String(d.ev_adjusted).replace('%',''))).toFixed(1) + '%' : '—';
+        const spread = d.spread_pct != null ? (parseFloat(String(d.spread_pct).replace('%',''))).toFixed(2) + '%' : '—';
         const verdict = signal.verdict;
-        const verdictClass = verdict === 'TRADE' ? 'trade' : 'skip';
+        const vColor = verdict === 'TRADE' ? '#22c55e' : verdict === 'SKIP' ? '#ef4444' : '#94a3b8';
+        const reason = (signal.reason || '').substring(0, 60);
 
-        html += `
-          <div class="signal-row ${verdictClass}">
-            <div class="signal-time">${time}</div>
-            <div class="signal-direction ${dirClass}">${dir}</div>
-            <div class="gate-status pass">✓</div>
-            <div class="gate-status pass">✓</div>
-            <div class="gate-status pass">✓</div>
-            <div class="signal-verdict ${verdictClass}">${verdict}</div>
-            <div class="signal-reason">${signal.reason || 'N/A'}</div>
-          </div>
-        `;
-      });
+        if (cols === 8) {
+          return `<div class="signal-row" style="display:grid; grid-template-columns:80px 50px 80px 60px 70px 70px 65px 1fr; gap:6px; align-items:center; padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.04); font-size:12px;">
+            <span style="color:#94a3b8">${time}</span>
+            <span>${dir}</span>
+            <span>${filter}</span>
+            <span style="color:#94a3b8">${lag}</span>
+            <span style="color:#38bdf8">${evAdj}</span>
+            <span style="color:#f59e0b">${spread}</span>
+            <span style="color:${vColor};font-weight:bold">${verdict}</span>
+            <span style="color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${reason}</span>
+          </div>`;
+        } else {
+          // Dashboard compact (5 cols)
+          return `<div class="signal-row ${verdict === 'TRADE' ? 'trade' : 'skip'}" style="display:grid; grid-template-columns:70px 40px 70px 70px 1fr; gap:6px; align-items:center; padding:5px 8px; font-size:12px;">
+            <span style="color:#94a3b8">${time}</span>
+            <span>${dir}</span>
+            <span style="color:#38bdf8">${evAdj}</span>
+            <span style="color:${vColor};font-weight:bold">${verdict}</span>
+            <span style="color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${reason}</span>
+          </div>`;
+        }
+      }
 
-      container.innerHTML = html;
-      streamContainer.innerHTML = html;
+      if (dashContainer) dashContainer.innerHTML = recentDash.map(s => buildRow(s, 5)).join('') || noSignal;
+      if (streamContainer) streamContainer.innerHTML = recentStream.map(s => buildRow(s, 8)).join('') || noSignal;
     }
 
     function renderTrades(data) {

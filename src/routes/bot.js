@@ -119,38 +119,65 @@ router.get('/gate-stats', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT
-        COUNT(*)                                                                   AS total,
-        COUNT(*) FILTER (WHERE verdict = 'TRADE')                                 AS trade_count,
-        COUNT(*) FILTER (WHERE verdict = 'SKIP')                                  AS skip_count,
+        COUNT(*)                                                                     AS total,
+        COUNT(*) FILTER (WHERE verdict = 'TRADE')                                   AS trade_count,
+        COUNT(*) FILTER (WHERE verdict = 'SKIP')                                    AS skip_count,
+        -- Filter breakdown by gate_failed value
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 0.2)                AS skip_lag,
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 0.3)                AS skip_chase,
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 0.4)                AS skip_ev_trend,
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 1)                  AS skip_gate1,
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 1.5)               AS skip_gate1_5,
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 2
+                              OR (data->>'gate_failed')::float = 2.5)              AS skip_gate2,
+        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 3)                  AS skip_gate3,
+        -- EV and cost averages
         AVG(REPLACE(data->>'ev_adjusted',    '%','')::float)
-          FILTER (WHERE verdict = 'TRADE' AND data->>'ev_adjusted'    IS NOT NULL) AS avg_ev_adj,
+          FILTER (WHERE verdict = 'TRADE' AND data->>'ev_adjusted'    IS NOT NULL)  AS avg_ev_adj,
         AVG(REPLACE(data->>'total_cost',     '%','')::float)
-          FILTER (WHERE data->>'total_cost'  IS NOT NULL)                          AS avg_total_cost,
+          FILTER (WHERE data->>'total_cost'  IS NOT NULL)                           AS avg_total_cost,
         AVG(REPLACE(data->>'micro_confidence','%','')::float)
           FILTER (WHERE verdict = 'TRADE' AND data->>'micro_confidence' IS NOT NULL) AS avg_micro_conf,
-        COUNT(*) FILTER (WHERE data->>'ev_adjusted' IS NOT NULL)                   AS gate1_passed_count,
-        MAX(created_at)                                                             AS last_decision_at
+        -- Lag age average
+        AVG((data->>'lag_age_sec')::float)
+          FILTER (WHERE data->>'lag_age_sec' IS NOT NULL)                            AS avg_lag_age,
+        -- Spread average
+        AVG(REPLACE(data->>'spread_pct','%','')::float)
+          FILTER (WHERE data->>'spread_pct' IS NOT NULL)                             AS avg_spread_pct,
+        COUNT(*) FILTER (WHERE data->>'ev_adjusted' IS NOT NULL)                     AS gate1_passed_count,
+        MAX(created_at)                                                              AS last_decision_at
        FROM bot_decisions
        WHERE user_id = $1 AND verdict != 'WAIT'
          AND created_at >= NOW() - INTERVAL '24 hours'`,
       [req.userId]
     );
     const row = result.rows[0];
-    const total       = parseInt(row.total, 10)              || 0;
-    const tradeCount  = parseInt(row.trade_count, 10)        || 0;
-    const skipCount   = parseInt(row.skip_count, 10)         || 0;
+    const total      = parseInt(row.total, 10)       || 0;
+    const tradeCount = parseInt(row.trade_count, 10) || 0;
+    const skipCount  = parseInt(row.skip_count, 10)  || 0;
     const gate1Passed = parseInt(row.gate1_passed_count, 10) || 0;
-    const actionable  = tradeCount + skipCount;
+    const actionable = tradeCount + skipCount;
     res.json({
       total,
       skip_rate:       actionable > 0 ? parseFloat((skipCount  / actionable * 100).toFixed(1)) : 0,
       trade_count:     tradeCount,
       skip_count:      skipCount,
-      avg_ev_adj:      row.avg_ev_adj      != null ? parseFloat(parseFloat(row.avg_ev_adj).toFixed(2))      : 0,
-      avg_total_cost:  row.avg_total_cost  != null ? parseFloat(parseFloat(row.avg_total_cost).toFixed(2))  : 0,
-      avg_micro_conf:  row.avg_micro_conf  != null ? parseFloat(parseFloat(row.avg_micro_conf).toFixed(1))  : 0,
-      gate1_rate:      total       > 0 ? parseFloat((gate1Passed / total       * 100).toFixed(1)) : 0,
-      gate2_pass_rate: actionable  > 0 ? parseFloat((tradeCount  / actionable  * 100).toFixed(1)) : 0,
+      // Skip breakdown by filter/gate
+      skip_lag:       parseInt(row.skip_lag)      || 0,
+      skip_chase:     parseInt(row.skip_chase)    || 0,
+      skip_ev_trend:  parseInt(row.skip_ev_trend) || 0,
+      skip_gate1:     parseInt(row.skip_gate1)    || 0,
+      skip_gate1_5:   parseInt(row.skip_gate1_5)  || 0,
+      skip_gate2:     parseInt(row.skip_gate2)    || 0,
+      skip_gate3:     parseInt(row.skip_gate3)    || 0,
+      // Averages
+      avg_ev_adj:     row.avg_ev_adj     != null ? parseFloat(parseFloat(row.avg_ev_adj).toFixed(2))     : 0,
+      avg_total_cost: row.avg_total_cost != null ? parseFloat(parseFloat(row.avg_total_cost).toFixed(2)) : 0,
+      avg_micro_conf: row.avg_micro_conf != null ? parseFloat(parseFloat(row.avg_micro_conf).toFixed(1)) : 0,
+      avg_lag_age:    row.avg_lag_age    != null ? parseFloat(parseFloat(row.avg_lag_age).toFixed(1))    : null,
+      avg_spread_pct: row.avg_spread_pct != null ? parseFloat(parseFloat(row.avg_spread_pct).toFixed(2)) : null,
+      gate1_rate:      total      > 0 ? parseFloat((gate1Passed / total      * 100).toFixed(1)) : 0,
+      gate2_pass_rate: actionable > 0 ? parseFloat((tradeCount  / actionable * 100).toFixed(1)) : 0,
       last_decision_at: row.last_decision_at || null
     });
   } catch (err) {
