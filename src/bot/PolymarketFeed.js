@@ -1,406 +1,183 @@
-// Ensure Web Crypto API is available for ethers.js wallet signing
-if (!globalThis.crypto) {
-  const crypto = require('crypto');
-  globalThis.crypto = crypto;
-}
-
-const axios = require('axios');
-const { ethers } = require('ethers');
-
-const POLYMARKET_CLOB_API = 'https://clob.polymarket.com';
-const POLYMARKET_GAMMA_API = 'https://gamma-api.polymarket.com';
-const CHAIN_ID = 137; // Polygon mainnet
+const { ClobClient } = require('@polymarket/clob-client');
 
 class PolymarketFeed {
-  constructor(privateKey, userApiKey = null, funderAddress = null) {
+  constructor(privateKey, walletAddress) {
     this.privateKey = privateKey;
-    this.userApiKey = userApiKey;
-    this.wallet = new ethers.Wallet(privateKey);
-    this.address = this.wallet.address;
-    this.funderAddress = funderAddress || this.address; // Use provided funder address or fallback to wallet address
+    this.walletAddress = walletAddress;
     this.clobClient = null;
-    this.OrderType = null;
-    this.Side = null;
-    this.markets = new Map();
-    this.activeMarkets = [];
-    this.isConnected = false;
+    this.marketsCache = [];
+    this.lastMarketFetch = null;
+    this.marketCacheTTL = 60000; // 1 minute
   }
 
-  async init() {
-    console.log(`[PolymarketFeed] init() called for address ${this.address}`);
+  async initialize() {
     try {
-      // Dynamic import for ESM module
-      console.log(`[PolymarketFeed] Attempting to import SDK modules...`);
-      const { ClobClient, OrderType, Side } = await import('@polymarket/clob-client');
-      this.OrderType = OrderType;
-      this.Side = Side;
-      console.log(`[PolymarketFeed] ✅ SDK modules imported`);
-
-      // Step 1: Create temp client to derive L2 API credentials
-      try {
-        const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, this.wallet);
-        console.log(`[PolymarketFeed] Temp client created`);
-
-        const apiCreds = await tempClient.createOrDeriveApiKey();
-        console.log(`[PolymarketFeed] API credentials derived for ${this.address}`);
-
-        // Step 2: Create trading client with L2 credentials
-        // Signature type 1 = POLY_PROXY (Polymarket account via Magic Link / exported private key)
-        // Use this type when private key is exported from Polymarket.com settings
-        console.log(`[PolymarketFeed] Using funder address: ${this.funderAddress}`);
+      if (this.privateKey && this.walletAddress) {
         this.clobClient = new ClobClient(
-          POLYMARKET_CLOB_API,
-          CHAIN_ID,
-          this.wallet,
-          apiCreds,
-          1, // POLY_PROXY - For exported private keys from Polymarket settings
-          this.funderAddress
+          'https://clob.polymarket.com',
+          137, // Polygon chain ID
+          this.privateKey,
+          undefined,
+          this.walletAddress
         );
-        console.log(`[PolymarketFeed] Trading client created`);
-
-        this.isConnected = true;
-        console.log(`[PolymarketFeed] ✅ Initialized trading client for ${this.address}`);
-      } catch(initErr) {
-        console.error('[PolymarketFeed] Client initialization failed:', initErr.message);
-        throw initErr;
+        console.log('[PolymarketFeed] CLOB client initialized (authenticated)');
+      } else {
+        this.clobClient = new ClobClient('https://clob.polymarket.com', 137);
+        console.log('[PolymarketFeed] CLOB client initialized (read-only)');
       }
-    } catch(e) {
-      console.error('[PolymarketFeed] Failed to initialize CLOB client - full error:', e);
-      // Continue without CLOB client — market discovery still works
+    } catch (err) {
+      console.error('[PolymarketFeed] Failed to initialize CLOB client:', err.message);
+      throw err;
     }
-  }
-
-  _extractClobTokenIds(value) {
-    if (!value) return [];
-    if (Array.isArray(value)) return value.filter(Boolean);
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        if (Array.isArray(parsed)) return parsed.filter(Boolean);
-      } catch (_) {}
-      return value
-        .split(',')
-        .map(v => v.trim())
-        .filter(Boolean);
-    }
-    if (typeof value === 'object') {
-      if ('yes' in value || 'Yes' in value || 'no' in value || 'No' in value) {
-        return [value.yes || value.Yes, value.no || value.No].filter(Boolean);
-      }
-      if ('0' in value || '1' in value) {
-        return [value[0], value[1]].filter(Boolean);
-      }
-      return Object.values(value).filter(Boolean);
-    }
-    return [];
-  }
-
-  _getMarketWindowTs(market, event = {}) {
-    const slug = String(market.slug || market.market_slug || event.slug || '').toLowerCase();
-    const match = slug.match(/btc-updown-5m-(\d+)/);
-    if (match) return parseInt(match[1], 10);
-
-    const end = market.endDate || market.endDateIso || event.endDate;
-    if (end) {
-      const endSec = Math.floor(new Date(end).getTime() / 1000);
-      if (!Number.isNaN(endSec)) return endSec - 300;
-    }
-
-    return null;
-  }
-
-  _normalizeMarketTokens(market, event = {}) {
-    if (market.tokens && !Array.isArray(market.tokens)) {
-      if (typeof market.tokens === 'string') {
-        try {
-          market.tokens = JSON.parse(market.tokens);
-        } catch (_) {
-          market.tokens = market.tokens.split(',').map(v => v.trim()).filter(Boolean);
-        }
-      } else if (typeof market.tokens === 'object') {
-        market.tokens = Object.values(market.tokens).filter(Boolean);
-      }
-    }
-
-    if (market.tokens && Array.isArray(market.tokens) && market.tokens.length > 0) return market;
-
-    if (event.markets?.length === 1 && event.tokens && Array.isArray(event.tokens) && event.tokens.length > 0) {
-      market.tokens = event.tokens;
-      return market;
-    }
-
-    const tokenIds = this._extractClobTokenIds(market.clobTokenIds);
-    if (tokenIds.length > 0) {
-      market.tokens = tokenIds.map((id, i) => ({ token_id: id, outcome: i === 0 ? 'Yes' : 'No' }));
-    }
-
-    if (!market.windowTs) {
-      const windowTs = this._getMarketWindowTs(market, event);
-      if (windowTs) market.windowTs = windowTs;
-    }
-
-    return market;
-  }
-
-  _delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async fetchActiveBTCMarkets() {
     try {
-      const windowTs = this.getCurrentWindowTs();
-      const offsets = [0, -300, 300, -600, 600, -900, 900];
-      const slugs = [...new Set(offsets.map(offset => `btc-updown-5m-${windowTs + offset}`))];
-      const found = [];
-      const maxAttempts = 5;
-
-      for (let attempt = 1; attempt <= maxAttempts && found.length === 0; attempt++) {
-        if (attempt > 1) {
-          console.log(`[PolymarketFeed] Retrying slug search (${attempt}/${maxAttempts})...`);
-          await this._delay(2500);
-        }
-
-        for (const slug of slugs) {
-          try {
-            const response = await axios.get(`${POLYMARKET_GAMMA_API}/events`, {
-              params: { slug },
-              timeout: 8000
-            });
-
-            const events = Array.isArray(response.data) ? response.data : [response.data];
-
-            for (const event of events) {
-              if (!event || !event.markets) continue;
-              for (const market of event.markets) {
-                this._normalizeMarketTokens(market, event);
-                const end = market.endDate || market.endDateIso || event.endDate;
-                const secsToRes = end ? (new Date(end).getTime() - Date.now()) / 1000 : -1;
-                if (secsToRes > 10) {
-                  if (!market.tokens || market.tokens.length === 0) {
-                    this._normalizeMarketTokens(market, event);
-                  }
-                  const clobIds = this._extractClobTokenIds(market.clobTokenIds);
-                  console.log(`[PolymarketFeed] ✅ Found market via slug ${slug}: "${market.question}" | ${Math.round(secsToRes)}s | tokens: ${(market.tokens||[]).length} | clobTokenIds: ${clobIds.length}`);
-                  found.push(market);
-                }
-              }
-            }
-          } catch (e) {
-            // Silently skip failed slugs
-          }
-        }
-
-        if (found.length === 0 && attempt < maxAttempts) {
-          console.log('[PolymarketFeed] No markets found yet; waiting before retrying...');
-        }
+      // Check cache
+      if (this.marketsCache.length > 0 && this.lastMarketFetch &&
+          (Date.now() - this.lastMarketFetch) < this.marketCacheTTL) {
+        return this.marketsCache;
       }
 
-      if (found.length === 0) {
-        console.log('[PolymarketFeed] Slug approach found nothing — trying direct search...');
-        try {
-          const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets`, {
-            params: { active: true, closed: false, limit: 300, search: 'btc-updown-5m' },
-            timeout: 8000
-          });
-          const markets = Array.isArray(response.data) ? response.data : (response.data?.markets || []);
-          const now = Date.now();
-          for (const m of markets) {
-            const end = m.endDate || m.endDateIso;
-            const secsToRes = end ? (new Date(end).getTime() - now) / 1000 : -1;
-            const slug = String(m.slug || m.market_slug || '').toLowerCase();
-            const q = String(m.question || m.title || '').toLowerCase();
-            if (secsToRes > 10 && secsToRes < 7200 && (slug.startsWith('btc-updown-5m-') || q.includes('btc') || q.includes('bitcoin'))) {
-              this._normalizeMarketTokens(m);
-              console.log(`[PolymarketFeed] Fallback found: "${m.question || m.title || '?'}" | ${Math.round(secsToRes)}s`);
-              found.push(m);
-            }
-          }
-        } catch (e) {
-          console.error('[PolymarketFeed] Fallback search failed:', e.message);
-        }
+      const response = await fetch('https://gamma-api.polymarket.com/markets?' + new URLSearchParams({
+        closed: 'false',
+        active: 'true',
+        limit: '50',
+        order: 'volume24hr',
+        ascending: 'false',
+      }));
+
+      if (!response.ok) {
+        throw new Error(`Gamma API returned ${response.status}`);
       }
 
-      found.sort((a, b) => (a.windowTs || Infinity) - (b.windowTs || Infinity));
-      this.activeMarkets = found;
-      console.log(`[PolymarketFeed] Active markets: ${found.length}`);
-      return found;
+      const markets = await response.json();
 
-    } catch (err) {
-      console.error('[PolymarketFeed] fetchActiveBTCMarkets error:', err.message);
-      return [];
-    }
-  }
-
-  getCurrentWindowTs() {
-    const nowSec = Math.floor(Date.now() / 1000);
-    return nowSec - (nowSec % 300);
-  }
-
-  async placeOrder({ tokenId, side, price, size, conditionId }) {
-    try {
-      if (!this.clobClient) {
-        throw new Error('CLOB client not initialized — check API credentials');
-      }
-
-      if (!this.OrderType || !this.Side) {
-        throw new Error('SDK enums not initialized — call init() first');
-      }
-
-      // size parameter is in dollars — convert to shares for CLOB API
-      const priceNum = parseFloat(price);
-      const sizeInShares = parseFloat(size) / priceNum;
-
-      // Use official SDK to place order with proper authentication
-      const orderSide = side === 'BUY' ? this.Side.BUY : this.Side.SELL;
-      console.log(`[PolymarketFeed] Placing order: ${orderSide} ${sizeInShares.toFixed(4)} shares @ $${priceNum}`);
-
-      const response = await this.clobClient.createAndPostOrder(
-        {
-          tokenID: tokenId,
-          price: priceNum,
-          size: sizeInShares,
-          side: orderSide
-        },
-        {
-          tickSize: '0.01',
-          negRisk: false
-        },
-        this.OrderType.GTC  // Good-Til-Cancelled order type
-      );
-
-      console.log(`[PolymarketFeed] Full order response:`, JSON.stringify(response, null, 2));
-      console.log(`[PolymarketFeed] Response keys:`, Object.keys(response || {}));
-      console.log(`[PolymarketFeed] Response.success:`, response?.success);
-      console.log(`[PolymarketFeed] Response.errorMsg:`, response?.errorMsg);
-
-      if (!response || !response.success) {
-        console.error('[PolymarketFeed] Order rejected by CLOB');
-        console.error('[PolymarketFeed] Error message:', response?.errorMsg || 'None');
-        console.error('[PolymarketFeed] Full response body:', response);
-      }
-
-      return {
-        orderID: response?.orderID,
-        id: response?.orderID,
-        status: response?.status
-      };
-    } catch (err) {
-      console.error('[PolymarketFeed] Order failed:', err.message);
-      console.error('[PolymarketFeed] Full error:', err);
-      throw new Error(err.message || 'Order placement failed');
-    }
-  }
-
-  async getOrderStatus(orderId) {
-    try {
-      if (!this.clobClient) return null;
-      // Use getOrder() to fetch single order, or getOpenOrders() to list all
-      const order = await this.clobClient.getOrder(orderId);
-      if (!order) return null;
-      const originalSize = parseFloat(order.original_size || 0);
-      const matched = parseFloat(order.size_matched || 0);
-      return {
-        status: order.status || 'UNKNOWN',
-        size_matched: matched,
-        size_remaining: Math.max(0, originalSize - matched)
-      };
-    } catch (err) {
-      throw new Error(`Order status check failed: ${err.message}`);
-    }
-  }
-
-  async checkResolution(conditionId) {
-    try {
-      const response = await axios.get(`${POLYMARKET_GAMMA_API}/markets/${conditionId}`, {
-        timeout: 5000
+      // Filter for BTC-related markets
+      const btcMarkets = markets.filter(m => {
+        const q = (m.question || '').toLowerCase();
+        return q.includes('btc') || q.includes('bitcoin');
       });
-      const market = response.data;
-      return { resolved: market.closed || market.resolved, outcome: market.outcomePrices };
+
+      this.marketsCache = btcMarkets;
+      this.lastMarketFetch = Date.now();
+
+      console.log(`[PolymarketFeed] Fetched ${btcMarkets.length} active BTC markets`);
+      return btcMarkets;
     } catch (err) {
-      return { resolved: false };
+      console.error('[PolymarketFeed] fetchActiveBTCMarkets failed:', err.message);
+      return this.marketsCache; // Return stale cache on error
     }
-  }
-
-  async getLiveTokenPrice(tokenId) {
-    try {
-      if (!this.clobClient) return null;
-      const mid = await this.clobClient.getMidpoint(tokenId);
-      const price = parseFloat(mid);
-      return isNaN(price) ? null : price;
-    } catch (e) {
-      try {
-        const r = await axios.get(`${POLYMARKET_CLOB_API}/midpoint?token_id=${tokenId}`, { timeout: 3000 });
-        return parseFloat(r.data?.mid) || null;
-      } catch (_) {
-        return null;
-      }
-    }
-  }
-
-  async getBalance() {
-    // Query USDC balance on Polygon for the funder (proxy) wallet
-    // USDC.e on Polygon: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
-    const USDC_CONTRACT = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-    const POLYGON_RPCS = [
-      'https://polygon-rpc.com',
-      'https://rpc-mainnet.matic.network',
-      'https://rpc.ankr.com/polygon'
-    ];
-    const address = this.funderAddress || this.address;
-    // ERC20 balanceOf(address) selector + padded address
-    const data = '0x70a08231' + address.replace('0x', '').padStart(64, '0');
-
-    for (const rpc of POLYGON_RPCS) {
-      try {
-        const res = await axios.post(rpc, {
-          jsonrpc: '2.0', method: 'eth_call',
-          params: [{ to: USDC_CONTRACT, data }, 'latest'],
-          id: 1
-        }, { timeout: 5000 });
-        const hex = res.data?.result;
-        if (hex && hex !== '0x') {
-          const raw = parseInt(hex, 16);
-          return { usdc_balance: raw / 1e6, address }; // USDC has 6 decimals
-        }
-      } catch (_) { /* try next RPC */ }
-    }
-    return { usdc_balance: 0, address };
-  }
-
-  disconnect() {
-    // Cleanup
   }
 
   /**
-   * Static method — fetch real Polymarket in-exchange balance via CLOB API.
-   * Works without a running bot instance. Requires the user's private key.
-   * Returns the collateral (USDC) available for trading on Polymarket.
+   * Fetch REAL order book data from Polymarket CLOB
+   * Returns: { bestBid, bestAsk, bidDepth, askDepth, largestBid, largestAsk, totalDepth }
+   * All prices are 0-1 (token probability prices)
    */
-  static async fetchBalance(privateKey, funderAddress) {
-    try {
-      const { ClobClient } = await import('@polymarket/clob-client');
-      const { ethers } = require('ethers');
-      const wallet = new ethers.Wallet(privateKey);
-      const address = funderAddress || wallet.address;
-
-      // Derive L2 API credentials (same as init())
-      const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, wallet);
-      const apiCreds = await tempClient.createOrDeriveApiKey();
-
-      // Authenticated client
-      const client = new ClobClient(
-        POLYMARKET_CLOB_API, CHAIN_ID, wallet, apiCreds, 1, address
-      );
-
-      // GET /balance-allowance?asset_type=COLLATERAL — this is the real Polymarket balance
-      const data = await client.getBalanceAllowance({ asset_type: 'COLLATERAL', signature_type: 1 });
-      const balance = parseFloat(data?.balance ?? data?.allowance ?? 0);
-      return { usdc_balance: balance, address };
-    } catch (e) {
-      console.error('[PolymarketFeed.fetchBalance] CLOB error:', e.message);
+  async getOrderBook(tokenId) {
+    if (!this.clobClient) {
+      console.error('[PolymarketFeed] CLOB client not initialized');
       return null;
+    }
+
+    try {
+      const book = await this.clobClient.getOrderBook(tokenId);
+      const bids = book.bids || [];
+      const asks = book.asks || [];
+
+      if (bids.length === 0 && asks.length === 0) {
+        console.warn(`[PolymarketFeed] Empty order book for token ${tokenId}`);
+        return null;
+      }
+
+      const bidDepth = bids.reduce((sum, b) => sum + parseFloat(b.size), 0);
+      const askDepth = asks.reduce((sum, a) => sum + parseFloat(a.size), 0);
+      const bestBid = bids.length > 0 ? parseFloat(bids[0].price) : null;
+      const bestAsk = asks.length > 0 ? parseFloat(asks[0].price) : null;
+      const largestBid = bids.length > 0 ? Math.max(...bids.map(b => parseFloat(b.size))) : 0;
+      const largestAsk = asks.length > 0 ? Math.max(...asks.map(a => parseFloat(a.size))) : 0;
+      const totalDepth = bidDepth + askDepth;
+
+      return {
+        bestBid,
+        bestAsk,
+        bidDepth,
+        askDepth,
+        largestBid,
+        largestAsk,
+        totalDepth,
+        bidCount: bids.length,
+        askCount: asks.length,
+        spread: bestAsk && bestBid ? bestAsk - bestBid : null,
+        midPrice: bestAsk && bestBid ? (bestAsk + bestBid) / 2 : null
+      };
+    } catch (err) {
+      console.error(`[PolymarketFeed] getOrderBook failed for ${tokenId}:`, err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Get live token price (mid-price from order book)
+   */
+  async getLiveTokenPrice(tokenId) {
+    try {
+      const book = await this.getOrderBook(tokenId);
+      if (!book || !book.midPrice) return null;
+      return book.midPrice;
+    } catch (err) {
+      console.error(`[PolymarketFeed] getLiveTokenPrice failed for ${tokenId}:`, err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch balance for a wallet
+   */
+  static async fetchBalance(privateKey, walletAddress) {
+    try {
+      const client = new ClobClient(
+        'https://clob.polymarket.com',
+        137,
+        privateKey,
+        undefined,
+        walletAddress
+      );
+      // Fetch USDC balance on Polygon
+      const balance = await client.getBalance();
+      return {
+        usdc: parseFloat(balance || '0'),
+        wallet: walletAddress
+      };
+    } catch (err) {
+      console.error('[PolymarketFeed] fetchBalance failed:', err.message);
+      return { usdc: 0, wallet: walletAddress };
+    }
+  }
+
+  /**
+   * Place a market order on Polymarket
+   */
+  async placeOrder(tokenId, side, size, price) {
+    if (!this.clobClient) {
+      throw new Error('CLOB client not initialized for trading');
+    }
+
+    try {
+      const order = await this.clobClient.createAndPlaceOrder({
+        tokenId: tokenId,
+        side: side, // 'BUY' or 'SELL'
+        size: size,
+        price: price,
+      });
+      console.log(`[PolymarketFeed] Order placed: ${side} ${size} @ ${price} for token ${tokenId}`);
+      return order;
+    } catch (err) {
+      console.error(`[PolymarketFeed] placeOrder failed:`, err.message);
+      throw err;
     }
   }
 }
 
-module.exports = { PolymarketFeed };
+module.exports = PolymarketFeed;
