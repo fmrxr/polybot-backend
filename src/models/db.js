@@ -100,6 +100,9 @@ async function initDB() {
       -- Cached Polymarket CLOB balance (updated on demand or when bot runs)
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS cached_polymarket_balance DECIMAL;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS cached_balance_at TIMESTAMPTZ;
+
+      -- Slippage tracking (actual fill price vs expected entry price)
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage DECIMAL DEFAULT 0;
     `);
     console.log('✅ Database initialized');
   } finally {

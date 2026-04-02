@@ -44,6 +44,13 @@ class BotInstance {
     this.lastMarketData = null;
     this.lastMarketRefreshAt = 0;
     this.inSnipeLoop = false;
+
+    // Flip cooldown: track recent direction changes to prevent overtrading churn
+    this.recentFlips = [];        // [{ ts: epochMs, direction }]
+    this.flipCooldownUntil = 0;   // epoch ms — no trades until this time
+
+    // Performance stats timer
+    this.statsTimer = null;
   }
 
   async start() {
@@ -82,6 +89,7 @@ class BotInstance {
       min_ev_threshold: parseFloat(this.settings.min_ev_threshold),
       min_prob_diff: parseFloat(this.settings.min_prob_diff),
       min_edge: parseFloat(this.settings.min_edge) || 0.05,
+      max_spread_pct: parseFloat(this.settings.max_spread_pct) || 0.10,
       direction_filter: this.settings.direction_filter,
       market_prob_min: parseFloat(this.settings.market_prob_min),
       market_prob_max: parseFloat(this.settings.market_prob_max)
@@ -120,6 +128,9 @@ class BotInstance {
     const balanceStr = this.paperTrading ? ` | Balance: $${this.paperBalance.toFixed(2)}` : '';
     this._log('INFO', `Bot started [${mode}] for user ${this.userId}${balanceStr}`);
 
+    // Seed performance stats immediately so adaptive thresholds start from real data
+    await this._updatePerformanceStats();
+
     // Main loop: check timing every second
     this.mainTimer = setInterval(() => this._tick(), 1000);
     this.marketRefreshTimer = setInterval(() => {
@@ -129,6 +140,8 @@ class BotInstance {
     this.resolutionTimer = setInterval(() => this._checkResolutions(), RESOLUTION_CHECK_MS);
     // Position management: check for early exits every 10s
     this.positionMgmtTimer = setInterval(() => this._manageOpenPositions(), 10000);
+    // Refresh win rate + avg slippage every 5 minutes for adaptive EV thresholds
+    this.statsTimer = setInterval(() => this._updatePerformanceStats(), 5 * 60 * 1000);
   }
 
   async _tick() {
@@ -391,6 +404,32 @@ class BotInstance {
   async _executeTrade(signal, market, tokens, windowTs) {
     const MIN_SHARES = 5; // Polymarket CLOB minimum: 5 shares per order
 
+    // ── FLIP COOLDOWN CHECK ──────────────────────────────────────────────────
+    // If we've flipped direction 3+ times in the last 5 minutes, pause 60s.
+    // Prevents churn losses from noise-driven back-and-forth trading.
+    const nowMs = Date.now();
+    if (nowMs < this.flipCooldownUntil) {
+      const waitSec = Math.ceil((this.flipCooldownUntil - nowMs) / 1000);
+      this._log('WARN', `⏸ Flip cooldown active — ${waitSec}s remaining. Skipping trade.`);
+      return;
+    }
+
+    // Purge flips older than 5 minutes
+    const FLIP_WINDOW_MS = 5 * 60 * 1000;
+    this.recentFlips = this.recentFlips.filter(f => nowMs - f.ts < FLIP_WINDOW_MS);
+
+    // Count direction changes in window
+    let flipCount = 0;
+    for (let i = 1; i < this.recentFlips.length; i++) {
+      if (this.recentFlips[i].direction !== this.recentFlips[i-1].direction) flipCount++;
+    }
+    if (flipCount >= 3) {
+      this.flipCooldownUntil = nowMs + 60000;
+      this._log('WARN', `⏸ ${flipCount} direction flips in 5min — imposing 60s cooldown`);
+      return;
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Calculate shares from size (size is in dollars, entry_price is per share)
     const entryPrice = parseFloat(signal.entry_price) || 0.50;
     const shares = signal.size / entryPrice;
@@ -456,6 +495,7 @@ class BotInstance {
         );
         this.paperBalance = parseFloat(balRes.rows[0]?.paper_balance ?? this.paperBalance - signal.size);
         this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded | Balance: $${this.paperBalance.toFixed(2)}`);
+        this.recentFlips.push({ ts: Date.now(), direction: signal.direction });
       } catch(e) {
         this._log('ERROR', `[PAPER] Failed to record trade: ${e.message}`);
       }
@@ -474,12 +514,13 @@ class BotInstance {
 
       await new Promise(r => setTimeout(r, 5000));
 
-      let orderStatus = 'UNVERIFIED', confirmedSize = signal.size;
+      let orderStatus = 'UNVERIFIED', confirmedSize = signal.size, confirmedPrice = signal.entry_price;
       if (orderId) {
         try {
           const verified = await this.polymarket.getOrderStatus(orderId);
           orderStatus = verified.status;
           confirmedSize = parseFloat(verified.size_matched) || signal.size;
+          confirmedPrice = parseFloat(verified.price) || parseFloat(verified.avg_price) || signal.entry_price;
           if (orderStatus === 'CANCELLED' || orderStatus === 'UNMATCHED') {
             this._log('WARN', `[LIVE] Order NOT filled (${orderStatus})`);
             return;
@@ -487,19 +528,26 @@ class BotInstance {
         } catch(e) { this._log('WARN', `Could not verify order: ${e.message}`); }
       }
 
+      // Slippage = |fill price - expected price| (in token probability space, 0-1)
+      const slippage = Math.abs(confirmedPrice - signal.entry_price);
+      if (slippage > 0.01) {
+        this._log('WARN', `[LIVE] Slippage ${(slippage*100).toFixed(2)}% (expected ${signal.entry_price.toFixed(3)}, filled ${confirmedPrice.toFixed(3)})`);
+      }
+
       const result = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, token_id, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,$13,NOW()) RETURNING id`,
-        [this.userId, market.conditionId, signal.direction, signal.entry_price, confirmedSize,
-         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs, tokenId]
+        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, token_id, slippage, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,$13,$14,NOW()) RETURNING id`,
+        [this.userId, market.conditionId, signal.direction, confirmedPrice, confirmedSize,
+         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs, tokenId, slippage]
       );
       const tradeId = result.rows[0].id;
       this.openTrades.set(tradeId, {
         conditionId: market.conditionId, direction: signal.direction,
-        tokenId, entryPrice: signal.entry_price, size: confirmedSize,
+        tokenId, entryPrice: confirmedPrice, size: confirmedSize,
         paper: false, orderId, windowTs, confidence: signal.confidence
       });
-      this._log('INFO', `[LIVE] ✅ Trade #${tradeId} | ${signal.direction} $${confirmedSize.toFixed(2)} | ${orderStatus}`);
+      this.recentFlips.push({ ts: Date.now(), direction: signal.direction });
+      this._log('INFO', `[LIVE] ✅ Trade #${tradeId} | ${signal.direction} $${confirmedSize.toFixed(2)} | ${orderStatus} | slippage ${(slippage*100).toFixed(2)}%`);
     } catch(err) {
       this._log('ERROR', `[LIVE] Trade failed: ${err.message}`);
     }
@@ -666,6 +714,32 @@ class BotInstance {
     }
   }
 
+  async _updatePerformanceStats() {
+    try {
+      const result = await pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE result IS NOT NULL) as total,
+          COUNT(*) FILTER (WHERE result = 'WIN') as wins,
+          COALESCE(AVG(ABS(slippage)) FILTER (WHERE slippage IS NOT NULL AND slippage > 0), 0.005) as avg_slippage
+        FROM trades
+        WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'
+      `, [this.userId]);
+      const row = result.rows[0];
+      const total = parseInt(row.total) || 0;
+      const wins = parseInt(row.wins) || 0;
+      const winRate = total >= 5 ? wins / total : 0.5; // Need ≥5 trades to trust the rate
+      const avgSlippage = parseFloat(row.avg_slippage) || 0.005;
+      if (this.engine) {
+        this.engine.updatePerformanceStats(winRate, avgSlippage);
+      }
+      if (total >= 5) {
+        this._log('INFO', `📊 Stats updated: win rate ${(winRate*100).toFixed(1)}% (${wins}/${total}) | avg slippage ${(avgSlippage*100).toFixed(3)}%`);
+      }
+    } catch(e) {
+      // Non-critical — keep using last known values
+    }
+  }
+
   async _log(level, message) {
     console.log(`[Bot:${this.userLabel}][${level}] ${message}`);
     try {
@@ -692,6 +766,7 @@ class BotInstance {
     clearInterval(this.marketRefreshTimer);
     clearInterval(this.resolutionTimer);
     clearInterval(this.positionMgmtTimer);
+    clearInterval(this.statsTimer);
     this.binance.disconnect();
     this.chainlink.stop();
     if (this.polymarket) this.polymarket.disconnect();

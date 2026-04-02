@@ -28,6 +28,19 @@ class GBMSignalEngine {
     this.recentTicks = [];
     this.windowOpenPrice = null;
     this.windowTs = null;
+
+    // Performance stats — updated by BotInstance every 5 minutes from DB
+    this.recentWinRate = 0.5;
+    this.avgSlippage = 0.005;
+  }
+
+  /**
+   * Update live performance stats for adaptive thresholds.
+   * Called by BotInstance after querying recent trades from DB.
+   */
+  updatePerformanceStats(winRate, avgSlippage) {
+    this.recentWinRate = winRate;
+    this.avgSlippage = avgSlippage;
   }
 
   /**
@@ -79,6 +92,23 @@ class GBMSignalEngine {
 
     if (this.USE_NEW_STRATEGY) {
       try {
+        // 🟠 GATE 0.5: SPREAD FILTER — block illiquid / wide-spread markets
+        // Max spread = 10% of mid (e.g. bid=0.45 ask=0.55 → spread=18% → skip)
+        const MAX_SPREAD_PCT = parseFloat(this.settings.max_spread_pct) || 0.10;
+        if (bid != null && ask != null && bid > 0 && ask > 0 && bid < 1 && ask < 1) {
+          const mid = (bid + ask) / 2;
+          const spreadPct = mid > 0 ? (ask - bid) / mid : 1;
+          if (spreadPct > MAX_SPREAD_PCT) {
+            log.verdict = 'SKIP';
+            log.reason = `Gate 0.5 FAILED: Spread ${(spreadPct*100).toFixed(1)}% > max ${(MAX_SPREAD_PCT*100).toFixed(0)}% — illiquid market`;
+            log.spread_pct = (spreadPct*100).toFixed(1) + '%';
+            log.gate_failed = 0.5;
+            this._emit(log);
+            return null;
+          }
+          log.spread_pct = (spreadPct*100).toFixed(1) + '%';
+        }
+
         // 🔴 GATE 1: MICROSTRUCTURE EDGE DETECTION
         // Requires: BTC moves fast AND Polymarket lags (latency + order imbalance)
         const micro = this.microEngine.composite({
@@ -141,8 +171,8 @@ class GBMSignalEngine {
           volatility: volatility,
           btcDelta: this.windowOpenPrice ? (currentPrice - this.windowOpenPrice) / this.windowOpenPrice : 0,
           hasMarketLag: true, // Gate 1 confirmed this
-          recentWinRate: 0.5,
-          avgSlippage: 0.1
+          recentWinRate: this.recentWinRate, // Live from DB (adaptive thresholds)
+          avgSlippage: this.avgSlippage      // Live from DB (adaptive thresholds)
         });
 
         if (ev.recommended !== 'TRADE') {
