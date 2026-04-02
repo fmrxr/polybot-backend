@@ -370,6 +370,37 @@ class PolymarketFeed {
   disconnect() {
     // Cleanup
   }
+
+  /**
+   * Static method — fetch real Polymarket in-exchange balance via CLOB API.
+   * Works without a running bot instance. Requires the user's private key.
+   * Returns the collateral (USDC) available for trading on Polymarket.
+   */
+  static async fetchBalance(privateKey, funderAddress) {
+    try {
+      const { ClobClient } = await import('@polymarket/clob-client');
+      const { ethers } = require('ethers');
+      const wallet = new ethers.Wallet(privateKey);
+      const address = funderAddress || wallet.address;
+
+      // Derive L2 API credentials (same as init())
+      const tempClient = new ClobClient(POLYMARKET_CLOB_API, CHAIN_ID, wallet);
+      const apiCreds = await tempClient.createOrDeriveApiKey();
+
+      // Authenticated client
+      const client = new ClobClient(
+        POLYMARKET_CLOB_API, CHAIN_ID, wallet, apiCreds, 1, address
+      );
+
+      // GET /balance-allowance?asset_type=COLLATERAL — this is the real Polymarket balance
+      const data = await client.getBalanceAllowance({ asset_type: 'COLLATERAL', signature_type: 1 });
+      const balance = parseFloat(data?.balance ?? data?.allowance ?? 0);
+      return { usdc_balance: balance, address };
+    } catch (e) {
+      console.error('[PolymarketFeed.fetchBalance] CLOB error:', e.message);
+      return null;
+    }
+  }
 }
 
 module.exports = { PolymarketFeed };

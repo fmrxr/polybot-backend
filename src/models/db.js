@@ -96,6 +96,10 @@ async function initDB() {
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_api_key TEXT;
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS claude_model VARCHAR(50) DEFAULT 'claude-opus-4-6';
       ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_claude_analysis BOOLEAN DEFAULT false;
+
+      -- Cached Polymarket CLOB balance (updated on demand or when bot runs)
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS cached_polymarket_balance DECIMAL;
+      ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS cached_balance_at TIMESTAMPTZ;
     `);
     console.log('✅ Database initialized');
   } finally {

@@ -1053,8 +1053,10 @@
               <div class="connection-dot" id="walletDot"></div>
               <span>Wallet: <span id="walletAddressDisplay" style="font-family: monospace; font-size: 12px;">Not configured</span></span>
             </div>
-            <div style="padding-left: 20px; font-size: 13px; color: var(--text-muted);">
-              <span class="balance-label">USDC Balance:</span> <span id="usdcBalanceDisplay" style="color: var(--trade-green); font-weight: bold;">—</span>
+            <div style="padding-left: 20px; font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 8px;">
+              <span class="balance-label">USDC Balance:</span>
+              <span id="usdcBalanceDisplay" style="color: var(--trade-green); font-weight: bold;">—</span>
+              <button onclick="refreshPolymarketBalance()" id="balanceRefreshBtn" style="font-size: 11px; padding: 2px 8px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 3px; color: var(--text-muted); cursor: pointer;" title="Fetch live balance from Polymarket">↻</button>
             </div>
           </div>
           <div class="connection-item">
@@ -1788,6 +1790,32 @@
       }
     }
 
+    async function refreshPolymarketBalance() {
+      const token = localStorage.getItem('token');
+      const btn = document.getElementById('balanceRefreshBtn');
+      if (btn) { btn.textContent = '…'; btn.disabled = true; }
+      try {
+        const res = await fetch((window.API_BASE||'')+'/api/user/polymarket-balance', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        const balEl = document.getElementById('usdcBalanceDisplay');
+        if (data.balance !== null) {
+          balEl.textContent = `$${parseFloat(data.balance).toFixed(2)} USDC`;
+          balEl.style.color = 'var(--trade-green)';
+          const pmBal = document.getElementById('polymarketBalance');
+          if (pmBal) pmBal.textContent = `$${parseFloat(data.balance).toFixed(2)} USDC`;
+          showAlert(`Balance refreshed: $${parseFloat(data.balance).toFixed(2)} USDC`, 'success');
+        } else {
+          showAlert(data.error || 'Could not fetch balance — check private key in Settings', 'error');
+        }
+      } catch (err) {
+        showAlert('Balance refresh failed: ' + err.message, 'error');
+      } finally {
+        if (btn) { btn.textContent = '↻'; btn.disabled = false; }
+      }
+    }
+
     async function loadGateStats() {
       const token = localStorage.getItem('token');
       try {
@@ -2372,20 +2400,20 @@
 
     async function testPolymarketConnection() {
       const token = localStorage.getItem('token');
-      showAlert('Fetching Polymarket wallet data...', 'info');
+      showAlert('Fetching live Polymarket balance via CLOB API…', 'info');
       try {
-        const res = await fetch((window.API_BASE||'')+'/api/user/dashboard', {
+        const res = await fetch((window.API_BASE||'')+'/api/user/polymarket-balance', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (!res.ok) { showAlert('Failed to reach backend', 'error'); return; }
         const data = await res.json();
-        if (!data.wallet_address) {
-          showAlert('No wallet address configured — save it in Settings first', 'error');
-          return;
+        if (data.balance !== null) {
+          const bal = parseFloat(data.balance).toFixed(2);
+          document.getElementById('polymarketBalance').textContent = `$${bal} USDC`;
+          showAlert(`Polymarket balance: $${bal} USDC`, 'success');
+        } else {
+          document.getElementById('polymarketBalance').textContent = 'Could not fetch';
+          showAlert(data.error || 'Balance fetch failed — check private key', 'error');
         }
-        const bal = data.polymarket_balance !== null ? parseFloat(data.polymarket_balance).toFixed(2) : '—';
-        document.getElementById('polymarketBalance').textContent = data.polymarket_balance !== null ? `$${bal} USDC` : 'Could not fetch balance';
-        showAlert(`Wallet ${data.wallet_address.slice(0,8)}... — Balance: ${data.polymarket_balance !== null ? '$'+bal+' USDC' : 'unavailable (bot may need to be running)'}`, data.polymarket_balance !== null ? 'success' : 'info');
         await loadDashboard();
       } catch (err) {
         showAlert('Connection test failed: ' + err.message, 'error');

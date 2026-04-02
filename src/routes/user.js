@@ -108,14 +108,16 @@ router.put('/settings', async (req, res) => {
 router.get('/dashboard', async (req, res) => {
   try {
     const settingsResult = await pool.query(
-      'SELECT polymarket_wallet_address, paper_trading, paper_balance FROM bot_settings WHERE user_id = $1',
+      'SELECT polymarket_wallet_address, paper_trading, paper_balance, cached_polymarket_balance, cached_balance_at FROM bot_settings WHERE user_id = $1',
       [req.userId]
     );
     const walletAddress = settingsResult.rows[0]?.polymarket_wallet_address || null;
     const isPaperMode = settingsResult.rows[0]?.paper_trading !== false;
     const paperBalance = parseFloat(settingsResult.rows[0]?.paper_balance) || 0;
+    const cachedBalance = settingsResult.rows[0]?.cached_polymarket_balance;
+    const cachedAt = settingsResult.rows[0]?.cached_balance_at;
 
-    // Try running bot first (faster, already authenticated)
+    // 1. Try running bot first (live, no extra overhead)
     let balance = null;
     if (walletAddress && global.botManager && global.botManager.instances) {
       try {
@@ -128,35 +130,11 @@ router.get('/dashboard', async (req, res) => {
       }
     }
 
-    // Fallback: direct Polygon RPC call — works even when bot is stopped
-    if (!balance && walletAddress) {
-      try {
-        const axios = require('axios');
-        const data = '0x70a08231' + walletAddress.replace('0x', '').padStart(64, '0');
-        const rpcs = ['https://polygon-rpc.com', 'https://rpc.ankr.com/polygon'];
-        const contracts = [
-          '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC.e (Polymarket uses this)
-          '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'  // Native USDC
-        ];
-        let totalBal = 0;
-        for (const contract of contracts) {
-          for (const rpc of rpcs) {
-            try {
-              const res = await axios.post(rpc, {
-                jsonrpc: '2.0', method: 'eth_call',
-                params: [{ to: contract, data }, 'latest'], id: 1
-              }, { timeout: 4000 });
-              const hex = res.data?.result;
-              if (hex && hex.length > 2 && hex !== '0x' + '0'.repeat(64)) {
-                totalBal += parseInt(hex, 16) / 1e6;
-                break;
-              }
-            } catch (_) {}
-          }
-        }
-        balance = { usdc_balance: totalBal, address: walletAddress };
-      } catch (e) {
-        console.error('Direct balance fetch error:', e.message);
+    // 2. Use cached CLOB balance if fresh enough (< 5 minutes old)
+    if (!balance && cachedBalance != null && cachedAt) {
+      const ageMs = Date.now() - new Date(cachedAt).getTime();
+      if (ageMs < 5 * 60 * 1000) {
+        balance = { usdc_balance: parseFloat(cachedBalance), address: walletAddress };
       }
     }
 
@@ -238,6 +216,47 @@ router.post('/reset-paper-balance', async (req, res) => {
   } catch (err) {
     console.error('Reset paper balance error:', err);
     res.status(500).json({ error: 'Failed to reset paper balance' });
+  }
+});
+
+// GET /api/user/polymarket-balance — fetch real Polymarket in-exchange balance via CLOB API
+// Decrypts private key, authenticates with Polymarket, returns collateral balance.
+// Result is cached in DB for 5 minutes so dashboard can show it without the bot running.
+router.get('/polymarket-balance', async (req, res) => {
+  try {
+    const settingsResult = await pool.query(
+      'SELECT encrypted_private_key, polymarket_wallet_address FROM bot_settings WHERE user_id = $1',
+      [req.userId]
+    );
+    const settings = settingsResult.rows[0];
+    if (!settings?.encrypted_private_key) {
+      return res.json({ balance: null, error: 'No private key configured' });
+    }
+
+    const { decrypt } = require('../services/encryption');
+    const { PolymarketFeed } = require('../bot/PolymarketFeed');
+
+    let privateKey;
+    try {
+      privateKey = decrypt(settings.encrypted_private_key);
+    } catch (e) {
+      return res.json({ balance: null, error: 'Could not decrypt private key' });
+    }
+
+    const balanceData = await PolymarketFeed.fetchBalance(privateKey, settings.polymarket_wallet_address);
+
+    if (balanceData) {
+      await pool.query(
+        'UPDATE bot_settings SET cached_polymarket_balance=$1, cached_balance_at=NOW() WHERE user_id=$2',
+        [balanceData.usdc_balance, req.userId]
+      );
+      return res.json({ balance: balanceData.usdc_balance, address: balanceData.address });
+    }
+
+    res.json({ balance: null, error: 'CLOB API did not return balance' });
+  } catch (err) {
+    console.error('Polymarket balance route error:', err);
+    res.json({ balance: null, error: err.message });
   }
 });
 
