@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const i=JSON.parse(process.env.CLAUDE_TOOL_INPUT||'{}');const f=i.file_path||i.path||'';const s=i.old_string||i.content||'';if(/\\.env$|\\.env\\./.test(f)){console.error('BLOCKED: .env files are protected');process.exit(2);}if(/ENCRYPTION_KEY|DATABASE_URL|JWT_SECRET/.test(s)&&!/src\\/models\\/db\\.js|src\\/index\\.js/.test(f)){console.error('BLOCKED: credential strings detected in unexpected file');process.exit(2);}\" 2>&1"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const i=JSON.parse(process.env.CLAUDE_TOOL_INPUT||'{}');const f=i.file_path||i.path||'';if(/src\\/(bot|routes)\\/.+\\.js$/.test(f)){console.log('\\u26a1 '+f+' changed — Railway will hot-reload (nodemon). If bot is running, restart it for changes to take effect.');}\" 2>&1"
+          }
+        ]
+      }
+    ]
+  }
+}
