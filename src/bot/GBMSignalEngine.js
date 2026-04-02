@@ -32,6 +32,11 @@ class GBMSignalEngine {
     // Performance stats — updated by BotInstance every 5 minutes from DB
     this.recentWinRate = 0.5;
     this.avgSlippage = 0.005;
+
+    // EV trend tracking — detect decaying setups
+    this.lastEV = null;           // EV from previous evaluation this window
+    this.lastSignalPrice = null;  // BTC price when last signal fired (no-chase reference)
+    this.lastSignalTs = null;     // Timestamp of last signal (lag freshness)
   }
 
   /**
@@ -55,6 +60,10 @@ class GBMSignalEngine {
       this.windowOpenPrice = chainlinkPrice || currentPrice;
       this.chainlinkOpenPrice = chainlinkPrice;
       this.recentTicks = [];
+      // Reset per-window EV tracking state
+      this.lastEV = null;
+      this.lastSignalTs = null;
+      this.lastSignalPrice = null;
     }
     // Accumulate ticks for micro-trend
     this.recentTicks.push(currentPrice);
@@ -92,21 +101,48 @@ class GBMSignalEngine {
 
     if (this.USE_NEW_STRATEGY) {
       try {
-        // 🟠 GATE 0.5: SPREAD FILTER — block illiquid / wide-spread markets
-        // Max spread = 10% of mid (e.g. bid=0.45 ask=0.55 → spread=18% → skip)
-        const MAX_SPREAD_PCT = parseFloat(this.settings.max_spread_pct) || 0.10;
+        // ── PRE-GATE FILTERS (EV-context filters, not hard blocks) ─────────────
+
+        // Compute spread for EV cost logging (NOT a gating condition —
+        // spread is already baked into EV_adj via EVEngine.estimateSpreadCost)
         if (bid != null && ask != null && bid > 0 && ask > 0 && bid < 1 && ask < 1) {
           const mid = (bid + ask) / 2;
-          const spreadPct = mid > 0 ? (ask - bid) / mid : 1;
-          if (spreadPct > MAX_SPREAD_PCT) {
+          const spreadPct = mid > 0 ? (ask - bid) / mid : 0;
+          log.spread_pct = (spreadPct * 100).toFixed(1) + '%';
+          // Warn only — EV gate will handle rejection if cost makes EV negative
+          if (spreadPct > 0.20) log.spread_warning = 'wide spread (>20%) — EV gate will likely reject';
+        }
+
+        // 🔵 FILTER A: LAG FRESHNESS — signal must be fresh (seconds, not ms)
+        // If the lag between BTC signal formation and now exceeds threshold, skip.
+        // Uses windowOpenPrice formation time as signal timestamp proxy.
+        const LAG_MAX_SEC = parseFloat(this.settings.lag_max_sec) || 20;
+        const signalAgeSec = this.lastSignalTs ? (Date.now() - this.lastSignalTs) / 1000 : 0;
+        // Only enforce freshness after we have a prior signal this window
+        if (this.lastSignalTs && signalAgeSec > LAG_MAX_SEC) {
+          log.verdict = 'SKIP';
+          log.reason = `Filter A: Lag freshness — signal age ${signalAgeSec.toFixed(0)}s > ${LAG_MAX_SEC}s max — stale setup`;
+          log.lag_age_sec = signalAgeSec.toFixed(0);
+          log.gate_failed = 0.2;
+          this._emit(log);
+          return null;
+        }
+        log.lag_age_sec = signalAgeSec.toFixed(1) + 's';
+
+        // 🔵 FILTER B: NO-CHASE — skip if price already moved significantly since signal formed
+        // Prevents entering after the inefficiency has been priced in
+        const NO_CHASE_PCT = parseFloat(this.settings.no_chase_pct) || 0.08; // 8% of token price move
+        if (this.lastSignalPrice != null && bid != null && ask != null && bid < 1 && ask < 1) {
+          const currentMid = (bid + ask) / 2;
+          const priceMoveSinceSignal = Math.abs(currentMid - this.lastSignalPrice) / Math.max(this.lastSignalPrice, 0.01);
+          if (priceMoveSinceSignal > NO_CHASE_PCT) {
             log.verdict = 'SKIP';
-            log.reason = `Gate 0.5 FAILED: Spread ${(spreadPct*100).toFixed(1)}% > max ${(MAX_SPREAD_PCT*100).toFixed(0)}% — illiquid market`;
-            log.spread_pct = (spreadPct*100).toFixed(1) + '%';
-            log.gate_failed = 0.5;
+            log.reason = `Filter B: No-chase — price moved ${(priceMoveSinceSignal*100).toFixed(1)}% since signal (>${(NO_CHASE_PCT*100).toFixed(0)}%) — opportunity priced in`;
+            log.price_move_pct = (priceMoveSinceSignal*100).toFixed(1) + '%';
+            log.gate_failed = 0.3;
             this._emit(log);
             return null;
           }
-          log.spread_pct = (spreadPct*100).toFixed(1) + '%';
         }
 
         // 🔴 GATE 1: MICROSTRUCTURE EDGE DETECTION
@@ -201,6 +237,24 @@ class GBMSignalEngine {
         }
 
         // ✅ Gate 2 passed — EV is solid positive after costs (≥3%)
+
+        // 🔵 FILTER C: EV TREND — require EV to be stable or improving, not decaying
+        // Prevents entering a deteriorating setup just because EV is still positive
+        if (this.lastEV !== null) {
+          const evDrop = this.lastEV - ev.ev_adjusted;
+          const EV_DECAY_THRESHOLD = 0.015; // 1.5% drop = decaying setup
+          if (evDrop > EV_DECAY_THRESHOLD && ev.ev_adjusted < 0.05) {
+            log.verdict = 'SKIP';
+            log.reason = `Filter C: EV trend — EV decaying (${(this.lastEV*100).toFixed(1)}% → ${(ev.ev_adjusted*100).toFixed(1)}%), drop=${(evDrop*100).toFixed(1)}%`;
+            log.ev_prev = (this.lastEV*100).toFixed(1) + '%';
+            log.ev_now = (ev.ev_adjusted*100).toFixed(1) + '%';
+            log.gate_failed = 0.4;
+            this._emit(log);
+            return null;
+          }
+        }
+        // Update EV trend tracker
+        this.lastEV = ev.ev_adjusted;
 
         // 🟢 GATE 3: SIGNAL CONFIRMATION (WEAK)
         // Compute old signal for directional confirmation only
@@ -535,6 +589,11 @@ class GBMSignalEngine {
       return null;
     }
 
+    // Record signal reference point for lag freshness + no-chase tracking
+    this.lastSignalTs = Date.now();
+    const tokenMidNow = (bid != null && bid < 1 && ask != null && ask < 1) ? (bid + ask) / 2 : null;
+    if (tokenMidNow !== null) this.lastSignalPrice = tokenMidNow;
+
     this._emit(log);
 
     return {
@@ -544,13 +603,14 @@ class GBMSignalEngine {
       market_prob: marketProb,
       edge,
       expected_value: expectedValue,
+      ev_adjusted: evData?.ev_adjusted || expectedValue,
+      lag_age_sec: parseFloat(log.lag_age_sec) || 0,
       size,
       fee: marketProb * 0.25 * Math.pow(marketProb * (1 - marketProb), 2) * size,
       confidence: finalConfidence,
       score,
       gates_passed: log.gates_passed || false,
-      micro_confidence: microData?.confidence || 0,
-      ev_adjusted: evData?.ev_adjusted || 0
+      micro_confidence: microData?.confidence || 0
     };
   }
 

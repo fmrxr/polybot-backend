@@ -45,9 +45,8 @@ class BotInstance {
     this.lastMarketRefreshAt = 0;
     this.inSnipeLoop = false;
 
-    // Flip cooldown: track recent direction changes to prevent overtrading churn
-    this.recentFlips = [];        // [{ ts: epochMs, direction }]
-    this.flipCooldownUntil = 0;   // epoch ms — no trades until this time
+    // Flip tracking: recent direction changes per window for EV-gap requirement
+    this.recentFlips = [];   // [{ ts: epochMs, direction, ev }]
 
     // Performance stats timer
     this.statsTimer = null;
@@ -404,29 +403,32 @@ class BotInstance {
   async _executeTrade(signal, market, tokens, windowTs) {
     const MIN_SHARES = 5; // Polymarket CLOB minimum: 5 shares per order
 
-    // ── FLIP COOLDOWN CHECK ──────────────────────────────────────────────────
-    // If we've flipped direction 3+ times in the last 5 minutes, pause 60s.
-    // Prevents churn losses from noise-driven back-and-forth trading.
+    // ── EV-DRIVEN FLIP GUARD ─────────────────────────────────────────────────
+    // If the last trade was in the opposite direction, require a meaningful EV
+    // advantage before flipping. Prevents noise-driven YES→NO→YES churn.
+    // This is NOT a time cooldown — a genuinely superior EV always overrides.
     const nowMs = Date.now();
-    if (nowMs < this.flipCooldownUntil) {
-      const waitSec = Math.ceil((this.flipCooldownUntil - nowMs) / 1000);
-      this._log('WARN', `⏸ Flip cooldown active — ${waitSec}s remaining. Skipping trade.`);
-      return;
-    }
-
-    // Purge flips older than 5 minutes
     const FLIP_WINDOW_MS = 5 * 60 * 1000;
     this.recentFlips = this.recentFlips.filter(f => nowMs - f.ts < FLIP_WINDOW_MS);
 
-    // Count direction changes in window
-    let flipCount = 0;
-    for (let i = 1; i < this.recentFlips.length; i++) {
-      if (this.recentFlips[i].direction !== this.recentFlips[i-1].direction) flipCount++;
-    }
-    if (flipCount >= 3) {
-      this.flipCooldownUntil = nowMs + 60000;
-      this._log('WARN', `⏸ ${flipCount} direction flips in 5min — imposing 60s cooldown`);
-      return;
+    if (this.recentFlips.length > 0) {
+      const lastFlip = this.recentFlips[this.recentFlips.length - 1];
+      const isFlip = lastFlip.direction !== signal.direction;
+      if (isFlip) {
+        // Count how many flips in the window — more flips = require higher EV gap
+        const flipCount = this.recentFlips.filter((f, i) =>
+          i > 0 && f.direction !== this.recentFlips[i-1].direction
+        ).length;
+        // Base flip threshold: 1.5%, +1% per additional flip (max 5%)
+        const flipEVGap = Math.min(0.015 + flipCount * 0.01, 0.05);
+        const lastEV = lastFlip.ev || 0;
+        const evGain = (signal.ev_adjusted || signal.expected_value || 0) - Math.max(lastEV, 0);
+        if (evGain < flipEVGap) {
+          this._log('WARN', `⚡ Flip blocked: ${lastFlip.direction}→${signal.direction} requires +${(flipEVGap*100).toFixed(1)}% EV gain, have +${(evGain*100).toFixed(1)}%`);
+          return;
+        }
+        this._log('INFO', `✅ Flip approved: EV gain +${(evGain*100).toFixed(1)}% > required +${(flipEVGap*100).toFixed(1)}% (${flipCount} prior flips)`);
+      }
     }
     // ────────────────────────────────────────────────────────────────────────
 
@@ -476,17 +478,19 @@ class BotInstance {
 
     if (this.paperTrading) {
       try {
+        const evAtEntry = signal.ev_adjusted || signal.expected_value || 0;
         const result = await pool.query(
-          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, window_ts, token_id, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',$10,$11,NOW()) RETURNING id`,
+          `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_status, window_ts, token_id, ev_at_entry, ev_peak, lag_age_sec, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'SIMULATED',$10,$11,$12,$12,$13,NOW()) RETURNING id`,
           [this.userId, market.conditionId, signal.direction, signal.entry_price, signal.size,
-           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, windowTs, tokenId]
+           signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, windowTs, tokenId,
+           evAtEntry, signal.lag_age_sec || 0]
         );
         const tradeId = result.rows[0].id;
         this.openTrades.set(tradeId, {
           conditionId: market.conditionId, direction: signal.direction,
           tokenId, entryPrice: signal.entry_price, size: signal.size,
-          paper: true, windowTs, confidence: signal.confidence
+          paper: true, windowTs, confidence: signal.confidence, evAtEntry, evPeak: evAtEntry
         });
         // Deduct trade size from paper balance atomically
         const balRes = await pool.query(
@@ -494,8 +498,8 @@ class BotInstance {
           [signal.size, this.userId]
         );
         this.paperBalance = parseFloat(balRes.rows[0]?.paper_balance ?? this.paperBalance - signal.size);
-        this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded | Balance: $${this.paperBalance.toFixed(2)}`);
-        this.recentFlips.push({ ts: Date.now(), direction: signal.direction });
+        this._log('INFO', `[PAPER] ✅ Trade #${tradeId} recorded | EV ${(evAtEntry*100).toFixed(1)}% | Balance: $${this.paperBalance.toFixed(2)}`);
+        this.recentFlips.push({ ts: Date.now(), direction: signal.direction, ev: evAtEntry });
       } catch(e) {
         this._log('ERROR', `[PAPER] Failed to record trade: ${e.message}`);
       }
@@ -534,20 +538,22 @@ class BotInstance {
         this._log('WARN', `[LIVE] Slippage ${(slippage*100).toFixed(2)}% (expected ${signal.entry_price.toFixed(3)}, filled ${confirmedPrice.toFixed(3)})`);
       }
 
+      const evAtEntry = signal.ev_adjusted || signal.expected_value || 0;
       const result = await pool.query(
-        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, token_id, slippage, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,$13,$14,NOW()) RETURNING id`,
+        `INSERT INTO trades (user_id, condition_id, direction, entry_price, size, model_prob, market_prob, expected_value, fee, paper, order_id, order_status, window_ts, token_id, slippage, ev_at_entry, ev_peak, lag_age_sec, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11,$12,$13,$14,$15,$15,$16,NOW()) RETURNING id`,
         [this.userId, market.conditionId, signal.direction, confirmedPrice, confirmedSize,
-         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs, tokenId, slippage]
+         signal.model_prob, signal.market_prob, signal.expected_value, signal.fee, orderId, orderStatus, windowTs, tokenId,
+         slippage, evAtEntry, signal.lag_age_sec || 0]
       );
       const tradeId = result.rows[0].id;
       this.openTrades.set(tradeId, {
         conditionId: market.conditionId, direction: signal.direction,
         tokenId, entryPrice: confirmedPrice, size: confirmedSize,
-        paper: false, orderId, windowTs, confidence: signal.confidence
+        paper: false, orderId, windowTs, confidence: signal.confidence, evAtEntry, evPeak: evAtEntry
       });
-      this.recentFlips.push({ ts: Date.now(), direction: signal.direction });
-      this._log('INFO', `[LIVE] ✅ Trade #${tradeId} | ${signal.direction} $${confirmedSize.toFixed(2)} | ${orderStatus} | slippage ${(slippage*100).toFixed(2)}%`);
+      this.recentFlips.push({ ts: Date.now(), direction: signal.direction, ev: evAtEntry });
+      this._log('INFO', `[LIVE] ✅ Trade #${tradeId} | ${signal.direction} $${confirmedSize.toFixed(2)} | ${orderStatus} | EV ${(evAtEntry*100).toFixed(1)}% | slippage ${(slippage*100).toFixed(2)}%`);
     } catch(err) {
       this._log('ERROR', `[LIVE] Trade failed: ${err.message}`);
     }
@@ -608,6 +614,16 @@ class BotInstance {
         const shares = tradeSize / entryPrice;
         const unrealizedPnL = shares * (currentTokenPrice - entryPrice) - (tradeSize * 0.02);
 
+        // Update EV peak (track highest EV seen for this trade for decay exit)
+        // Approximate current EV from token price movement relative to entry
+        const currentEV = trade.evAtEntry != null
+          ? trade.evAtEntry + (currentTokenPrice - entryPrice) * 0.8
+          : null;
+        if (currentEV !== null && currentEV > (trade.evPeak || 0)) {
+          trade.evPeak = currentEV;
+          await pool.query('UPDATE trades SET ev_peak=$1 WHERE id=$2', [trade.evPeak, tradeId]);
+        }
+
         // Dynamic thresholds: scale with confidence and time remaining
         const nowSec = Math.floor(Date.now() / 1000);
         const windowClose = (trade.windowTs || 0) + 300;
@@ -633,6 +649,17 @@ class BotInstance {
           shouldExit = true;
           exitReason = 'auto_closed_loss';
           this._log('WARN', `🛑 STOP LOSS | Trade #${tradeId} | $${unrealizedPnL.toFixed(2)} (${(unrealizedPnL/tradeSize*100).toFixed(1)}%) | TokenPrice: ${currentTokenPrice.toFixed(3)}`);
+        }
+
+        // EV-DECAY EXIT: if current EV has fallen to <50% of peak AND we're in profit
+        // Locks in gains before the edge evaporates entirely
+        if (!shouldExit && trade.evPeak != null && currentEV !== null) {
+          const evDecayRatio = trade.evPeak > 0 ? currentEV / trade.evPeak : 1;
+          if (evDecayRatio < 0.50 && unrealizedPnL > 0) {
+            shouldExit = true;
+            exitReason = 'ev_decay_profit';
+            this._log('INFO', `📉 EV DECAY EXIT | Trade #${tradeId} | EV dropped to ${(evDecayRatio*100).toFixed(0)}% of peak | P&L +$${unrealizedPnL.toFixed(2)}`);
+          }
         }
 
         if (shouldExit) {

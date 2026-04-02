@@ -103,6 +103,11 @@ async function initDB() {
 
       -- Slippage tracking (actual fill price vs expected entry price)
       ALTER TABLE trades ADD COLUMN IF NOT EXISTS slippage DECIMAL DEFAULT 0;
+
+      -- EV peak tracking (for EV-decay exit and feedback agent)
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS ev_at_entry DECIMAL;
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS ev_peak DECIMAL;
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS lag_age_sec INTEGER;
     `);
     console.log('✅ Database initialized');
   } finally {
