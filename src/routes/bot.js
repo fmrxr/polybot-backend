@@ -1,188 +1,126 @@
 const express = require('express');
-const { pool } = require('../models/db');
-const { authMiddleware } = require('../middleware/auth');
-
 const router = express.Router();
-router.use(authMiddleware);
+const { pool } = require('../models/db');
+const authMiddleware = require('../middleware/auth');
 
-// POST /api/bot/start
-router.post('/start', async (req, res) => {
+// --- Start Signal Bot ---
+router.post('/start', authMiddleware, async (req, res) => {
   try {
-    const settingsResult = await pool.query(
-      `SELECT bs.*, u.email AS user_email FROM bot_settings bs JOIN users u ON u.id = bs.user_id WHERE bs.user_id = $1`,
-      [req.userId]
-    );
-    const settings = settingsResult.rows[0];
+    const botManager = req.app.locals.botManager;
 
-    if (!settings?.encrypted_private_key) {
-      return res.status(400).json({ error: 'Private key not configured. Go to Settings first.' });
+    if (botManager.isRunning(req.userId)) {
+      return res.status(400).json({ error: 'Bot is already running' });
     }
 
-    if (global.botManager.isRunning(req.userId)) {
-      return res.status(409).json({ error: 'Bot is already running' });
+    const settings = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [req.userId]);
+    if (settings.rows.length === 0) {
+      return res.status(404).json({ error: 'Bot settings not found' });
     }
 
-    const dailyResult = await pool.query(
-      `SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
-      [req.userId]
-    );
-    if (parseFloat(dailyResult.rows[0].daily_pnl) <= -settings.max_daily_loss) {
-      return res.status(400).json({ error: `Daily loss limit of $${settings.max_daily_loss} reached.` });
-    }
+    await botManager.startBot(req.userId, settings.rows[0]);
 
-    await global.botManager.startBot(req.userId, settings);
-    await pool.query('UPDATE bot_settings SET is_active = true WHERE user_id = $1', [req.userId]);
-    res.json({ success: true, message: 'Bot started successfully' });
+    res.json({ message: 'Bot started successfully', status: 'running' });
   } catch (err) {
-    console.error('Start bot error:', err);
-    res.status(500).json({ error: err.message || 'Failed to start bot' });
+    console.error(`[Bot Route] Start error for user ${req.userId}:`, err.message);
+    res.status(500).json({ error: `Failed to start bot: ${err.message}` });
   }
 });
 
-// POST /api/bot/stop
-router.post('/stop', async (req, res) => {
+// --- Stop Signal Bot ---
+router.post('/stop', authMiddleware, async (req, res) => {
   try {
-    await global.botManager.stopBot(req.userId);
-    await pool.query('UPDATE bot_settings SET is_active = false WHERE user_id = $1', [req.userId]);
-    res.json({ success: true, message: 'Bot stopped' });
+    const botManager = req.app.locals.botManager;
+
+    if (!botManager.isRunning(req.userId)) {
+      return res.status(400).json({ error: 'Bot is not running' });
+    }
+
+    await botManager.stopBot(req.userId);
+
+    res.json({ message: 'Bot stopped successfully', status: 'stopped' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to stop bot' });
+    console.error(`[Bot Route] Stop error for user ${req.userId}:`, err.message);
+    res.status(500).json({ error: `Failed to stop bot: ${err.message}` });
   }
 });
 
-// GET /api/bot/status
-router.get('/status', async (req, res) => {
+// --- Bot Status ---
+router.get('/status', authMiddleware, async (req, res) => {
   try {
-    const isRunning = global.botManager.isRunning(req.userId);
-    const status = global.botManager.getStatus(req.userId);
+    const botManager = req.app.locals.botManager;
+    const status = botManager.getBotStatus(req.userId);
 
-    const settingsResult = await pool.query(
-      'SELECT is_active, max_daily_loss, paper_trading FROM bot_settings WHERE user_id = $1',
-      [req.userId]
-    );
-    const settings = settingsResult.rows[0];
+    // Get trade stats
+    const tradeStats = await pool.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'open') AS open_trades,
+        COUNT(*) FILTER (WHERE status = 'closed') AS closed_trades,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) AS total_pnl,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND closed_at > NOW() - INTERVAL '24 hours'), 0) AS daily_pnl,
+        COUNT(*) FILTER (WHERE status = 'closed' AND pnl > 0) AS wins,
+        COUNT(*) FILTER (WHERE status = 'closed' AND pnl <= 0) AS losses
+      FROM trades 
+      WHERE user_id = $1 AND trade_type = $2
+    `, [req.userId, 'signal']);
 
-    const dailyResult = await pool.query(
-      `SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM trades WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'`,
-      [req.userId]
-    );
+    const stats = tradeStats.rows[0];
 
     res.json({
-      is_running: isRunning,
-      daily_pnl: parseFloat(dailyResult.rows[0].daily_pnl),
-      max_daily_loss: settings?.max_daily_loss || 50,
-      paper_trading: settings?.paper_trading !== false,
-      ...status
+      botRunning: status?.isRunning || false,
+      paperTrading: status?.paperTrading ?? true,
+      paperBalance: status?.paperBalance || null,
+      btcPrice: status?.btcPrice || null,
+      peakBalance: status?.peakBalance || null,
+      drawdownCooldownUntil: status?.drawdownCooldownUntil || null,
+      trades: {
+        open: parseInt(stats.open_trades),
+        closed: parseInt(stats.closed_trades),
+        totalPnl: parseFloat(stats.total_pnl),
+        dailyPnl: parseFloat(stats.daily_pnl),
+        wins: parseInt(stats.wins),
+        losses: parseInt(stats.losses),
+        winRate: parseInt(stats.closed_trades) > 0
+          ? (parseInt(stats.wins) / parseInt(stats.closed_trades) * 100).toFixed(1)
+          : '0.0'
+      },
+      recentLogs: status?.recentLogs || []
     });
   } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+    console.error(`[Bot Route] Status error for user ${req.userId}:`, err.message);
+    res.status(500).json({ error: 'Failed to get bot status' });
   }
 });
 
-// GET /api/bot/logs
-router.get('/logs', async (req, res) => {
+// --- Get Trades ---
+router.get('/trades', authMiddleware, async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
-    // Get newest logs, then reverse to show chronologically (oldest at top, newest at bottom)
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+
     const result = await pool.query(
-      'SELECT level, message, created_at FROM bot_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+      'SELECT * FROM trades WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [req.userId, limit, offset]
+    );
+
+    res.json({ trades: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch trades' });
+  }
+});
+
+// --- Get Signals ---
+router.get('/signals', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    const result = await pool.query(
+      'SELECT * FROM signals WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
       [req.userId, limit]
     );
-    res.json(result.rows.reverse());
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
 
-// GET /api/bot/decisions
-router.get('/decisions', async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
-    const result = await pool.query(
-      `SELECT verdict, direction, reason, data, created_at FROM bot_decisions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
-      [req.userId, limit]
-    );
-    res.json(result.rows);
+    res.json({ signals: result.rows });
   } catch (err) {
-    // Table may not exist yet on first deploy — return empty instead of crashing
-    res.json([]);
-  }
-});
-
-// GET /api/bot/gate-stats
-router.get('/gate-stats', async (req, res) => {
-  const empty = {
-    total: 0, skip_rate: 0, trade_count: 0, skip_count: 0,
-    avg_ev_adj: 0, avg_total_cost: 0, avg_micro_conf: 0,
-    gate1_rate: 0, gate2_pass_rate: 0, last_decision_at: null
-  };
-  try {
-    const result = await pool.query(
-      `SELECT
-        COUNT(*)                                                                     AS total,
-        COUNT(*) FILTER (WHERE verdict = 'TRADE')                                   AS trade_count,
-        COUNT(*) FILTER (WHERE verdict = 'SKIP')                                    AS skip_count,
-        -- Filter breakdown by gate_failed value
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 0.2)                AS skip_lag,
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 0.3)                AS skip_chase,
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 0.4)                AS skip_ev_trend,
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 1)                  AS skip_gate1,
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 1.5)               AS skip_gate1_5,
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 2
-                              OR (data->>'gate_failed')::float = 2.5)              AS skip_gate2,
-        COUNT(*) FILTER (WHERE (data->>'gate_failed')::float = 3)                  AS skip_gate3,
-        -- EV and cost averages
-        AVG(REPLACE(data->>'ev_adjusted',    '%','')::float)
-          FILTER (WHERE verdict = 'TRADE' AND data->>'ev_adjusted'    IS NOT NULL)  AS avg_ev_adj,
-        AVG(REPLACE(data->>'total_cost',     '%','')::float)
-          FILTER (WHERE data->>'total_cost'  IS NOT NULL)                           AS avg_total_cost,
-        AVG(REPLACE(data->>'micro_confidence','%','')::float)
-          FILTER (WHERE verdict = 'TRADE' AND data->>'micro_confidence' IS NOT NULL) AS avg_micro_conf,
-        -- Lag age average
-        AVG((data->>'lag_age_sec')::float)
-          FILTER (WHERE data->>'lag_age_sec' IS NOT NULL)                            AS avg_lag_age,
-        -- Spread average
-        AVG(REPLACE(data->>'spread_pct','%','')::float)
-          FILTER (WHERE data->>'spread_pct' IS NOT NULL)                             AS avg_spread_pct,
-        COUNT(*) FILTER (WHERE data->>'ev_adjusted' IS NOT NULL)                     AS gate1_passed_count,
-        MAX(created_at)                                                              AS last_decision_at
-       FROM bot_decisions
-       WHERE user_id = $1 AND verdict != 'WAIT'
-         AND created_at >= NOW() - INTERVAL '24 hours'`,
-      [req.userId]
-    );
-    const row = result.rows[0];
-    const total      = parseInt(row.total, 10)       || 0;
-    const tradeCount = parseInt(row.trade_count, 10) || 0;
-    const skipCount  = parseInt(row.skip_count, 10)  || 0;
-    const gate1Passed = parseInt(row.gate1_passed_count, 10) || 0;
-    const actionable = tradeCount + skipCount;
-    res.json({
-      total,
-      skip_rate:       actionable > 0 ? parseFloat((skipCount  / actionable * 100).toFixed(1)) : 0,
-      trade_count:     tradeCount,
-      skip_count:      skipCount,
-      // Skip breakdown by filter/gate
-      skip_lag:       parseInt(row.skip_lag)      || 0,
-      skip_chase:     parseInt(row.skip_chase)    || 0,
-      skip_ev_trend:  parseInt(row.skip_ev_trend) || 0,
-      skip_gate1:     parseInt(row.skip_gate1)    || 0,
-      skip_gate1_5:   parseInt(row.skip_gate1_5)  || 0,
-      skip_gate2:     parseInt(row.skip_gate2)    || 0,
-      skip_gate3:     parseInt(row.skip_gate3)    || 0,
-      // Averages
-      avg_ev_adj:     row.avg_ev_adj     != null ? parseFloat(parseFloat(row.avg_ev_adj).toFixed(2))     : 0,
-      avg_total_cost: row.avg_total_cost != null ? parseFloat(parseFloat(row.avg_total_cost).toFixed(2)) : 0,
-      avg_micro_conf: row.avg_micro_conf != null ? parseFloat(parseFloat(row.avg_micro_conf).toFixed(1)) : 0,
-      avg_lag_age:    row.avg_lag_age    != null ? parseFloat(parseFloat(row.avg_lag_age).toFixed(1))    : null,
-      avg_spread_pct: row.avg_spread_pct != null ? parseFloat(parseFloat(row.avg_spread_pct).toFixed(2)) : null,
-      gate1_rate:      total      > 0 ? parseFloat((gate1Passed / total      * 100).toFixed(1)) : 0,
-      gate2_pass_rate: actionable > 0 ? parseFloat((tradeCount  / actionable * 100).toFixed(1)) : 0,
-      last_decision_at: row.last_decision_at || null
-    });
-  } catch (err) {
-    console.error('Gate stats error:', err);
-    res.json(empty);
+    res.status(500).json({ error: 'Failed to fetch signals' });
   }
 });
 
