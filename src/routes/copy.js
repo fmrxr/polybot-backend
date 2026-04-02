@@ -1,185 +1,165 @@
 const express = require('express');
-const { authMiddleware } = require('../middleware/auth');
-const { pool } = require('../models/db');
-
 const router = express.Router();
-router.use(authMiddleware);
+const { pool } = require('../models/db');
+const authMiddleware = require('../middleware/auth');
 
-// POST /api/copy/targets — add a copy target
-router.post('/targets', async (req, res) => {
-  const { target_address, label, multiplier, max_trade_size } = req.body;
+const ALLOWED_COPY_TARGET_FIELDS = ['label', 'multiplier', 'max_trade_size', 'is_active', 'min_whale_score'];
 
-  if (!target_address || !target_address.match(/^0x[0-9a-f]{40}$/i)) {
-    return res.status(400).json({ error: 'Invalid Ethereum address' });
-  }
-
+// --- Add Copy Target ---
+router.post('/targets', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      `INSERT INTO copy_targets (user_id, target_address, label, multiplier, max_trade_size)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT(user_id, target_address) DO UPDATE SET label=EXCLUDED.label, multiplier=EXCLUDED.multiplier, max_trade_size=EXCLUDED.max_trade_size
-       RETURNING *`,
-      [req.userId, target_address.toLowerCase(), label || null, multiplier || 1.0, max_trade_size || 20.0]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch(err) {
-    console.error('Add target error:', err);
-    res.status(500).json({ error: 'Server error' });
+    const { wallet_address, label, multiplier, max_trade_size, min_whale_score } = req.body;
+
+    if (!wallet_address) {
+      return res.status(400).json({ error: 'Wallet address required' });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO copy_targets (user_id, wallet_address, label, multiplier, max_trade_size, min_whale_score)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [
+      req.userId,
+      wallet_address,
+      label || null,
+      multiplier || 1.0,
+      max_trade_size || 100.0,
+      min_whale_score || 0.5
+    ]);
+
+    res.status(201).json({ target: result.rows[0] });
+  } catch (err) {
+    console.error('[Copy] Add target error:', err.message);
+    res.status(500).json({ error: 'Failed to add copy target' });
   }
 });
 
-// GET /api/copy/targets — list user's copy targets
-router.get('/targets', async (req, res) => {
+// --- Get Copy Targets ---
+router.get('/targets', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, target_address, label, is_active, multiplier, max_trade_size, created_at
-       FROM copy_targets WHERE user_id=$1 ORDER BY created_at DESC`,
+      'SELECT * FROM copy_targets WHERE user_id = $1 ORDER BY created_at DESC',
       [req.userId]
     );
     res.json({ targets: result.rows });
-  } catch(err) {
-    console.error('List targets error:', err);
-    res.status(500).json({ error: 'Server error' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch copy targets' });
   }
 });
 
-// PATCH /api/copy/targets/:id — update a copy target
-router.patch('/targets/:id', async (req, res) => {
-  const { label, multiplier, max_trade_size, is_active } = req.body;
-  const targetId = parseInt(req.params.id);
-
+// --- Update Copy Target (with field whitelist) ---
+router.patch('/targets/:id', authMiddleware, async (req, res) => {
   try {
-    const updates = [];
-    const values = [req.userId, targetId];
-    let paramIndex = 3;
+    const targetId = req.params.id;
 
-    if (label !== undefined) {
-      updates.push(`label=$${paramIndex++}`);
-      values.push(label);
-    }
-    if (multiplier !== undefined) {
-      updates.push(`multiplier=$${paramIndex++}`);
-      values.push(Math.max(0.1, Math.min(10.0, multiplier)));
-    }
-    if (max_trade_size !== undefined) {
-      updates.push(`max_trade_size=$${paramIndex++}`);
-      values.push(max_trade_size);
-    }
-    if (is_active !== undefined) {
-      updates.push(`is_active=$${paramIndex++}`);
-      values.push(is_active);
+    // Whitelist: only allow known fields
+    const updates = {};
+    for (const [key, value] of Object.entries(req.body)) {
+      if (ALLOWED_COPY_TARGET_FIELDS.includes(key)) {
+        updates[key] = value;
+      }
     }
 
-    if (updates.length === 0) {
-      return res.status(400).json({ error: 'Nothing to update' });
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
     }
+
+    // Build parameterized SET clause
+    const keys = Object.keys(updates);
+    const values = Object.values(updates);
+    const setClauses = keys.map((key, i) => `${key} = $${i + 3}`);
 
     const result = await pool.query(
-      `UPDATE copy_targets SET ${updates.join(', ')} WHERE id=$1 AND user_id=$2 RETURNING *`,
-      [targetId, req.userId, ...values.slice(2)]
+      `UPDATE copy_targets SET ${setClauses.join(', ')}, updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *`,
+      [targetId, req.userId, ...values]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Target not found' });
+      return res.status(404).json({ error: 'Copy target not found' });
     }
-    res.json(result.rows[0]);
-  } catch(err) {
-    console.error('Update target error:', err);
-    res.status(500).json({ error: 'Server error' });
+
+    res.json({ target: result.rows[0] });
+  } catch (err) {
+    console.error('[Copy] Update target error:', err.message);
+    res.status(500).json({ error: 'Failed to update copy target' });
   }
 });
 
-// DELETE /api/copy/targets/:id — remove a copy target
-router.delete('/targets/:id', async (req, res) => {
-  const targetId = parseInt(req.params.id);
-
+// --- Delete Copy Target ---
+router.delete('/targets/:id', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      'DELETE FROM copy_targets WHERE id=$1 AND user_id=$2 RETURNING id',
-      [targetId, req.userId]
+      'DELETE FROM copy_targets WHERE id = $1 AND user_id = $2 RETURNING *',
+      [req.params.id, req.userId]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Target not found' });
+      return res.status(404).json({ error: 'Copy target not found' });
     }
-    res.json({ success: true });
-  } catch(err) {
-    console.error('Delete target error:', err);
-    res.status(500).json({ error: 'Server error' });
+
+    res.json({ message: 'Copy target deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete copy target' });
   }
 });
 
-// POST /api/copy/start — start copy bot
-router.post('/start', async (req, res) => {
+// --- Start Copy Bot ---
+router.post('/start', authMiddleware, async (req, res) => {
   try {
-    if (global.botManager.isCopyRunning(req.userId)) {
-      return res.status(409).json({ error: 'Copy bot already running' });
+    const botManager = req.app.locals.botManager;
+
+    if (botManager.isCopyRunning(req.userId)) {
+      return res.status(400).json({ error: 'Copy bot already running' });
     }
 
-    // Load settings
-    const settingsResult = await pool.query('SELECT * FROM bot_settings WHERE user_id=$1', [req.userId]);
-    if (settingsResult.rows.length === 0) {
-      return res.status(400).json({ error: 'No bot settings found' });
+    const settings = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [req.userId]);
+    if (settings.rows.length === 0) {
+      return res.status(404).json({ error: 'Settings not found' });
     }
 
-    const settings = settingsResult.rows[0];
-    if (!settings.encrypted_private_key) {
-      return res.status(400).json({ error: 'Private key not configured' });
-    }
+    await botManager.startCopyBot(req.userId, settings.rows[0]);
+    await pool.query('UPDATE bot_settings SET copy_bot_active = true WHERE user_id = $1', [req.userId]);
 
-    await global.botManager.startCopyBot(req.userId, settings);
-    res.json({ success: true, message: 'Copy bot started' });
-  } catch(err) {
-    console.error('Start copy bot error:', err);
-    res.status(500).json({ error: err.message || 'Server error' });
+    res.json({ message: 'Copy bot started' });
+  } catch (err) {
+    console.error('[Copy] Start error:', err.message);
+    res.status(500).json({ error: `Failed to start copy bot: ${err.message}` });
   }
 });
 
-// POST /api/copy/stop — stop copy bot
-router.post('/stop', async (req, res) => {
+// --- Stop Copy Bot ---
+router.post('/stop', authMiddleware, async (req, res) => {
   try {
-    await global.botManager.stopCopyBot(req.userId);
-    res.json({ success: true, message: 'Copy bot stopped' });
-  } catch(err) {
-    console.error('Stop copy bot error:', err);
-    res.status(500).json({ error: 'Server error' });
+    const botManager = req.app.locals.botManager;
+
+    await botManager.stopCopyBot(req.userId);
+    await pool.query('UPDATE bot_settings SET copy_bot_active = false WHERE user_id = $1', [req.userId]);
+
+    res.json({ message: 'Copy bot stopped' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to stop copy bot' });
   }
 });
 
-// GET /api/copy/status — copy bot status
-router.get('/status', (req, res) => {
-  const status = global.botManager.getCopyStatus(req.userId);
-  res.json(status);
-});
-
-// GET /api/copy/trades — get user's copied trades
-router.get('/trades', async (req, res) => {
+// --- Copy Trade Stats ---
+router.get('/stats', authMiddleware, async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = (page - 1) * limit;
+    const countResult = await pool.query(
+      'SELECT COUNT(*) as count FROM trades WHERE user_id = $1 AND trade_type = $2',
+      [req.userId, 'copy']
+    );
 
-    const [trades, count] = await Promise.all([
-      pool.query(
-        `SELECT id, condition_id, direction, entry_price, size, market_prob, result, pnl, copy_source, created_at
-         FROM trades WHERE user_id=$1 AND trade_type='copy'
-         ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-        [req.userId, limit, offset]
-      ),
-      pool.query('SELECT COUNT(*) as count FROM trades WHERE user_id=$1 AND trade_type=\'copy\'', [req.userId])
-    ]);
+    const pnlResult = await pool.query(
+      'SELECT COALESCE(SUM(pnl), 0) as total_pnl FROM trades WHERE user_id = $1 AND trade_type = $2 AND status = $3',
+      [req.userId, 'copy', 'closed']
+    );
 
-    const total = parseInt(count.rows[0].count);
     res.json({
-      trades: trades.rows,
-      page,
-      limit,
-      total,
-      pages: Math.ceil(total / limit)
+      totalCopyTrades: parseInt(countResult.rows[0].count),
+      totalPnl: parseFloat(pnlResult.rows[0].total_pnl)
     });
-  } catch(err) {
-    console.error('Get copy trades error:', err);
-    res.status(500).json({ error: 'Server error' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch copy stats' });
   }
 });
 
