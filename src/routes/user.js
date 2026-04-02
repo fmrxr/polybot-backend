@@ -124,15 +124,15 @@ router.get('/dashboard', async (req, res) => {
 
     const stats = await pool.query(`
       SELECT
-        COUNT(*) as total_trades,
-        COUNT(*) FILTER (WHERE result = 'WIN') as wins,
-        COUNT(*) FILTER (WHERE result = 'LOSS') as losses,
-        COALESCE(SUM(pnl), 0) as total_pnl,
-        COALESCE(SUM(size), 0) as total_invested,
-        COALESCE(AVG(size), 0) as avg_trade_size,
-        COALESCE(MAX(pnl), 0) as best_trade,
-        COALESCE(MIN(pnl), 0) as worst_trade,
-        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0) as daily_pnl
+        COUNT(*) FILTER (WHERE result IS NOT NULL) as total_trades,
+        COUNT(*) FILTER (WHERE result = 'WIN' OR (result = 'CLOSED' AND pnl > 0)) as wins,
+        COUNT(*) FILTER (WHERE result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0)) as losses,
+        COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as total_pnl,
+        COALESCE(SUM(size) FILTER (WHERE size < 10000), 0) as total_invested,
+        COALESCE(AVG(size) FILTER (WHERE size < 10000), 0) as avg_trade_size,
+        COALESCE(MAX(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as best_trade,
+        COALESCE(MIN(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as worst_trade,
+        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
       FROM trades WHERE user_id = $1
     `, [req.userId]);
 
@@ -163,15 +163,15 @@ router.get('/stats', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(*) as total_trades,
-        COUNT(*) FILTER (WHERE result = 'WIN') as wins,
-        COUNT(*) FILTER (WHERE result = 'LOSS') as losses,
-        COALESCE(SUM(pnl), 0) as total_pnl,
-        COALESCE(SUM(size), 0) as total_invested,
-        COALESCE(AVG(size), 0) as avg_trade_size,
-        COALESCE(MAX(pnl), 0) as best_trade,
-        COALESCE(MIN(pnl), 0) as worst_trade,
-        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0) as daily_pnl
+        COUNT(*) FILTER (WHERE result IS NOT NULL) as total_trades,
+        COUNT(*) FILTER (WHERE result = 'WIN' OR (result = 'CLOSED' AND pnl > 0)) as wins,
+        COUNT(*) FILTER (WHERE result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0)) as losses,
+        COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as total_pnl,
+        COALESCE(SUM(size) FILTER (WHERE size < 10000), 0) as total_invested,
+        COALESCE(AVG(size) FILTER (WHERE size < 10000), 0) as avg_trade_size,
+        COALESCE(MAX(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as best_trade,
+        COALESCE(MIN(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as worst_trade,
+        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
       FROM trades WHERE user_id = $1
     `, [req.userId]);
 

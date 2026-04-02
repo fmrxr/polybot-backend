@@ -307,12 +307,13 @@ class BotInstance {
           return;
         }
 
-        // Hard deadline: T-5s — use best signal we've seen, or fallback
+        // Hard deadline: T-5s — use best REAL signal seen, never the fallback
         if (secsLeft <= HARD_DEADLINE_SEC) {
-          const fallback = bestSignal || this._fallbackSignal(btcData);
-          if (fallback) {
-            this._log('INFO', `⏰ T-5s hard deadline — using best signal: ${fallback.direction} (score: ${fallback.score?.toFixed(1) || '?'})`);
-            await this._executeTrade(fallback, market, tokens, windowTs);
+          if (bestSignal) {
+            this._log('INFO', `⏰ T-5s deadline — using best real signal: ${bestSignal.direction} (score: ${bestSignal.score?.toFixed(1) || '?'})`);
+            await this._executeTrade(bestSignal, market, tokens, windowTs);
+          } else {
+            this._log('INFO', `⏰ T-5s deadline — no qualified signal this window, skipping`);
           }
           this.lastWindowTs = windowTs;
           return;
@@ -587,9 +588,10 @@ class BotInstance {
         }
 
         if (shouldExit) {
+          const exitResult = unrealizedPnL > 0 ? 'WIN' : 'LOSS';
           await pool.query(
-            `UPDATE trades SET result='CLOSED', pnl=$1, resolved_at=NOW(), order_status=$2, exit_reason=$3 WHERE id=$4`,
-            [unrealizedPnL, exitReason, exitReason, tradeId]
+            `UPDATE trades SET result=$1, pnl=$2, resolved_at=NOW(), order_status=$3, exit_reason=$4 WHERE id=$5`,
+            [exitResult, unrealizedPnL, exitReason, exitReason, tradeId]
           );
           // Add back trade size + P&L to paper balance
           if (trade.paper) {

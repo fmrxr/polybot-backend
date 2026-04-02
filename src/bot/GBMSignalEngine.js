@@ -122,13 +122,18 @@ class GBMSignalEngine {
         // 🟡 GATE 2: EV COST ADJUSTMENT
         // Calculate: EV_raw - (spread + slippage) >= 3% minimum
         // Use modelProb tied directly to latency edge strength
-        const modelProb = 0.5 + (micro.confidence - 0.5) * 0.6; // Key fix: ties to edge strength
-        const marketProb = chainlinkPrice || currentPrice; // Market price is entry price
+        const modelProb = 0.5 + (micro.confidence - 0.5) * 0.6; // ties to edge strength
+        // Token price is a probability (0–1). Use orderbook mid if available,
+        // otherwise default to 0.50 (fair coin at window open). BTC price must NOT be used here.
+        const tokenMid = (bid != null && bid < 1 && ask != null && ask < 1)
+          ? (bid + ask) / 2
+          : 0.50;
+        const marketProb = tokenMid;
 
         const ev = this.evEngine.recommend({
-          priceYes: chainlinkPrice || currentPrice,
-          bid: bid || (currentPrice * 0.995),
-          ask: ask || (currentPrice * 1.005),
+          priceYes: tokenMid,
+          bid: (bid != null && bid < 1) ? bid : 0.48,
+          ask: (ask != null && ask < 1) ? ask : 0.52,
           modelProb,
           direction: obImbalance > 0 ? 'UP' : 'DOWN',
           orderSize: 20,
