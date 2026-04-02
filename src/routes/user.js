@@ -107,9 +107,15 @@ router.put('/settings', async (req, res) => {
 // GET /api/user/dashboard
 router.get('/dashboard', async (req, res) => {
   try {
-    const settingsResult = await pool.query('SELECT polymarket_wallet_address FROM bot_settings WHERE user_id = $1', [req.userId]);
+    const settingsResult = await pool.query(
+      'SELECT polymarket_wallet_address, paper_trading, paper_balance FROM bot_settings WHERE user_id = $1',
+      [req.userId]
+    );
     const walletAddress = settingsResult.rows[0]?.polymarket_wallet_address || null;
+    const isPaperMode = settingsResult.rows[0]?.paper_trading !== false;
+    const paperBalance = parseFloat(settingsResult.rows[0]?.paper_balance) || 0;
 
+    // Try running bot first (faster, already authenticated)
     let balance = null;
     if (walletAddress && global.botManager && global.botManager.instances) {
       try {
@@ -119,6 +125,38 @@ router.get('/dashboard', async (req, res) => {
         }
       } catch (e) {
         console.error('Balance fetch error:', e.message);
+      }
+    }
+
+    // Fallback: direct Polygon RPC call — works even when bot is stopped
+    if (!balance && walletAddress) {
+      try {
+        const axios = require('axios');
+        const data = '0x70a08231' + walletAddress.replace('0x', '').padStart(64, '0');
+        const rpcs = ['https://polygon-rpc.com', 'https://rpc.ankr.com/polygon'];
+        const contracts = [
+          '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC.e (Polymarket uses this)
+          '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'  // Native USDC
+        ];
+        let totalBal = 0;
+        for (const contract of contracts) {
+          for (const rpc of rpcs) {
+            try {
+              const res = await axios.post(rpc, {
+                jsonrpc: '2.0', method: 'eth_call',
+                params: [{ to: contract, data }, 'latest'], id: 1
+              }, { timeout: 4000 });
+              const hex = res.data?.result;
+              if (hex && hex.length > 2 && hex !== '0x' + '0'.repeat(64)) {
+                totalBal += parseInt(hex, 16) / 1e6;
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+        balance = { usdc_balance: totalBal, address: walletAddress };
+      } catch (e) {
+        console.error('Direct balance fetch error:', e.message);
       }
     }
 
@@ -141,7 +179,9 @@ router.get('/dashboard', async (req, res) => {
     const roi = s.total_invested > 0 ? (s.total_pnl / s.total_invested * 100).toFixed(2) : 0;
 
     res.json({
-      polymarket_balance: balance?.usdc_balance || 0,
+      polymarket_balance: balance?.usdc_balance ?? null, // null = unknown, 0 = confirmed zero
+      paper_trading: isPaperMode,
+      paper_balance: paperBalance,
       wallet_address: walletAddress,
       total_trades: parseInt(s.total_trades),
       wins: parseInt(s.wins),

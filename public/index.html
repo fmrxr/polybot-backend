@@ -1054,7 +1054,7 @@
               <span>Wallet: <span id="walletAddressDisplay" style="font-family: monospace; font-size: 12px;">Not configured</span></span>
             </div>
             <div style="padding-left: 20px; font-size: 13px; color: var(--text-muted);">
-              USDC Balance: <span id="usdcBalanceDisplay" style="color: var(--trade-green); font-weight: bold;">—</span>
+              <span class="balance-label">USDC Balance:</span> <span id="usdcBalanceDisplay" style="color: var(--trade-green); font-weight: bold;">—</span>
             </div>
           </div>
           <div class="connection-item">
@@ -1674,6 +1674,20 @@
           document.getElementById('pnlStatus').className = 'metric-status yellow';
         }
 
+        // Sync mode indicator to actual running bot mode (or DB setting if stopped)
+        const modeEl = document.getElementById('modeIndicator');
+        if (modeEl) {
+          if (data.paper_trading !== false) {
+            modeEl.textContent = '📋 PAPER MODE';
+            modeEl.style.borderColor = 'var(--gate2-green)';
+            modeEl.style.color = 'var(--gate2-green)';
+          } else {
+            modeEl.textContent = '🔴 LIVE TRADING';
+            modeEl.style.borderColor = 'var(--danger)';
+            modeEl.style.color = 'var(--danger)';
+          }
+        }
+
         // Update connection status dots from live market_data
         const md = data.market_data;
         if (md) {
@@ -1740,13 +1754,26 @@
           walletDot.style.background = 'var(--danger)';
         }
 
-        // USDC balance
+        // Balance display — paper mode shows paper balance, live mode shows USDC
         const balEl = document.getElementById('usdcBalanceDisplay');
-        if (data.polymarket_balance != null) {
-          balEl.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+        const balLabelEls = document.querySelectorAll('.balance-label');
+        if (data.paper_trading) {
+          balEl.textContent = `$${parseFloat(data.paper_balance || 0).toFixed(2)} PAPER`;
+          balEl.style.color = '#f59e0b';
+          balLabelEls.forEach(el => el.textContent = 'Paper Balance:');
+        } else {
+          if (data.polymarket_balance !== null) {
+            balEl.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+          } else {
+            balEl.textContent = '— USDC';
+          }
+          balEl.style.color = 'var(--trade-green)';
+          balLabelEls.forEach(el => el.textContent = 'USDC Balance:');
           // Also update settings tab balance display
           const pmBal = document.getElementById('polymarketBalance');
-          if (pmBal) pmBal.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+          if (pmBal && data.polymarket_balance !== null) {
+            pmBal.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+          }
         }
 
         // Claude connection status
@@ -2356,9 +2383,9 @@
           showAlert('No wallet address configured — save it in Settings first', 'error');
           return;
         }
-        const bal = parseFloat(data.polymarket_balance || 0).toFixed(2);
-        document.getElementById('polymarketBalance').textContent = `$${bal} USDC`;
-        showAlert(`Wallet ${data.wallet_address.slice(0,8)}... — Balance: $${bal} USDC`, 'success');
+        const bal = data.polymarket_balance !== null ? parseFloat(data.polymarket_balance).toFixed(2) : '—';
+        document.getElementById('polymarketBalance').textContent = data.polymarket_balance !== null ? `$${bal} USDC` : 'Could not fetch balance';
+        showAlert(`Wallet ${data.wallet_address.slice(0,8)}... — Balance: ${data.polymarket_balance !== null ? '$'+bal+' USDC' : 'unavailable (bot may need to be running)'}`, data.polymarket_balance !== null ? 'success' : 'info');
         await loadDashboard();
       } catch (err) {
         showAlert('Connection test failed: ' + err.message, 'error');
