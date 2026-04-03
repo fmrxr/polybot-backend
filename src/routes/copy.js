@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
-const authMiddleware = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 const ALLOWED_COPY_TARGET_FIELDS = ['label', 'multiplier', 'max_trade_size', 'is_active', 'min_whale_score'];
 

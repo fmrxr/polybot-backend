@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
-const authMiddleware = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 const { decrypt } = require('../services/encryption');
 
 // --- Test Claude API Key (uses stored key, not raw body) ---
