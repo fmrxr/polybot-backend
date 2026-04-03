@@ -211,8 +211,31 @@ class PolymarketFeed {
           markets.forEach(m => console.log(`  "${(m.question||'').trim().slice(0,60)}" | slug=${m.slug||'?'}`));
           const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
           if (btc.length > 0) {
-            console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s)`);
-            return btc.map(_normalise).filter(Boolean);
+            console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) — raw fields: ${Object.keys(btc[0]).join(', ')}`);
+            console.log(`[PolymarketFeed] S1 btc[0] dates: end_date_iso=${btc[0].end_date_iso} endDateIso=${btc[0].endDateIso} endDate=${btc[0].endDate}`);
+            // Try _normaliseMarket first
+            const normalised = btc.map(_normalise).filter(Boolean);
+            if (normalised.length > 0) return normalised;
+            // normalise returned empty — build directly from Gamma data (already validated by end_date_min/max)
+            console.warn('[PolymarketFeed] S1: _normalise returned null for all — building directly');
+            const direct = btc.map(m => {
+              const endMs = _endMs(m);
+              if (!endMs || endMs <= nowUTC) { console.warn(`[PolymarketFeed] S1 direct: endMs=${endMs} nowUTC=${nowUTC} — skipping`); return null; }
+              const tokens = m.tokens || [];
+              let clobIds = m.clobTokenIds || m.clob_token_ids;
+              if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = []; } }
+              if (!clobIds || !clobIds.length) clobIds = tokens.map(t => t.token_id || t.tokenId).filter(Boolean);
+              return {
+                ...m,
+                id: m.id || m.conditionId || m.condition_id,
+                question: m.question || m.title || '',
+                tokens,
+                clobTokenIds: clobIds || [],
+                end_date_iso: new Date(endMs).toISOString(),
+                start_date_iso: new Date(endMs - 300000).toISOString(),
+              };
+            }).filter(Boolean);
+            if (direct.length > 0) { console.log(`[PolymarketFeed] S1 direct builder: ${direct.length} market(s)`); return direct; }
           }
         }
       } else {
@@ -232,7 +255,10 @@ class PolymarketFeed {
           const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
           if (btc.length > 0) {
             console.log(`[PolymarketFeed] S2 accepting_orders found ${btc.length} BTC market(s)`);
-            return btc.map(_normalise).filter(Boolean);
+            const normalised = btc.map(_normalise).filter(Boolean);
+            if (normalised.length > 0) return normalised;
+            // Fall through — normalise failed, S3 will try
+            console.warn('[PolymarketFeed] S2: _normalise returned null for all');
           }
           // Log slugs of anything short-lived so we can see the slug pattern
           const anyShort = markets.filter(m => { const ms = _endMs(m); return ms > nowUTC && (ms-nowUTC) < 3600000; });
