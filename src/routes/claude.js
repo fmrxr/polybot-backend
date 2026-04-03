@@ -128,6 +128,16 @@ Be specific with numbers. If you recommend changing a threshold, state the exact
     const result = await response.json();
     const analysis = result.content?.[0]?.text || 'No analysis generated';
 
+    // Compute total PnL from trades for history record
+    const totalPnl = trades.rows.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+
+    // Persist analysis to claude_analyses table
+    await pool.query(
+      `INSERT INTO claude_analyses (user_id, analysis, feedback, trade_count, signal_count, total_pnl)
+       VALUES ($1, $2, $2, $3, $4, $5)`,
+      [req.userId, analysis, trades.rows.length, signals.rows.length, totalPnl]
+    );
+
     // Update last analysis timestamp
     await pool.query(
       'UPDATE bot_settings SET claude_last_analysis = NOW() WHERE user_id = $1',
@@ -159,8 +169,22 @@ router.get('/latest-feedback', authMiddleware, async (req, res) => {
     if (!result.rows.length) return res.json({ analysis: null });
     res.json({ analysis: result.rows[0].analysis, timestamp: result.rows[0].created_at });
   } catch (err) {
-    // Table may not exist yet — return null gracefully
     res.json({ analysis: null });
+  }
+});
+
+// GET /api/claude/history — return list of past analyses
+router.get('/history', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const result = await pool.query(
+      `SELECT id, analysis AS feedback, trade_count, signal_count, total_pnl, created_at
+       FROM claude_analyses WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [req.userId, limit]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.json([]);
   }
 });
 

@@ -456,12 +456,12 @@
     </div>
     <div class="metric-card">
       <div class="metric-label">Avg EV_adj</div>
-      <div class="metric-value"><span id="avgEV">—</span><span class="metric-unit">% avg</span></div>
+      <div class="metric-value"><span id="avgEV">—</span><span class="metric-unit"> avg</span></div>
       <div class="metric-status green" id="avgEVStatus">On Target</div>
     </div>
     <div class="metric-card">
       <div class="metric-label">Gate 1 Trigger Rate</div>
-      <div class="metric-value"><span id="marketLag">—</span><span class="metric-unit">% rate</span></div>
+      <div class="metric-value"><span id="marketLag">—</span><span class="metric-unit"> rate</span></div>
       <div class="metric-status green" id="marketLagStatus">Active</div>
     </div>
     <div class="metric-card">
@@ -1694,7 +1694,7 @@
       if (res.ok) { showAlert('Analysis complete', 'success'); await loadClaudeAnalysis(); }
       else { const err = await res.json().catch(()=>({})); showAlert(err.error||'Failed to get analysis', 'error'); if (feedbackEl) feedbackEl.innerHTML = ''; }
     } catch (err) { showAlert('Error contacting Claude', 'error'); }
-    finally { btns.forEach(b => { b.disabled = false; b.textContent = b.closest('#claude') ? 'Analyze Now' : 'Analyze Now'; }); }
+    finally { btns.forEach(b => { b.disabled = false; b.textContent = 'Analyze Now'; }); }
   }
 
   function toggleAutoAnalysis() {

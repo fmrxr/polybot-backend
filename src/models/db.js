@@ -129,6 +129,17 @@ const initDB = async () => {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS claude_analyses (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        analysis TEXT,
+        feedback TEXT,
+        trade_count INTEGER DEFAULT 0,
+        signal_count INTEGER DEFAULT 0,
+        total_pnl DECIMAL(20,2) DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS admin_logs (
         id SERIAL PRIMARY KEY,
         admin_user_id INTEGER REFERENCES users(id),
