@@ -173,8 +173,8 @@ class GBMSignalEngine {
 
         const totalEdge = btcEdge + microEdge;
 
-        const bullish = btcDelta > 0.05;  // require ≥0.05% 30s move for a directional call
-        const bearish = btcDelta < -0.05;
+        const bullish = btcDelta > 0.02;  // require ≥0.02% 30s move for a directional call (~$13 on $66k BTC)
+        const bearish = btcDelta < -0.02;
 
         let modelProb;
         if (bullish) {
@@ -204,7 +204,7 @@ class GBMSignalEngine {
         // Spread is a COST COMPONENT, not a gate
         // ==========================================
         const costs = {
-          spread: spread,
+          spread: Math.min(spread, 0.03), // cap at 3% — maker adverse selection only; full spread is not a cost for limit orders
           estimatedSlippage: 0.005,
           fees: 0.002
         };
