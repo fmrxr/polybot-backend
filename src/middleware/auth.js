@@ -1,12 +1,16 @@
 const jwt = require('jsonwebtoken');
 
 function authMiddleware(req, res, next) {
+  // SSE clients (EventSource) can't set headers — accept token via query param as fallback
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const token = (authHeader && authHeader.startsWith('Bearer '))
+    ? authHeader.split(' ')[1]
+    : req.query.token; // ?token=<jwt> for SSE
+
+  if (!token) {
     return res.status(401).json({ error: 'No token provided' });
   }
 
-  const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.userId = decoded.userId;

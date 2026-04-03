@@ -727,6 +727,73 @@
     </div>
   </div>
 
+  <!-- Live Market Viewer — SSE-powered, 200ms updates -->
+  <div class="panel" id="liveMarketPanel">
+    <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <span class="panel-title">Live Market Feed</span>
+      <span id="liveStreamStatus" style="font-size:10px;letter-spacing:1.5px;color:var(--text-muted);">● DISCONNECTED</span>
+    </div>
+    <div class="panel-body" style="padding:0;">
+      <!-- Market header row -->
+      <div id="liveMarketHeader" style="padding:12px 16px;border-bottom:1px solid var(--border);display:none;">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">
+          <span style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);">Market</span>
+          <span id="lvMarketQ" style="color:var(--text-hi);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">—</span>
+          <span id="lvWindowTimer" style="color:var(--amber);font-size:13px;font-weight:600;white-space:nowrap;">—</span>
+        </div>
+      </div>
+
+      <!-- Metric grid -->
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0;border-bottom:1px solid var(--border);">
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">BTC Price</div>
+          <div id="lvBTCPrice" style="font-size:18px;font-weight:700;color:var(--text-hi);">—</div>
+        </div>
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">BTC Δ 30s</div>
+          <div id="lvBTCDelta" style="font-size:18px;font-weight:700;">—</div>
+        </div>
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">YES Price</div>
+          <div id="lvYesPrice" style="font-size:18px;font-weight:700;color:var(--green);">—</div>
+        </div>
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">NO Price</div>
+          <div id="lvNoPrice" style="font-size:18px;font-weight:700;color:var(--red);">—</div>
+        </div>
+        <div style="padding:12px 16px;">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">EV_adj</div>
+          <div id="lvEV" style="font-size:18px;font-weight:700;">—</div>
+        </div>
+      </div>
+
+      <!-- EV sparkline + secondary metrics -->
+      <div style="display:grid;grid-template-columns:1fr auto;gap:0;align-items:center;padding:10px 16px;">
+        <div style="flex:1;">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">EV History</div>
+          <svg id="lvEVChart" width="100%" height="32" style="display:block;overflow:visible;">
+            <polyline id="lvEVLine" fill="none" stroke="var(--green)" stroke-width="1.5" points=""/>
+            <line id="lvEVZero" x1="0" y1="16" x2="100%" y2="16" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+          </svg>
+        </div>
+        <div style="display:flex;gap:20px;margin-left:20px;flex-shrink:0;">
+          <div style="text-align:center;">
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">OB Imbal</div>
+            <div id="lvImbalance" style="font-size:13px;font-weight:600;color:var(--cyan);">—</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Flips</div>
+            <div id="lvFlips" style="font-size:13px;font-weight:600;color:var(--amber);">—</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Balance</div>
+            <div id="lvBalance" style="font-size:13px;font-weight:600;color:var(--text-hi);">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Decision Stream -->
   <div class="panel">
     <div class="panel-header"><span class="panel-title">Decision Stream</span></div>
@@ -1099,6 +1166,9 @@
       setInterval(loadDashboard, 30000);
       setInterval(loadGateStats, 30000);
 
+      // Start real-time SSE stream for live market viewer
+      initLiveStream();
+
       loadSettingsIntoForms(userSettings);
     } catch (err) {
       console.error('Init error:', err);
@@ -1113,6 +1183,7 @@
     event?.target.classList.add('active');
     if (pageId === 'claude') loadClaudeAnalysis();
     if (pageId === 'trades') loadTrades();
+    if (pageId === 'signals') { loadGateStats(); loadSignals(); }
   }
 
   function switchSettingsTab(tabId) {
@@ -1895,6 +1966,160 @@
   document.addEventListener('click', e => {
     if (e.target.classList.contains('modal')) e.target.classList.remove('active');
   });
+
+  // ═══════════════════════════════════════════ LIVE MARKET STREAM (SSE) ═══
+  // Connects to /api/bot/stream and updates the Live Market Feed panel in
+  // real time without page polling. Renders at up to 5Hz (200ms intervals).
+
+  const _liveEVHistory = []; // ring buffer of last 60 EV readings
+  const _maxEVHistory  = 60;
+  let   _liveES        = null; // EventSource instance
+  let   _liveTimer     = null; // countdown interval
+
+  function initLiveStream() {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    // SSE: EventSource doesn't support custom headers, so pass token as query param
+    // The authMiddleware on the server reads from req.query.token as fallback
+    const url = `${window.API_BASE || ''}/api/bot/stream?token=${encodeURIComponent(token)}`;
+
+    if (_liveES) { _liveES.close(); }
+
+    _liveES = new EventSource(url);
+
+    _liveES.onopen = () => {
+      const el = document.getElementById('liveStreamStatus');
+      if (el) { el.textContent = '● LIVE'; el.style.color = 'var(--green)'; }
+    };
+
+    _liveES.onmessage = (e) => {
+      try { renderLiveState(JSON.parse(e.data)); } catch (_) {}
+    };
+
+    _liveES.onerror = () => {
+      const el = document.getElementById('liveStreamStatus');
+      if (el) { el.textContent = '● RECONNECTING'; el.style.color = 'var(--amber)'; }
+      // EventSource auto-reconnects; no manual retry needed
+    };
+  }
+
+  function renderLiveState(state) {
+    if (!state || state.error) {
+      // Bot not running — show offline state
+      const el = document.getElementById('liveStreamStatus');
+      if (el) { el.textContent = '● BOT OFFLINE'; el.style.color = 'var(--text-muted)'; }
+      return;
+    }
+
+    const el = id => document.getElementById(id);
+
+    // BTC Price
+    if (state.btcPrice != null) {
+      const p = el('lvBTCPrice');
+      if (p) p.textContent = '$' + parseFloat(state.btcPrice).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    }
+
+    // BTC 30s Delta
+    if (state.btcDelta != null) {
+      const d = parseFloat(state.btcDelta);
+      const dEl = el('lvBTCDelta');
+      if (dEl) {
+        dEl.textContent = (d >= 0 ? '+' : '') + d.toFixed(3) + '%';
+        dEl.style.color = d > 0.05 ? 'var(--green)' : d < -0.05 ? 'var(--red)' : 'var(--text-muted)';
+      }
+    }
+
+    // OB Imbalance
+    if (state.btcImbalance != null) {
+      const im = el('lvImbalance');
+      if (im) {
+        const v = parseFloat(state.btcImbalance);
+        im.textContent = (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+        im.style.color = v > 0.1 ? 'var(--green)' : v < -0.1 ? 'var(--red)' : 'var(--cyan)';
+      }
+    }
+
+    // Flip count
+    if (state.flipCount != null) {
+      const f = el('lvFlips'); if (f) f.textContent = state.flipCount;
+    }
+
+    // Balance
+    if (state.paperBalance != null) {
+      const b = el('lvBalance');
+      if (b) b.textContent = '$' + parseFloat(state.paperBalance).toFixed(2);
+    }
+
+    // Markets — pick first active one
+    const mkt = (state.markets || [])[0];
+    const hdr = el('liveMarketHeader');
+    if (mkt) {
+      if (hdr) hdr.style.display = '';
+      const q = el('lvMarketQ'); if (q) q.textContent = mkt.question || '—';
+
+      // Countdown timer
+      if (mkt.endIso) {
+        const secLeft = Math.max(0, Math.floor((new Date(mkt.endIso).getTime() - Date.now()) / 1000));
+        const wt = el('lvWindowTimer');
+        if (wt) {
+          const m = Math.floor(secLeft / 60), s = secLeft % 60;
+          wt.textContent = `${m}:${String(s).padStart(2, '0')} left`;
+          wt.style.color = secLeft < 60 ? 'var(--red)' : secLeft < 120 ? 'var(--amber)' : 'var(--green)';
+        }
+      }
+
+      // EV stats for this market
+      const evStats = state.evStats?.[mkt.id];
+      if (evStats?.currentEV != null) {
+        const ev = parseFloat(evStats.currentEV);
+        const evEl = el('lvEV');
+        if (evEl) {
+          evEl.textContent = ev.toFixed(2) + '%';
+          evEl.style.color = ev >= 5 ? 'var(--green)' : ev >= 2 ? 'var(--amber)' : 'var(--red)';
+        }
+        // Append to history ring buffer
+        _liveEVHistory.push(ev);
+        if (_liveEVHistory.length > _maxEVHistory) _liveEVHistory.shift();
+        _renderEVSparkline();
+      }
+    } else {
+      if (hdr) hdr.style.display = 'none';
+      const wt = el('lvWindowTimer'); if (wt) wt.textContent = 'No active window';
+    }
+  }
+
+  function _renderEVSparkline() {
+    const svg   = document.getElementById('lvEVChart');
+    const line  = document.getElementById('lvEVLine');
+    const zero  = document.getElementById('lvEVZero');
+    if (!svg || !line || _liveEVHistory.length < 2) return;
+
+    const W = svg.clientWidth || 400;
+    const H = 32;
+    const vals = _liveEVHistory;
+    const min  = Math.min(...vals, 0);
+    const max  = Math.max(...vals, 5);
+    const range = max - min || 1;
+
+    const pts = vals.map((v, i) => {
+      const x = (i / (vals.length - 1)) * W;
+      const y = H - ((v - min) / range) * H;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    line.setAttribute('points', pts);
+
+    // Zero line position
+    const zeroY = H - ((0 - min) / range) * H;
+    if (zero) { zero.setAttribute('y1', zeroY); zero.setAttribute('y2', zeroY); }
+
+    // Color by last EV
+    const last = vals[vals.length - 1];
+    line.setAttribute('stroke', last >= 5 ? 'var(--green)' : last >= 2 ? 'var(--amber)' : 'var(--red)');
+  }
+
+  // ─── Patch authMiddleware to also accept ?token= query param for SSE ─────
+  // (Applied server-side — see note in bot.js. This comment is just a reminder.)
 </script>
 </body>
 </html>

@@ -46,6 +46,10 @@ class BotManager {
     }
   }
 
+  getBot(userId) {
+    return this.instances.get(userId) || null;
+  }
+
   getBotStatus(userId) {
     const bot = this.instances.get(userId);
     return bot ? bot.getStatus() : null;

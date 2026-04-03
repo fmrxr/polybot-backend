@@ -192,4 +192,57 @@ router.get('/gate-stats', authMiddleware, async (req, res) => {
   }
 });
 
+// ─── Real-time SSE stream ───────────────────────────────────────────────────
+// Pushes bot state snapshots every 200ms without polling.
+// Frontend: const es = new EventSource('/api/bot/stream?token=<jwt>')
+router.get('/stream', authMiddleware, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx/Railway buffering
+  res.flushHeaders();
+
+  const botManager = req.app.locals.botManager;
+  const bot = botManager.getBot(req.userId);
+
+  if (!bot) {
+    res.write(`data: ${JSON.stringify({ error: 'Bot not running', ts: Date.now() })}\n\n`);
+    // Keep connection open so client can reconnect when bot starts
+    const retry = setInterval(() => {
+      const b = botManager.getBot(req.userId);
+      if (b) {
+        clearInterval(retry);
+        attach(b);
+      } else {
+        res.write(`data: ${JSON.stringify({ error: 'Bot not running', ts: Date.now() })}\n\n`);
+      }
+    }, 2000);
+    req.on('close', () => clearInterval(retry));
+    return;
+  }
+
+  attach(bot);
+
+  function attach(b) {
+    const onState = (state) => {
+      try { res.write(`data: ${JSON.stringify(state)}\n\n`); } catch (_) {}
+    };
+    b.streamEmitter.on('state', onState);
+    // Send last known state immediately so client renders without waiting 200ms
+    if (b._lastStreamState?.ts) {
+      try { res.write(`data: ${JSON.stringify(b._lastStreamState)}\n\n`); } catch (_) {}
+    }
+    req.on('close', () => b.streamEmitter.off('state', onState));
+  }
+});
+
+// ─── Polling fallback: GET /live-state ─────────────────────────────────────
+// Returns last snapshot synchronously for clients that can't use SSE.
+router.get('/live-state', authMiddleware, (req, res) => {
+  const botManager = req.app.locals.botManager;
+  const bot = botManager.getBot(req.userId);
+  if (!bot) return res.json({ error: 'Bot not running', ts: Date.now() });
+  res.json(bot._lastStreamState || { ts: Date.now(), isRunning: false });
+});
+
 module.exports = router;

@@ -1,4 +1,5 @@
 const { pool } = require('../models/db');
+const { EventEmitter } = require('events');
 const GBMSignalEngine = require('./GBMSignalEngine');
 const BinanceFeed = require('./BinanceFeed');
 const ChainlinkFeed = require('./ChainlinkFeed');
@@ -37,6 +38,13 @@ class BotInstance {
     // Logs
     this.decisionLog = [];
     this.maxLogEntries = 100;
+
+    // Real-time streaming (SSE) — emits 'state' events every 200ms while running
+    this.streamEmitter = new EventEmitter();
+    this.streamEmitter.setMaxListeners(50); // allow many concurrent SSE clients
+    this.streamInterval = null;
+    // Last computed microstructure + EV data for broadcasting
+    this._lastStreamState = {};
   }
 
   async start() {
@@ -77,6 +85,9 @@ class BotInstance {
       const intervalMs = (this.settings.snipe_timer_seconds || 10) * 1000;
       this.loopInterval = setInterval(() => this._mainLoop(), intervalMs);
 
+      // Real-time streaming loop — 200ms interval, non-blocking, for SSE clients
+      this.streamInterval = setInterval(() => this._broadcastState(), 200);
+
       this._log('INFO', `✅ Bot started. Interval: ${intervalMs / 1000}s, Paper: ${this.settings.paper_trading}`);
 
       await pool.query('UPDATE bot_settings SET is_active = true WHERE user_id = $1', [this.userId]);
@@ -95,6 +106,10 @@ class BotInstance {
     if (this.loopInterval) {
       clearInterval(this.loopInterval);
       this.loopInterval = null;
+    }
+    if (this.streamInterval) {
+      clearInterval(this.streamInterval);
+      this.streamInterval = null;
     }
 
     if (this.binance) this.binance.disconnect();
@@ -390,7 +405,8 @@ class BotInstance {
         const btcDelta = this.binance.getWindowDeltaScore(30);
         const latency = this.signalEngine?.microEngine?.detectLatency() || 0;
         const exitLagEdge = latency > 0.3 ? 0.05 : 0;
-        const exitBtcEdge = Math.min(Math.abs(btcDelta) * 0.05, 0.10);
+        // FIX: btcDelta is already in % — multiply by 0.5 not 0.05 (was 10x too small)
+        const exitBtcEdge = Math.min(Math.abs(btcDelta) * 0.5, 0.15);
         const exitTotalEdge = exitBtcEdge + exitLagEdge;
         const exitBullish = btcDelta > 0;
         const currentModelProb = Math.min(0.99, Math.max(0.01,
@@ -643,6 +659,59 @@ class BotInstance {
     }
   }
 
+  // ==========================================
+  // REAL-TIME STATE BROADCAST (SSE)
+  // ==========================================
+
+  /**
+   * Builds and emits a lightweight state snapshot every 200ms.
+   * SSE clients in bot.js subscribe to streamEmitter 'state' events.
+   * Does NOT block the main loop — synchronous reads only.
+   */
+  _broadcastState() {
+    if (!this.isRunning) return;
+    try {
+      const btcPrice  = this.binance?.getPrice() || null;
+      const btcDelta  = btcPrice ? this.binance.getWindowDeltaScore(30) : null;
+      const btcImbal  = btcPrice ? this.binance.getOrderBookImbalance() : null;
+
+      // Markets from polymarket cache (shallow copy — no awaits here)
+      const markets = (this.polymarket?.marketsCache || []).map(m => ({
+        id:        m.id || m.condition_id,
+        question:  m.question,
+        endIso:    m.end_date_iso,
+        startIso:  m.start_date_iso,
+      }));
+
+      // EV stats per market from signal engine
+      const evStats = {};
+      for (const mkt of markets) {
+        if (!mkt.id) continue;
+        const stats = this.evEngine.getEVStats(mkt.id);
+        if (stats.currentEV !== null) evStats[mkt.id] = stats;
+      }
+
+      const state = {
+        ts:          Date.now(),
+        btcPrice,
+        btcDelta,
+        btcImbalance: btcImbal,
+        markets,
+        evStats,
+        paperBalance: this.paperBalance,
+        peakBalance:  this.peakBalance,
+        isRunning:    this.isRunning,
+        flipCount:    this.recentFlips.length,
+        drawdownActive: !!(this.drawdownCooldownUntil && Date.now() < this.drawdownCooldownUntil),
+      };
+
+      this._lastStreamState = state;
+      this.streamEmitter.emit('state', state);
+    } catch (err) {
+      // Never crash main bot from broadcast errors
+    }
+  }
+
   getStatus() {
     return {
       isRunning: this.isRunning,
@@ -655,7 +724,8 @@ class BotInstance {
       flipCount: this.recentFlips.length,
       avgSlippage: this.getAverageSlippage(),
       drawdownCooldownUntil: this.drawdownCooldownUntil,
-      recentLogs: this.decisionLog.slice(-20)
+      recentLogs: this.decisionLog.slice(-20),
+      lastStreamState: this._lastStreamState,
     };
   }
 }
