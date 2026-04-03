@@ -192,68 +192,113 @@ class PolymarketFeed {
   }
 
   /**
-   * CLOB SDK paginated market scan — primary strategy for 5-min BTC markets.
+   * CLOB market discovery — primary strategy for 5-min BTC markets.
    *
-   * 5-min BTC markets are ONLY in the CLOB, not in Gamma. They appear at an
-   * unpredictable page (sorted by condition_id hash), so we scan up to 20 pages
-   * (~2000 markets). No early exit on BTC count — we keep going until we find
-   * a SHORT-DURATION market or exhaust pages.
+   * Strategy A: REST API with accepting_orders=true — only returns markets
+   *   currently open for trading (avoids the 20k historical market problem).
+   * Strategy B: getSamplingMarkets() SDK method — active sampling markets.
+   * Strategy C: Gamma slug search — bitcoin-up-or-down events sorted by end_date.
    */
   async _fetchViaCLOB() {
     if (!this.clobClient) return [];
+    const now = Date.now();
+    const nowSec = Math.floor(now / 1000);
+
+    // Strategy A: REST accepting_orders=true — only live, tradeable markets
     try {
-      const now = Date.now();
-      const nowSec = Math.floor(now / 1000);
-      let allMarkets = [];
-      let cursor;
-      const MAX_PAGES = 20; // scan up to 2000 markets
-
-      for (let page = 0; page < MAX_PAGES; page++) {
-        let response;
-        try {
-          response = cursor
-            ? await this.clobClient.getMarkets(cursor)
-            : await this.clobClient.getMarkets();
-        } catch (pageErr) {
-          console.warn(`[PolymarketFeed] CLOB page ${page + 1} error: ${pageErr.message}`);
-          break;
-        }
-
-        const pageMarkets = Array.isArray(response) ? response
-          : (response?.data || response?.markets || []);
-
-        allMarkets = allMarkets.concat(pageMarkets);
-
-        const nextCursor = response?.next_cursor;
-        if (!nextCursor || nextCursor === 'LTE=' || pageMarkets.length === 0) break;
-        cursor = nextCursor;
+      let aoMarkets = [];
+      let aoCursor;
+      for (let p = 0; p < 5; p++) {
+        const qs = 'accepting_orders=true&limit=500' + (aoCursor ? `&next_cursor=${aoCursor}` : '');
+        const res = await fetch(`https://clob.polymarket.com/markets?${qs}`, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) break;
+        const data = await res.json();
+        const page = Array.isArray(data) ? data : (data?.data || data?.markets || []);
+        aoMarkets = aoMarkets.concat(page);
+        const next = data?.next_cursor;
+        if (!next || next === 'LTE=' || page.length === 0) break;
+        aoCursor = next;
       }
-
-      // Collect ALL BTC markets found regardless of duration first
-      const allBTC = allMarkets.filter(m => {
+      const btc = aoMarkets.filter(m => {
         const q = (m.question || '').toLowerCase();
         return q.includes('btc') || q.includes('bitcoin');
       });
-      console.log(`[PolymarketFeed] CLOB scanned ${allMarkets.length} markets, ${allBTC.length} BTC-related`);
-
-      // Log all BTC markets with their end dates for diagnostics
-      allBTC.forEach(m => {
-        const rawEnd = m.end_date_iso || m.endDateIso;
-        const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-        const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(1) : '?';
-        console.log(`  [CLOB BTC] "${m.question?.slice(0, 60)}" → ends in ${minsLeft} min`);
-      });
-
-      // Normalise + filter: end within 2 hours, duration ≤ 10 min (short windows)
-      const results = allBTC
-        .map(m => this._normaliseMarket(m, nowSec))
-        .filter(Boolean);
-
-      return results;
-    } catch (err) {
-      console.warn('[PolymarketFeed] CLOB paginated fetch failed:', err.message);
-      return [];
+      console.log(`[PolymarketFeed] CLOB accepting_orders: ${aoMarkets.length} live, ${btc.length} BTC`);
+      // skipDurationCheck=true: start_time may be market creation, not window start
+      const results = btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+      if (results.length > 0) return results;
+      // Diagnose BTC markets that passed accepting_orders but got filtered (max 3, once per 2 min)
+      if (btc.length > 0 && (now - (this._lastBtcFilterLog||0)) > 120000) {
+        this._lastBtcFilterLog = now;
+        btc.slice(0, 3).forEach(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.end_time || m.resolution_time;
+          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+          const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(1) : '?';
+          const rawStart = m.start_date_iso || m.startDateIso || m.start_time;
+          const startMs = rawStart ? new Date(rawStart).getTime() : 0;
+          const durMin = (startMs && endMs) ? ((endMs - startMs) / 60000).toFixed(0) : '?';
+          console.log(`  [BTC filtered] "${(m.question||'').slice(0,50)}" ends in ${minsLeft}min, dur=${durMin}min`);
+        });
+      }
+    } catch (e) {
+      console.warn('[PolymarketFeed] CLOB accepting_orders failed:', e.message);
     }
+
+    // Strategy B: getSamplingMarkets() — SDK sampling markets
+    try {
+      let cursor;
+      const allSampling = [];
+      for (let i = 0; i < 5; i++) {
+        const resp = cursor
+          ? await this.clobClient.getSamplingMarkets(cursor)
+          : await this.clobClient.getSamplingMarkets();
+        const page = Array.isArray(resp) ? resp : (resp?.data || resp?.markets || []);
+        allSampling.push(...page);
+        const next = resp?.next_cursor;
+        if (!next || next === 'LTE=' || page.length === 0) break;
+        cursor = next;
+      }
+      const btc = allSampling.filter(m => {
+        const q = (m.question || '').toLowerCase();
+        return q.includes('btc') || q.includes('bitcoin');
+      });
+      const results = btc.map(m => this._normaliseMarket(m, nowSec)).filter(Boolean);
+      console.log(`[PolymarketFeed] CLOB sampling: ${allSampling.length} markets, ${btc.length} BTC, ${results.length} active`);
+      if (results.length > 0) return results;
+    } catch (e) {
+      console.warn('[PolymarketFeed] CLOB getSamplingMarkets failed:', e.message);
+    }
+
+    // Strategy C: Gamma events with crypto/bitcoin tag sorted by soonest end
+    try {
+      const url = 'https://gamma-api.polymarket.com/events?' + new URLSearchParams({
+        active: 'true', closed: 'false', tag_slug: 'crypto',
+        order: 'end_date', ascending: 'true', limit: '50',
+      });
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const events = await res.json();
+        if (Array.isArray(events)) {
+          const found = [];
+          for (const ev of events) {
+            const t = (ev.title || ev.question || ev.slug || '').toLowerCase();
+            if (!t.includes('btc') && !t.includes('bitcoin')) continue;
+            for (const m of (ev.markets || [])) {
+              const norm = this._normaliseMarket(m, nowSec, true);
+              if (norm) found.push(norm);
+            }
+          }
+          if (found.length > 0) {
+            console.log(`[PolymarketFeed] Gamma crypto tag: ${found.length} BTC market(s) found`);
+            return found;
+          }
+        }
+      }
+    } catch (e) {
+      // silent
+    }
+
+    return [];
   }
 
   /**
@@ -324,8 +369,9 @@ class PolymarketFeed {
    * Normalise a raw market object from any API into a consistent shape.
    * Returns null if the market doesn't match our 5-min BTC criteria.
    * @param {boolean} isBTCParent - skip BTC keyword check when parent event is known-BTC
+   * @param {boolean} skipDurationCheck - skip duration filter (for accepting_orders=true results)
    */
-  _normaliseMarket(m, nowSec, isBTCParent = false) {
+  _normaliseMarket(m, nowSec, isBTCParent = false, skipDurationCheck = false) {
     if (!isBTCParent) {
       const q = (m.question || m.title || '').toLowerCase();
       const isBTC = q.includes('btc') || q.includes('bitcoin');
@@ -359,8 +405,9 @@ class PolymarketFeed {
     if (!startSec || isNaN(startSec)) startSec = endSec - 300;
 
     const durationSec = endSec - startSec;
-    // Must be a short window (≤ 10 min)
-    if (durationSec <= 0 || durationSec > 600) return null;
+    // Must be a short window (≤ 10 min) — skip for CLOB accepting_orders results
+    // (start_time may be market creation date, not window start)
+    if (!skipDurationCheck && (durationSec <= 0 || durationSec > 600)) return null;
 
     // Normalise token IDs
     const tokens = m.tokens || [];
