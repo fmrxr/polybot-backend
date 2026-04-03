@@ -42,8 +42,8 @@ class PolymarketFeed {
 
   async fetchActiveBTCMarkets() {
     try {
-      // Short cache — 5-min windows open frequently
-      const CACHE_TTL = 30000;
+      // Short cache — 5-min windows open frequently, new ones start mid-cycle
+      const CACHE_TTL = 10000; // 10s — fast enough to catch new windows early
       if (this.marketsCache.length > 0 && this.lastMarketFetch &&
           (Date.now() - this.lastMarketFetch) < CACHE_TTL) {
         return this.marketsCache;

@@ -162,12 +162,16 @@ class GBMSignalEngine {
         //   3. Lag bonus when Polymarket visibly lags BTC
         // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
-        // btcDelta is in % (e.g. 0.1 = 0.1% move)
-        // Map to probability edge: 0.1% → 0.05 (5%), 0.2% → 0.10 (10%), cap 0.15
+
+        // Map to probability edge: 0.1% BTC move → 0.05 (5%), cap 0.15
         const btcEdge = Math.min(Math.abs(btcDelta) * 0.5, 0.15);
-        const microEdge = micro.confidence * 0.10;                  // up to 10% from microstructure
-        const lagBonus = micro.hasMarketLag ? 0.05 : 0;             // +5% when lag detected
-        const totalEdge = btcEdge + microEdge + lagBonus;
+        const microEdge = micro.confidence * 0.10; // up to 10% from order book
+
+        // lagBonus is NOT added to modelProb — it's an execution signal, not a probability estimate
+        // Lag means faster execution priority, not higher probability
+        const hasLag = micro.hasMarketLag;
+
+        const totalEdge = btcEdge + microEdge;
 
         const bullish = btcDelta > 0.05;  // require ≥0.05% 30s move for a directional call
         const bearish = btcDelta < -0.05;
@@ -178,7 +182,7 @@ class GBMSignalEngine {
         } else if (bearish) {
           modelProb = Math.max(0.01, Math.min(0.99, yesPrice - totalEdge));
         } else {
-          modelProb = yesPrice; // flat BTC → no edge → EV ≈ 0 → will be filtered by Gate 2
+          modelProb = yesPrice; // flat BTC → no edge → EV ≈ 0 → filtered by Gate 2
         }
 
         // ==========================================
@@ -205,39 +209,74 @@ class GBMSignalEngine {
           fees: 0.002
         };
 
-        // Evaluate BOTH sides — pick the better one
-        const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
+        // Fill probability: thin books mean lower chance of getting filled at mid
+        // P(fill) = min(1, totalDepth / 500) — 500 USDC depth = high confidence
+        const fillProb = Math.min(1.0, (orderBook.totalDepth || 0) / 500);
 
-        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
+        // Evaluate BOTH sides — pick the better one, then scale by fill probability
+        const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
+        const evReal = evAnalysis.bestEV * fillProb; // EV_real = EV_adj * P(fill)
+
+        // Window timing: adjust threshold based on time within the 5-min window
+        const marketEndSec = market.end_date_iso
+          ? new Date(market.end_date_iso).getTime() / 1000
+          : (market.resolution_time || market.end_time || 0);
+        const marketStartSec = market.start_date_iso
+          ? new Date(market.start_date_iso).getTime() / 1000
+          : (market.start_time || marketEndSec - 300);
+        const nowSec = Date.now() / 1000;
+        const elapsed = nowSec - marketStartSec;
+        const remaining = marketEndSec - nowSec;
+
+        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
+
+        // Early window (< 60s in): largest mispricings, lower threshold
+        if (elapsed < 60) evFloor *= 0.7;
+        // Late window (< 90s to expiry): decay risk, higher threshold
+        else if (remaining < 90) evFloor *= 1.5;
+
+        // If lag detected: treat as high-priority execution (don't raise floor further)
+        if (hasLag && elapsed < 60) evFloor *= 0.8;
 
         log.gates.gate2 = {
           evYes: evAnalysis.evYes,
           evNo: evAnalysis.evNo,
           bestDirection: evAnalysis.bestDirection,
           bestEV: evAnalysis.bestEV,
+          evReal,
+          fillProb,
           evFloor,
-          spread: spread,
-          modelProb: modelProb,
-          passed: evAnalysis.bestEV >= evFloor
+          spread,
+          modelProb,
+          elapsed: Math.round(elapsed),
+          remaining: Math.round(remaining),
+          passed: evReal >= evFloor
         };
 
-        console.log(`[GBMSignalEngine] Gate2: btcDelta=${btcDelta.toFixed(3)}% edge=${(totalEdge*100).toFixed(2)}% modelProb=${modelProb.toFixed(3)} yesPrice=${yesPrice.toFixed(3)} EV=${evAnalysis.bestEV.toFixed(2)}% floor=${evFloor}%`);
+        console.log(`[GBMSignalEngine] Gate2: btcDelta=${btcDelta.toFixed(3)}% modelProb=${modelProb.toFixed(3)} yesPrice=${yesPrice.toFixed(3)} EV=${evAnalysis.bestEV.toFixed(2)}% fillProb=${fillProb.toFixed(2)} evReal=${evReal.toFixed(2)}% floor=${evFloor.toFixed(2)}% elapsed=${Math.round(elapsed)}s`);
 
-        if (evAnalysis.bestEV < evFloor) {
+        if (evReal < evFloor) {
           log.gates.gate2.passed = false;
-          continue; // EV too low (including costs)
+          continue;
         }
 
         log.gates.gate2.passed = true;
 
         // ==========================================
-        // EV TREND FILTER: Is EV decaying?
+        // EV TREND FILTER: velocity + acceleration
         // ==========================================
-        this.evEngine.recordEV(marketId, evAnalysis.bestEV, evAnalysis.bestDirection);
+        this.evEngine.recordEV(marketId, evReal, evAnalysis.bestDirection);
 
         if (this.evEngine.isEVDecaying(marketId)) {
           log.gates.evTrend = { status: 'DECAYING', passed: false };
-          continue; // EV is declining — don't enter decaying setup
+          continue;
+        }
+
+        // Also require positive EV velocity (EV must be rising, not just above floor)
+        const evVelocity = this.evEngine.getEVVelocity(marketId);
+        if (evVelocity < 0) {
+          log.gates.evTrend = { status: 'FALLING', velocity: evVelocity, passed: false };
+          continue;
         }
 
         // ==========================================

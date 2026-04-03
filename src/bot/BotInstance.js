@@ -132,6 +132,10 @@ class BotInstance {
 
       if (signal.verdict !== 'TRADE') return;
 
+      // --- Directional exposure check ---
+      const overexposed = await this._checkDirectionalExposure(signal.direction);
+      if (overexposed) return;
+
       // --- Check if we should flip an existing position ---
       const flipped = await this._checkForFlip(signal);
       if (flipped) return; // Flip handled, don't open new position
@@ -164,17 +168,19 @@ class BotInstance {
       // If signal says same direction, no flip needed
       if (newSignal.direction === currentDirection) return false;
 
-      // EV-driven flip evaluation
+      // EV-driven flip evaluation with hysteresis (prevents whipsaw)
       const flipThreshold = this._getFlipThreshold();
       const currentEV = currentDirection === 'YES' ? newSignal.evYes : newSignal.evNo;
-      const oppositeEV = newSignal.evAdj; // Best EV (which is the opposite direction)
+      const oppositeEV = newSignal.evAdj;
 
+      // Hysteresis: require opposite EV > current EV + 3% margin (not just > threshold)
+      const FLIP_HYSTERESIS = 3.0;
       const evGain = oppositeEV - currentEV;
 
       this._log('INFO', `🔄 Flip evaluation: ${currentDirection} EV=${currentEV.toFixed(2)}%, ${newSignal.direction} EV=${oppositeEV.toFixed(2)}%, gain=${evGain.toFixed(2)}%, threshold=${flipThreshold.toFixed(2)}%`);
 
-      // Flip condition: current position EV < 0 AND opposite is better by threshold
-      if (currentEV < 0 && evGain > flipThreshold) {
+      // Flip condition: current EV negative AND gain exceeds BOTH threshold AND hysteresis margin
+      if (currentEV < 0 && evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
         this._log('INFO', `✅ EV-driven flip: ${currentDirection} → ${newSignal.direction} (EV gain: +${evGain.toFixed(2)}%)`);
 
         // Close existing position
@@ -195,6 +201,38 @@ class BotInstance {
     } catch (err) {
       this._log('ERROR', `Flip check error: ${err.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Directional exposure: prevent over-concentration in one direction
+   * Max net directional position = 30% of balance
+   */
+  async _checkDirectionalExposure(newDirection) {
+    try {
+      const result = await pool.query(
+        "SELECT direction, SUM(trade_size) as total FROM trades WHERE user_id=$1 AND status='open' GROUP BY direction",
+        [this.userId]
+      );
+      const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
+      const maxNet = balance * 0.30;
+
+      let yesExposure = 0, noExposure = 0;
+      for (const row of result.rows) {
+        if (row.direction === 'YES') yesExposure = parseFloat(row.total);
+        else noExposure = parseFloat(row.total);
+      }
+
+      const netExposure = Math.abs(yesExposure - noExposure);
+      const dominantDir = yesExposure >= noExposure ? 'YES' : 'NO';
+
+      if (netExposure >= maxNet && newDirection === dominantDir) {
+        this._log('WARN', `Directional exposure limit: net ${dominantDir} $${netExposure.toFixed(2)} >= $${maxNet.toFixed(2)} — skipping`);
+        return true; // overexposed
+      }
+      return false;
+    } catch (err) {
+      return false; // don't block on error
     }
   }
 

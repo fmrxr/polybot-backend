@@ -115,22 +115,34 @@ class EVEngine {
   }
 
   /**
-   * EV Trend Filter: Is EV decaying?
-   * Returns true if we should SKIP (EV is declining)
+   * EV Trend Filter: velocity + acceleration aware
+   * Returns true if we should SKIP
    */
   isEVDecaying(marketId) {
     const history = this.evHistory[marketId];
     if (!history || history.length < 3) return false;
 
-    // Check last 3 readings
     const recent = history.slice(-3);
-    let decayCount = 0;
-    for (let i = 1; i < recent.length; i++) {
-      if (recent[i].ev < recent[i - 1].ev) decayCount++;
-    }
 
-    // If 2 out of 2 transitions are declining, EV is decaying
-    return decayCount >= 2;
+    // Velocity: rate of change between consecutive readings
+    const v1 = recent[1].ev - recent[0].ev;
+    const v2 = recent[2].ev - recent[1].ev;
+
+    // Skip if EV is declining AND still decelerating (negative velocity + negative acceleration)
+    const velocity = v2;
+    const acceleration = v2 - v1;
+
+    return velocity < 0 && acceleration <= 0;
+  }
+
+  /**
+   * EV velocity — positive means EV is rising
+   */
+  getEVVelocity(marketId) {
+    const history = this.evHistory[marketId];
+    if (!history || history.length < 2) return 0;
+    const last = history.slice(-2);
+    return last[1].ev - last[0].ev;
   }
 
   /**
