@@ -90,10 +90,14 @@ class GBMSignalEngine {
         const spread = orderBook.spread || 0;
 
         // ==========================================
-        // PRE-FILTER A: Signal Freshness (Lag Age)
-        // This is critical — stale signals are the #1 loss source
+        // PRE-FILTER A: Signal Freshness
+        // Check how old the last Binance tick is (WebSocket-based, not on-chain)
+        // Chainlink on-chain BTC/USD updates every 5-30 min — too slow for a 20s threshold
         // ==========================================
-        const lagAgeSeconds = this._getLagAge(chainlinkPrice, btcPrice);
+        const lastTick = this.binance.priceHistory.length > 0
+          ? this.binance.priceHistory[this.binance.priceHistory.length - 1].timestamp
+          : 0;
+        const lagAgeSeconds = lastTick > 0 ? (Date.now() - lastTick) / 1000 : 999;
         const maxLagAge = this.settings.stale_lag_seconds || 20;
 
         if (lagAgeSeconds > maxLagAge) {
@@ -140,27 +144,36 @@ class GBMSignalEngine {
           bestAsk: orderBook.bestAsk
         });
 
-        // Model probability = market price + edge from model confidence
-        // Higher micro confidence → more edge → higher model prob deviation from market
-        const edgeEstimate = micro.confidence * 0.08; // Scale: 0-8% edge based on confidence
-        const lagBonus = micro.hasMarketLag ? 0.03 : 0; // Extra edge when market is lagging
-
-        // Determine direction from BTC movement (what should the probability do?)
+        // ==========================================
+        // MODEL PROBABILITY (p_model)
+        // Our estimate of P(YES resolves) — anchored to yesPrice + directional edge
+        // Sources of edge:
+        //   1. BTC directional momentum (scales with % move)
+        //   2. Microstructure confidence (order book imbalance / whale / depth)
+        //   3. Lag bonus when Polymarket visibly lags BTC
+        // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
+        const btcEdge = Math.min(Math.abs(btcDelta) * 0.05, 0.10); // up to 10% from BTC trend
+        const microEdge = micro.confidence * 0.10;                  // up to 10% from microstructure
+        const lagBonus = micro.hasMarketLag ? 0.05 : 0;             // +5% when lag detected
+        const totalEdge = btcEdge + microEdge + lagBonus;
+
+        const bullish = btcDelta > 0.05;  // require ≥0.05% 30s move for a directional call
+        const bearish = btcDelta < -0.05;
 
         let modelProb;
-        if (btcDelta > 0) {
-          // BTC going up → YES probability should increase
-          modelProb = Math.min(0.99, Math.max(0.01, yesPrice + edgeEstimate + lagBonus));
+        if (bullish) {
+          modelProb = Math.min(0.99, Math.max(0.01, yesPrice + totalEdge));
+        } else if (bearish) {
+          modelProb = Math.max(0.01, Math.min(0.99, yesPrice - totalEdge));
         } else {
-          // BTC going down → YES probability should decrease (NO is better)
-          modelProb = Math.min(0.99, Math.max(0.01, yesPrice - edgeEstimate - lagBonus));
+          modelProb = yesPrice; // flat BTC → no edge → EV ≈ 0 → will be filtered by Gate 2
         }
 
         // ==========================================
-        // GATE 1: MICROSTRUCTURE CONFIDENCE
-        // Not a hard block — informs model probability
-        // Low confidence = lower edge estimate = lower EV
+        // GATE 1: MICROSTRUCTURE CONFIDENCE (informational — not a hard block)
+        // Low confidence just means smaller edge, not a skip
+        // Hard block would make Gate 1 impossible on thin books (confidence rarely reaches 0.45)
         // ==========================================
         const gate1Threshold = parseFloat(this.settings.gate1_threshold) || 0.45;
 
@@ -170,10 +183,7 @@ class GBMSignalEngine {
           hasLag: micro.hasMarketLag,
           passed: micro.confidence >= gate1Threshold
         };
-
-        if (micro.confidence < gate1Threshold) {
-          continue; // Not enough microstructure signal
-        }
+        // Note: not skipping on low confidence — EV gate handles filtering
 
         // ==========================================
         // GATE 2: EV ANALYSIS (PRIMARY SIGNAL)
@@ -199,7 +209,7 @@ class GBMSignalEngine {
           passed: false
         };
 
-        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
+        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 5.0;
 
         if (evAnalysis.bestEV < evFloor) {
           log.gates.gate2.passed = false;

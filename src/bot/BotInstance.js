@@ -342,13 +342,20 @@ class BotInstance {
         const marketId = trade.market_id;
 
         // --- EV-based exit ---
-        // Recalculate current EV for this position
+        // Recompute model probability using same logic as signal engine
         const btcPrice = this.binance.getPrice();
         if (!btcPrice) continue;
 
-        const micro = this.signalEngine?.microEngine;
-        const currentModelProb = livePrice + (micro?.detectLatency() || 0) * 0.05;
-        const clampedProb = Math.min(0.99, Math.max(0.01, currentModelProb));
+        const btcDelta = this.binance.getWindowDeltaScore(30);
+        const latency = this.signalEngine?.microEngine?.detectLatency() || 0;
+        const exitLagEdge = latency > 0.3 ? 0.05 : 0;
+        const exitBtcEdge = Math.min(Math.abs(btcDelta) * 0.05, 0.10);
+        const exitTotalEdge = exitBtcEdge + exitLagEdge;
+        const exitBullish = btcDelta > 0;
+        const currentModelProb = Math.min(0.99, Math.max(0.01,
+          exitBullish ? livePrice + exitTotalEdge : livePrice - exitTotalEdge
+        ));
+        const clampedProb = currentModelProb;
 
         const currentEV = this.evEngine.calculateAdjustedEV(
           clampedProb, livePrice,

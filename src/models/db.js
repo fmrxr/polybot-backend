@@ -173,7 +173,7 @@ const initDB = async () => {
       ALTER TABLE bot_settings
         ADD COLUMN IF NOT EXISTS copy_bot_active    BOOLEAN DEFAULT false,
         ADD COLUMN IF NOT EXISTS gate1_threshold    DECIMAL(5,3) DEFAULT 0.450,
-        ADD COLUMN IF NOT EXISTS gate2_ev_floor     DECIMAL(5,2) DEFAULT 3.00,
+        ADD COLUMN IF NOT EXISTS gate2_ev_floor     DECIMAL(5,2) DEFAULT 5.00,
         ADD COLUMN IF NOT EXISTS gate3_enabled      BOOLEAN DEFAULT true,
         ADD COLUMN IF NOT EXISTS gate3_min_edge     DECIMAL(5,2) DEFAULT 5.00,
         ADD COLUMN IF NOT EXISTS snipe_timer_seconds INTEGER DEFAULT 10,
