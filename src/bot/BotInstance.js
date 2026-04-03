@@ -42,7 +42,9 @@ class BotInstance {
     // Real-time streaming (SSE) — emits 'state' events every 200ms while running
     this.streamEmitter = new EventEmitter();
     this.streamEmitter.setMaxListeners(50); // allow many concurrent SSE clients
-    this.streamInterval = null;
+    this.streamInterval  = null;
+    this._obFetchInterval = null; // 1s async loop that fetches YES/NO order books
+    this._lastOrderBooks = {}; // tokenId -> { midPrice, spread, bidDepth, askDepth }
     // Last computed microstructure + EV data for broadcasting
     this._lastStreamState = {};
   }
@@ -86,7 +88,9 @@ class BotInstance {
       this.loopInterval = setInterval(() => this._mainLoop(), intervalMs);
 
       // Real-time streaming loop — 200ms interval, non-blocking, for SSE clients
-      this.streamInterval = setInterval(() => this._broadcastState(), 200);
+      this.streamInterval   = setInterval(() => this._broadcastState(), 200);
+      // Order book fetcher — 1s async loop, populates YES/NO prices for stream
+      this._obFetchInterval = setInterval(() => this._fetchActiveOrderBooks(), 1000);
 
       this._log('INFO', `✅ Bot started. Interval: ${intervalMs / 1000}s, Paper: ${this.settings.paper_trading}`);
 
@@ -110,6 +114,10 @@ class BotInstance {
     if (this.streamInterval) {
       clearInterval(this.streamInterval);
       this.streamInterval = null;
+    }
+    if (this._obFetchInterval) {
+      clearInterval(this._obFetchInterval);
+      this._obFetchInterval = null;
     }
 
     if (this.binance) this.binance.disconnect();
@@ -664,6 +672,32 @@ class BotInstance {
   // ==========================================
 
   /**
+   * Async 1s loop — fetches YES/NO order books for active markets.
+   * Results stored in _lastOrderBooks so _broadcastState() can include them
+   * without awaiting (keeps the 200ms broadcast synchronous).
+   */
+  async _fetchActiveOrderBooks() {
+    if (!this.isRunning || !this.polymarket) return;
+    try {
+      const markets = this.polymarket.marketsCache || [];
+      for (const m of markets) {
+        let clobIds = m.clobTokenIds || [];
+        if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch (_) { clobIds = []; } }
+        const yesId = m.tokens?.[0]?.token_id || clobIds[0];
+        const noId  = m.tokens?.[1]?.token_id || clobIds[1];
+        if (yesId) {
+          const book = await this.polymarket.getOrderBook(yesId);
+          if (book) this._lastOrderBooks[yesId] = book;
+        }
+        if (noId && noId !== yesId) {
+          const book = await this.polymarket.getOrderBook(noId);
+          if (book) this._lastOrderBooks[noId] = book;
+        }
+      }
+    } catch (_) {}
+  }
+
+  /**
    * Builds and emits a lightweight state snapshot every 200ms.
    * SSE clients in bot.js subscribe to streamEmitter 'state' events.
    * Does NOT block the main loop — synchronous reads only.
@@ -675,13 +709,26 @@ class BotInstance {
       const btcDelta  = btcPrice ? this.binance.getWindowDeltaScore(30) : null;
       const btcImbal  = btcPrice ? this.binance.getOrderBookImbalance() : null;
 
-      // Markets from polymarket cache (shallow copy — no awaits here)
-      const markets = (this.polymarket?.marketsCache || []).map(m => ({
-        id:        m.id || m.condition_id,
-        question:  m.question,
-        endIso:    m.end_date_iso,
-        startIso:  m.start_date_iso,
-      }));
+      // Markets from polymarket cache + last fetched order books (no awaits)
+      const markets = (this.polymarket?.marketsCache || []).map(m => {
+        let clobIds = m.clobTokenIds || [];
+        if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch (_) { clobIds = []; } }
+        const yesId  = m.tokens?.[0]?.token_id || clobIds[0];
+        const noId   = m.tokens?.[1]?.token_id || clobIds[1];
+        const yesBook = yesId ? this._lastOrderBooks[yesId] : null;
+        const noBook  = noId  ? this._lastOrderBooks[noId]  : null;
+        return {
+          id:        m.id || m.condition_id,
+          question:  m.question,
+          endIso:    m.end_date_iso,
+          startIso:  m.start_date_iso,
+          yesPrice:  yesBook?.midPrice ?? null,
+          noPrice:   noBook?.midPrice  ?? null,
+          spread:    yesBook?.spread   ?? null,
+          bidDepth:  yesBook?.bidDepth ?? null,
+          askDepth:  yesBook?.askDepth ?? null,
+        };
+      });
 
       // EV stats per market from signal engine
       const evStats = {};

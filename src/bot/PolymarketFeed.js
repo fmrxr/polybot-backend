@@ -119,13 +119,15 @@ class PolymarketFeed {
 
       for (const event of events) {
         // Each event has { slug, title, markets: [...] }
-        const title = (event.title || event.question || '').toLowerCase();
-        const isBTC = title.includes('btc') || title.includes('bitcoin');
-        if (!isBTC) continue;
+        const title = (event.title || event.question || event.slug || '').toLowerCase();
+        const isBTCEvent = title.includes('btc') || title.includes('bitcoin');
+        if (!isBTCEvent) continue;
 
         const markets = event.markets || [];
         for (const m of markets) {
-          const normalised = this._normaliseMarket(m, nowSec);
+          // Markets inside a known-BTC event don't need their own BTC keyword check
+          // (their questions might just say "Up" or "Down")
+          const normalised = this._normaliseMarket(m, nowSec, true);
           if (normalised) found.push(normalised);
         }
       }
@@ -211,11 +213,14 @@ class PolymarketFeed {
   /**
    * Normalise a raw market object from any API into a consistent shape.
    * Returns null if the market doesn't match our 5-min BTC criteria.
+   * @param {boolean} isBTCParent - skip BTC keyword check when parent event is known-BTC
    */
-  _normaliseMarket(m, nowSec) {
-    const q = (m.question || m.title || '').toLowerCase();
-    const isBTC = q.includes('btc') || q.includes('bitcoin');
-    if (!isBTC) return null;
+  _normaliseMarket(m, nowSec, isBTCParent = false) {
+    if (!isBTCParent) {
+      const q = (m.question || m.title || '').toLowerCase();
+      const isBTC = q.includes('btc') || q.includes('bitcoin');
+      if (!isBTC) return null;
+    }
 
     // Accept active, accepting_orders, or just not-closed markets
     if (m.archived) return null;

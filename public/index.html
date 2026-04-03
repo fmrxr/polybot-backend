@@ -2058,6 +2058,24 @@
       if (hdr) hdr.style.display = '';
       const q = el('lvMarketQ'); if (q) q.textContent = mkt.question || '—';
 
+      // YES price (token probability, 0-1 scale)
+      const yesEl = el('lvYesPrice');
+      if (yesEl) {
+        if (mkt.yesPrice != null) {
+          yesEl.textContent = parseFloat(mkt.yesPrice).toFixed(3);
+          yesEl.style.color = mkt.yesPrice > 0.5 ? 'var(--green)' : 'var(--text-muted)';
+        } else { yesEl.textContent = '—'; }
+      }
+      // NO price
+      const noEl = el('lvNoPrice');
+      if (noEl) {
+        const noPrice = mkt.noPrice ?? (mkt.yesPrice != null ? 1 - mkt.yesPrice : null);
+        if (noPrice != null) {
+          noEl.textContent = parseFloat(noPrice).toFixed(3);
+          noEl.style.color = noPrice > 0.5 ? 'var(--red)' : 'var(--text-muted)';
+        } else { noEl.textContent = '—'; }
+      }
+
       // Countdown timer
       if (mkt.endIso) {
         const secLeft = Math.max(0, Math.floor((new Date(mkt.endIso).getTime() - Date.now()) / 1000));
@@ -2078,14 +2096,15 @@
           evEl.textContent = ev.toFixed(2) + '%';
           evEl.style.color = ev >= 5 ? 'var(--green)' : ev >= 2 ? 'var(--amber)' : 'var(--red)';
         }
-        // Append to history ring buffer
         _liveEVHistory.push(ev);
         if (_liveEVHistory.length > _maxEVHistory) _liveEVHistory.shift();
         _renderEVSparkline();
       }
     } else {
       if (hdr) hdr.style.display = 'none';
-      const wt = el('lvWindowTimer'); if (wt) wt.textContent = 'No active window';
+      const yesEl = el('lvYesPrice'); if (yesEl) yesEl.textContent = '—';
+      const noEl  = el('lvNoPrice');  if (noEl)  noEl.textContent  = '—';
+      const wt    = el('lvWindowTimer'); if (wt) wt.textContent = 'No active window';
     }
   }
 
