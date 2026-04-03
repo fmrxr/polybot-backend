@@ -353,16 +353,20 @@ class PolymarketFeed {
     // Must end within 2 hours (wide enough for "next window" pre-loading)
     if ((endSec - nowSec) > 7200) return null;
 
-    // Parse start date — same priority: startDate (full) before startDateIso (date-only)
-    const rawStart = m.start_date_iso || m.startDate || m.startDateIso || m.start_time;
-    let startSec = rawStart
-      ? Math.floor(_ts(rawStart) / 1000)
-      : endSec - 300;
-    if (!startSec || isNaN(startSec)) startSec = endSec - 300;
+    // Parse start date
+    // For Gamma markets (skipDurationCheck=true): Gamma's startDate = market CREATION time (can be
+    // days before the 5-min window), NOT the window start. Force startSec = endSec - 300.
+    // For CLOB markets: use the actual start field if valid and within a 10-min window.
+    let startSec;
+    if (skipDurationCheck) {
+      startSec = endSec - 300; // Always 5-min window for slug/Gamma results
+    } else {
+      const rawStart = m.start_date_iso || m.startDate || m.startDateIso || m.start_time;
+      startSec = rawStart ? Math.floor(_ts(rawStart) / 1000) : endSec - 300;
+      if (!startSec || isNaN(startSec)) startSec = endSec - 300;
+    }
 
     const durationSec = endSec - startSec;
-    // Must be a short window (≤ 10 min) — skip for CLOB accepting_orders results
-    // (start_time may be market creation date, not window start)
     if (!skipDurationCheck && (durationSec <= 0 || durationSec > 600)) return null;
 
     // Normalise token IDs
