@@ -173,42 +173,76 @@ class PolymarketFeed {
     }
   }
 
-  /** Gamma Events endpoint — finds BTC events with embedded short-window markets */
+  /** Gamma Events endpoint — finds short-window markets across ALL events */
   async _fetchViaEventsAPI() {
     try {
       const now = Date.now();
       const nowSec = Math.floor(now / 1000);
-      const found = [];
 
-      // Two passes with different param sets — avoid order=end_date which causes 422
-      const paramSets = [
-        { active: 'true', closed: 'false', tag_slug: 'crypto', limit: '50' },
-        { active: 'true', closed: 'false', limit: '100' },
+      // Try known BTC 5-min slugs directly first (fastest path)
+      const btcSlugs = [
+        'bitcoin-up-or-down', 'btc-up-or-down', 'bitcoin-5-minute',
+        'btc-5-minute', 'bitcoin-price-5-min', 'will-bitcoin-go-up',
+        'bitcoin-up-or-down-5-min', 'btc-5min', 'bitcoin-5min',
       ];
+      for (const slug of btcSlugs) {
+        try {
+          const r = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`, { signal: AbortSignal.timeout(3000) });
+          if (!r.ok) continue;
+          const ev = await r.json();
+          const events = Array.isArray(ev) ? ev : [ev];
+          for (const event of events) {
+            for (const m of (event?.markets || [])) {
+              const norm = this._normaliseMarket(m, nowSec, true, true);
+              if (norm) {
+                console.log(`[PolymarketFeed] Found via slug "${slug}": "${norm.question?.slice(0,60)}"`);
+                return [norm];
+              }
+            }
+          }
+        } catch (e) { continue; }
+      }
+
+      // Broad scan: ALL active events, find markets ending within 30 min
+      // No BTC keyword filter — the event may not say "bitcoin" at all
+      const paramSets = [
+        { active: 'true', closed: 'false', tag_slug: 'crypto', limit: '100' },
+        { active: 'true', closed: 'false', limit: '200' },
+      ];
+      const found = [];
+      const shortWindowLog = [];
 
       for (const params of paramSets) {
         const url = 'https://gamma-api.polymarket.com/events?' + new URLSearchParams(params);
         let res;
-        try {
-          res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        } catch (e) { continue; }
+        try { res = await fetch(url, { signal: AbortSignal.timeout(6000) }); } catch (e) { continue; }
         if (!res.ok) continue;
         const events = await res.json();
         if (!Array.isArray(events)) continue;
 
         for (const event of events) {
-          const title = (event.title || event.question || event.slug || '').toLowerCase();
-          const isBTCEvent = title.includes('btc') || title.includes('bitcoin') || title.includes('crypto');
-          if (!isBTCEvent) continue;
-
-          for (const m of (event.markets || [])) {
-            // Markets inside BTC/crypto event skip keyword check — question may just say "Up"/"Down"
-            const normalised = this._normaliseMarket(m, nowSec, true, true);
-            if (normalised) found.push(normalised);
+          for (const m of (event?.markets || [])) {
+            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.end_time;
+            const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+            if (endMs > now && (endMs - now) < 1800000) { // ending within 30 min
+              const minsLeft = ((endMs - now) / 60000).toFixed(1);
+              const title = event.title || event.slug || '';
+              shortWindowLog.push(`  "${(m.question||title).slice(0,55)}" | ${minsLeft}min | event:"${title.slice(0,30)}"`);
+              // Accept any short-window market (no BTC filter — log will show us the name)
+              const norm = this._normaliseMarket(m, nowSec, true, true);
+              if (norm) found.push(norm);
+            }
           }
         }
 
-        if (found.length > 0) break; // stop at first successful pass
+        if (found.length > 0) break;
+      }
+
+      // Log short-window candidates (throttled) — reveals the real market name
+      if (shortWindowLog.length > 0 && (now - (this._lastEventsShortLog||0)) > 60000) {
+        this._lastEventsShortLog = now;
+        console.log(`[PolymarketFeed] Events with markets ending <30min:`);
+        shortWindowLog.slice(0, 8).forEach(l => console.log(l));
       }
 
       return found;
