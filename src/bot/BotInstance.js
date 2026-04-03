@@ -513,10 +513,25 @@ class BotInstance {
 
   async _getLiveBalance() {
     try {
-      if (this.settings.encrypted_private_key && this.settings.polymarket_wallet_address) {
-        const pk = decrypt(this.settings.encrypted_private_key);
-        const data = await PolymarketFeed.fetchBalance(pk, this.settings.polymarket_wallet_address);
-        return data.usdc || 0;
+      if (this.settings.polymarket_wallet_address) {
+        const { ethers } = require('ethers');
+        const rpcs = [
+          process.env.POLYGON_RPC_URL,
+          'https://polygon-bor-rpc.publicnode.com',
+          'https://1rpc.io/matic',
+        ].filter(Boolean);
+        const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
+        for (const rpc of rpcs) {
+          try {
+            const provider = new ethers.JsonRpcProvider(rpc);
+            const usdc = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', ERC20_ABI, provider);
+            const raw = await Promise.race([
+              usdc.balanceOf(this.settings.polymarket_wallet_address),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+            ]);
+            return parseFloat(ethers.formatUnits(raw, 6));
+          } catch (e) { continue; }
+        }
       }
     } catch (err) {
       this._log('ERROR', `Live balance fetch failed: ${err.message}`);
