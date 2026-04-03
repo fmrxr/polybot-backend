@@ -163,7 +163,12 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS closed_at     TIMESTAMPTZ,
         ADD COLUMN IF NOT EXISTS result        VARCHAR(20),
         ADD COLUMN IF NOT EXISTS slippage      DECIMAL(10,6),
-        ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER;
+        ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
+        ADD COLUMN IF NOT EXISTS exit_price    DECIMAL(20,8),
+        ADD COLUMN IF NOT EXISTS token_id      VARCHAR(255);
+
+      ALTER TABLE copy_targets
+        ADD COLUMN IF NOT EXISTS updated_at    TIMESTAMPTZ DEFAULT NOW();
 
       ALTER TABLE bot_settings
         ADD COLUMN IF NOT EXISTS copy_bot_active    BOOLEAN DEFAULT false,

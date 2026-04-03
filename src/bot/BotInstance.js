@@ -317,6 +317,12 @@ class BotInstance {
       const MAX_PRICE_FAILURES = 5;
 
       for (const trade of result.rows) {
+        // Skip legacy trades that pre-date the token_id column — can't fetch price without it
+        if (!trade.token_id) {
+          this._log('WARN', `Skipping trade ${trade.id} — no token_id (pre-migration row)`);
+          continue;
+        }
+
         const livePrice = await this.polymarket.getLiveTokenPrice(trade.token_id);
 
         if (!livePrice) {
