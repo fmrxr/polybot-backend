@@ -276,12 +276,12 @@ class PolymarketFeed {
     const now = Date.now();
     const nowSec = Math.floor(now / 1000);
 
-    // Strategy A: REST accepting_orders=true — only live, tradeable markets
+    // Strategy A: CLOB REST active=true&closed=false — should return currently open markets
     try {
       let aoMarkets = [];
       let aoCursor;
-      for (let p = 0; p < 5; p++) {
-        const qs = 'accepting_orders=true&limit=500' + (aoCursor ? `&next_cursor=${aoCursor}` : '');
+      for (let p = 0; p < 3; p++) {
+        const qs = 'active=true&closed=false&limit=500' + (aoCursor ? `&next_cursor=${encodeURIComponent(aoCursor)}` : '');
         const res = await fetch(`https://clob.polymarket.com/markets?${qs}`, { signal: AbortSignal.timeout(8000) });
         if (!res.ok) break;
         const data = await res.json();
@@ -291,36 +291,35 @@ class PolymarketFeed {
         if (!next || next === 'LTE=' || page.length === 0) break;
         aoCursor = next;
       }
+
+      // Log first 5 markets regardless of keyword — reveals true market names
+      if (aoMarkets.length > 0 && (now - (this._lastClobActiveLog||0)) > 120000) {
+        this._lastClobActiveLog = now;
+        console.log(`[PolymarketFeed] CLOB active: ${aoMarkets.length} markets, first 5:`);
+        aoMarkets.slice(0, 5).forEach(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.end_time || m.resolution_time;
+          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+          const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(1) : '?';
+          console.log(`  "${(m.question||'no question').slice(0,55)}" ends in ${minsLeft}min`);
+        });
+      }
+
       const btc = aoMarkets.filter(m => {
         const q = (m.question || '').toLowerCase();
         return q.includes('btc') || q.includes('bitcoin');
       });
-      console.log(`[PolymarketFeed] CLOB accepting_orders: ${aoMarkets.length} live, ${btc.length} BTC`);
-      // skipDurationCheck=true: start_time may be market creation, not window start
+      console.log(`[PolymarketFeed] CLOB active: ${aoMarkets.length} total, ${btc.length} BTC`);
       const results = btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
       if (results.length > 0) return results;
-      // Diagnose BTC markets that passed accepting_orders but got filtered (max 3, once per 2 min)
-      if (btc.length > 0 && (now - (this._lastBtcFilterLog||0)) > 120000) {
-        this._lastBtcFilterLog = now;
-        btc.slice(0, 3).forEach(m => {
-          const rawEnd = m.end_date_iso || m.endDateIso || m.end_time || m.resolution_time;
-          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-          const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(1) : '?';
-          const rawStart = m.start_date_iso || m.startDateIso || m.start_time;
-          const startMs = rawStart ? new Date(rawStart).getTime() : 0;
-          const durMin = (startMs && endMs) ? ((endMs - startMs) / 60000).toFixed(0) : '?';
-          console.log(`  [BTC filtered] "${(m.question||'').slice(0,50)}" ends in ${minsLeft}min, dur=${durMin}min`);
-        });
-      }
     } catch (e) {
-      console.warn('[PolymarketFeed] CLOB accepting_orders failed:', e.message);
+      console.warn('[PolymarketFeed] CLOB active failed:', e.message);
     }
 
-    // Strategy B: getSamplingMarkets() — SDK sampling markets
+    // Strategy B: getSamplingMarkets() — log ALL market names to find BTC 5-min
     try {
       let cursor;
       const allSampling = [];
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 3; i++) {
         const resp = cursor
           ? await this.clobClient.getSamplingMarkets(cursor)
           : await this.clobClient.getSamplingMarkets();
@@ -330,12 +329,29 @@ class PolymarketFeed {
         if (!next || next === 'LTE=' || page.length === 0) break;
         cursor = next;
       }
+
+      // Log ALL sampling markets ending within 2h (no keyword filter)
+      const soonSampling = allSampling.filter(m => {
+        const rawEnd = m.end_date_iso || m.endDateIso || m.end_time || m.resolution_time;
+        const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+        return endMs > now && (endMs - now) < 7200000;
+      });
+      if (soonSampling.length > 0 && (now - (this._lastSamplingLog||0)) > 120000) {
+        this._lastSamplingLog = now;
+        console.log(`[PolymarketFeed] CLOB sampling ending <2h (${soonSampling.length}):`);
+        soonSampling.slice(0, 5).forEach(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.end_time || m.resolution_time;
+          const endMs = new Date(rawEnd).getTime();
+          console.log(`  "${(m.question||'').slice(0,55)}" ends in ${((endMs-now)/60000).toFixed(1)}min`);
+        });
+      }
+
       const btc = allSampling.filter(m => {
         const q = (m.question || '').toLowerCase();
         return q.includes('btc') || q.includes('bitcoin');
       });
-      const results = btc.map(m => this._normaliseMarket(m, nowSec)).filter(Boolean);
-      console.log(`[PolymarketFeed] CLOB sampling: ${allSampling.length} markets, ${btc.length} BTC, ${results.length} active`);
+      const results = btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+      console.log(`[PolymarketFeed] CLOB sampling: ${allSampling.length} total, ${btc.length} BTC, ${results.length} active`);
       if (results.length > 0) return results;
     } catch (e) {
       console.warn('[PolymarketFeed] CLOB getSamplingMarkets failed:', e.message);
