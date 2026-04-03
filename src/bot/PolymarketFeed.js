@@ -49,13 +49,11 @@ class PolymarketFeed {
         return this.marketsCache;
       }
 
-      // Fetch sorted by end date ascending — nearest resolution first
+      // Fetch a broad set and filter client-side by end date
       const response = await fetch('https://gamma-api.polymarket.com/markets?' + new URLSearchParams({
         closed: 'false',
         active: 'true',
-        limit: '100',
-        order: 'end_date_min',
-        ascending: 'true',
+        limit: '200',
       }));
 
       if (!response.ok) {

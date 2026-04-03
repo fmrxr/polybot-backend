@@ -78,19 +78,19 @@ class BotManager {
 
     const stopPromises = [];
 
-    // Stop signal bots
+    // Stop signal bots — preserve is_active so auto-restart works after deploy
     for (const [userId, instance] of this.instances) {
       stopPromises.push(
-        instance.stop().catch(err => {
+        instance.stop(true).catch(err => {
           console.error(`[BotManager] Error stopping signal bot for user ${userId}:`, err.message);
         })
       );
     }
 
-    // Stop copy bots
+    // Stop copy bots — same
     for (const [userId, instance] of this.copyInstances) {
       stopPromises.push(
-        instance.stop().catch(err => {
+        instance.stop(true).catch(err => {
           console.error(`[BotManager] Error stopping copy bot for user ${userId}:`, err.message);
         })
       );

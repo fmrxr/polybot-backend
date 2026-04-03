@@ -88,7 +88,7 @@ class BotInstance {
     }
   }
 
-  async stop() {
+  async stop(preserveActive = false) {
     this._log('INFO', 'Stopping bot...');
     this.isRunning = false;
 
@@ -100,10 +100,13 @@ class BotInstance {
     if (this.binance) this.binance.disconnect();
     if (this.chainlink) this.chainlink.stop();
 
-    try {
-      await pool.query('UPDATE bot_settings SET is_active = false WHERE user_id = $1', [this.userId]);
-    } catch (err) {
-      console.error(`[Bot ${this.userId}] DB update failed on stop:`, err.message);
+    // preserveActive=true on graceful shutdown so auto-restart works after deploy
+    if (!preserveActive) {
+      try {
+        await pool.query('UPDATE bot_settings SET is_active = false WHERE user_id = $1', [this.userId]);
+      } catch (err) {
+        console.error(`[Bot ${this.userId}] DB update failed on stop:`, err.message);
+      }
     }
 
     this._log('INFO', '🛑 Bot stopped');
