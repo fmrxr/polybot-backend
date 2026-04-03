@@ -76,15 +76,13 @@ class PolymarketFeed {
   }
 
   /**
-   * CLOB getMarkets — paginate and filter by time remaining.
-   * Filter: markets closing in the next 0–610 seconds (current + next 5-min window).
-   * Case-insensitive BTC keyword. Diagnostic logs everything short-window found.
+   * CLOB getMarkets — paginate and filter by time remaining (0–610s).
+   * On page 1, logs the raw field keys of the first market so we can see
+   * which field holds end_time (end_time vs end_date_iso vs game_end_time etc).
    */
   async _getActiveBTCMarkets() {
     if (!this.clobClient) return [];
     const nowUTC = Date.now();
-    const minDuration = 0;   // include markets already in-progress
-    const maxDuration = 610; // up to ~10 min remaining
     let cursor;
 
     for (let page = 0; page < 50; page++) {
@@ -98,33 +96,36 @@ class PolymarketFeed {
         break;
       }
 
-      // Handle both raw array and {data, next_cursor} formats
       const rawMarkets = Array.isArray(response) ? response : (response?.data || []);
 
-      // Compute time remaining for each market
+      // Page 1: log first market's raw keys so we know which end-time field to use
+      if (page === 0 && rawMarkets.length > 0 && (nowUTC - (this._lastClobFieldLog||0)) > 300000) {
+        this._lastClobFieldLog = nowUTC;
+        const sample = rawMarkets[0];
+        console.log(`[PolymarketFeed] CLOB market fields: ${Object.keys(sample).join(', ')}`);
+        console.log(`[PolymarketFeed] CLOB sample end fields: end_time=${sample.end_time} end_date_iso=${sample.end_date_iso} game_end_time=${sample.game_end_time}`);
+      }
+
       const withDuration = rawMarkets.map(m => {
-        const endUTC = m.end_time ? new Date(m.end_time).getTime()
-          : (m.end_date_iso || m.endDateIso) ? new Date(m.end_date_iso || m.endDateIso).getTime() : 0;
-        const durationSec = Math.max(0, (endUTC - nowUTC) / 1000);
+        // Try every possible end-time field name
+        const rawEnd = m.end_time || m.end_date_iso || m.endDateIso || m.game_end_time || m.resolution_time;
+        const endUTC = rawEnd ? new Date(rawEnd).getTime() : 0;
+        const durationSec = endUTC > nowUTC ? (endUTC - nowUTC) / 1000 : 0;
         return { ...m, durationSec, endUTC };
       });
 
-      // Short-window markets on this page (any question)
-      const shortWindow = withDuration.filter(
-        m => m.durationSec > minDuration && m.durationSec <= maxDuration
-      );
+      const shortWindow = withDuration.filter(m => m.durationSec > 0 && m.durationSec <= 610);
 
       if (shortWindow.length > 0) {
-        console.log(`[PolymarketFeed] CLOB page ${page + 1} — short-window markets:`);
+        console.log(`[PolymarketFeed] CLOB page ${page + 1} short-window markets:`);
         shortWindow.forEach(m =>
-          console.log(`  "${(m.question||'').slice(0, 60)}" | ${m.durationSec.toFixed(0)}s remaining`)
+          console.log(`  "${(m.question||'').slice(0, 60)}" | ${m.durationSec.toFixed(0)}s`)
         );
-
-        const btcMarkets = shortWindow.filter(m => /btc|bitcoin/i.test(m.question || ''));
-        if (btcMarkets.length > 0) {
-          console.log(`[PolymarketFeed] Found ${btcMarkets.length} BTC 5-min market(s) via CLOB`);
+        const btc = shortWindow.filter(m => /btc|bitcoin/i.test(m.question || ''));
+        if (btc.length > 0) {
+          console.log(`[PolymarketFeed] CLOB: found ${btc.length} BTC 5-min market(s)`);
           const nowSec = Math.floor(nowUTC / 1000);
-          return btcMarkets.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+          return btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
         }
       }
 
@@ -136,47 +137,49 @@ class PolymarketFeed {
   }
 
   /**
-   * Gamma /markets endpoint with end_date sort — works (no 422 unlike /events).
-   * Logs ALL markets ending within 10 min regardless of keyword.
+   * Gamma /markets — plain active=true&closed=false, NO order param (avoids 422).
+   * Paginate with offset. Log ALL markets ending within 60 min (no keyword filter).
    */
   async _fetchGammaShortWindow() {
     try {
       const nowUTC = Date.now();
       const nowSec = Math.floor(nowUTC / 1000);
-      const res = await fetch(
-        'https://gamma-api.polymarket.com/markets?active=true&closed=false&order=end_date&ascending=true&limit=100',
-        { signal: AbortSignal.timeout(8000) }
-      );
-      if (!res.ok) {
-        console.warn(`[PolymarketFeed] Gamma /markets HTTP ${res.status}`);
-        return [];
-      }
-      const markets = await res.json();
-      if (!Array.isArray(markets)) return [];
+      const found = [];
 
-      // Log ALL markets ending within 10 min (no keyword filter)
-      const tenMin = markets.filter(m => {
-        const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
-        const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-        return endMs > nowUTC && (endMs - nowUTC) < 600000;
-      });
-      if (tenMin.length > 0 && (nowUTC - (this._lastGammaLog||0)) > 60000) {
-        this._lastGammaLog = nowUTC;
-        console.log(`[PolymarketFeed] Gamma markets ending <10min:`);
-        tenMin.forEach(m => {
-          const endMs = new Date(m.end_date_iso || m.endDateIso || m.endDate).getTime();
-          console.log(`  "${(m.question||'').slice(0,60)}" | ${((endMs-nowUTC)/1000).toFixed(0)}s`);
+      for (let offset = 0; offset < 1000; offset += 500) {
+        const url = `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=500&offset=${offset}`;
+        let res;
+        try { res = await fetch(url, { signal: AbortSignal.timeout(10000) }); } catch (e) { break; }
+        if (!res.ok) {
+          console.warn(`[PolymarketFeed] Gamma /markets HTTP ${res.status}`);
+          break;
+        }
+        const markets = await res.json();
+        if (!Array.isArray(markets) || markets.length === 0) break;
+
+        // All markets ending within 60 min (no keyword filter — reveals true names)
+        const soon = markets.filter(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+          return endMs > nowUTC && (endMs - nowUTC) < 3600000;
         });
-      }
 
-      // BTC markets ending within 2h
-      const btc = markets.filter(m => {
-        const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
-        const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-        if (!endMs || endMs <= nowUTC || (endMs - nowUTC) > 7200000) return false;
-        return /btc|bitcoin/i.test(m.question || m.title || '');
-      });
-      return btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+        if (soon.length > 0 && (nowUTC - (this._lastGammaLog||0)) > 60000) {
+          this._lastGammaLog = nowUTC;
+          console.log(`[PolymarketFeed] Gamma markets ending <60min (offset=${offset}):`);
+          soon.slice(0, 10).forEach(m => {
+            const endMs = new Date(m.end_date_iso || m.endDateIso || m.endDate).getTime();
+            console.log(`  "${(m.question||'').slice(0, 60)}" | ${((endMs-nowUTC)/1000).toFixed(0)}s`);
+          });
+        }
+
+        const btc = soon.filter(m => /btc|bitcoin/i.test(m.question || m.title || ''));
+        const normed = btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+        found.push(...normed);
+        if (found.length > 0) return found;
+        if (markets.length < 500) break;
+      }
+      return found;
     } catch (e) {
       console.warn('[PolymarketFeed] Gamma short-window failed:', e.message);
       return [];
