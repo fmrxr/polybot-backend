@@ -148,4 +148,20 @@ Be specific with numbers. If you recommend changing a threshold, state the exact
   }
 });
 
+// GET /api/claude/latest-feedback — return most recent stored analysis
+router.get('/latest-feedback', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT analysis, created_at FROM claude_analyses
+       WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [req.userId]
+    );
+    if (!result.rows.length) return res.json({ analysis: null });
+    res.json({ analysis: result.rows[0].analysis, timestamp: result.rows[0].created_at });
+  } catch (err) {
+    // Table may not exist yet — return null gracefully
+    res.json({ analysis: null });
+  }
+});
+
 module.exports = router;

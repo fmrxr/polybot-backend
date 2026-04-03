@@ -181,9 +181,8 @@ class GBMSignalEngine {
           confidence: micro.confidence,
           threshold: gate1Threshold,
           hasLag: micro.hasMarketLag,
-          passed: micro.confidence >= gate1Threshold
+          passed: true  // informational only — Gate 2 EV is the real filter
         };
-        // Note: not skipping on low confidence — EV gate handles filtering
 
         // ==========================================
         // GATE 2: EV ANALYSIS (PRIMARY SIGNAL)
@@ -198,18 +197,18 @@ class GBMSignalEngine {
         // Evaluate BOTH sides — pick the better one
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
 
+        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 5.0;
+
         log.gates.gate2 = {
           evYes: evAnalysis.evYes,
           evNo: evAnalysis.evNo,
           bestDirection: evAnalysis.bestDirection,
           bestEV: evAnalysis.bestEV,
-          evFloor: parseFloat(this.settings.gate2_ev_floor) || 3.0,
+          evFloor,
           spread: spread,
           modelProb: modelProb,
-          passed: false
+          passed: evAnalysis.bestEV >= evFloor
         };
-
-        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 5.0;
 
         if (evAnalysis.bestEV < evFloor) {
           log.gates.gate2.passed = false;

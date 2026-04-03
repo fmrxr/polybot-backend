@@ -43,6 +43,7 @@ app.use('/api/bot', require('./routes/bot'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/copy', require('./routes/copy'));
 app.use('/api/claude', require('./routes/claude'));
+app.use('/api/trades', require('./routes/trades'));
 app.use('/api/admin', require('./routes/admin'));
 
 // --- Health Check ---

@@ -8,15 +8,12 @@ router.post('/start', authMiddleware, async (req, res) => {
   try {
     const botManager = req.app.locals.botManager;
 
-    if (botManager.isRunning(req.userId)) {
-      return res.status(400).json({ error: 'Bot is already running' });
-    }
-
     const settings = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [req.userId]);
     if (settings.rows.length === 0) {
       return res.status(404).json({ error: 'Bot settings not found' });
     }
 
+    // Always restart — stop existing instance first if running
     await botManager.startBot(req.userId, settings.rows[0]);
 
     res.json({ message: 'Bot started successfully', status: 'running' });
@@ -30,13 +27,8 @@ router.post('/start', authMiddleware, async (req, res) => {
 router.post('/stop', authMiddleware, async (req, res) => {
   try {
     const botManager = req.app.locals.botManager;
-
-    if (!botManager.isRunning(req.userId)) {
-      return res.status(400).json({ error: 'Bot is not running' });
-    }
-
     await botManager.stopBot(req.userId);
-
+    // Always succeeds — idempotent
     res.json({ message: 'Bot stopped successfully', status: 'stopped' });
   } catch (err) {
     console.error(`[Bot Route] Stop error for user ${req.userId}:`, err.message);
