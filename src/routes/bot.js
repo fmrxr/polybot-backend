@@ -221,6 +221,13 @@ router.get('/stream', authMiddleware, (req, res) => {
     return;
   }
 
+  // Keepalive comment every 15s — prevents Railway HTTP/2 proxy from dropping idle streams
+  const keepalive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch (_) { clearInterval(keepalive); }
+  }, 15000);
+
+  req.on('close', () => clearInterval(keepalive));
+
   attach(bot);
 
   function attach(b) {
@@ -228,7 +235,6 @@ router.get('/stream', authMiddleware, (req, res) => {
       try { res.write(`data: ${JSON.stringify(state)}\n\n`); } catch (_) {}
     };
     b.streamEmitter.on('state', onState);
-    // Send last known state immediately so client renders without waiting 200ms
     if (b._lastStreamState?.ts) {
       try { res.write(`data: ${JSON.stringify(b._lastStreamState)}\n\n`); } catch (_) {}
     }
