@@ -46,10 +46,11 @@ class PolymarketFeed {
   /**
    * Fetch active 5-min BTC markets.
    *
-   * Strategy order (per Polymarket docs — events endpoint is most efficient):
-   *   1. Gamma Events API: end_date ascending → filter BTC + short duration
-   *   2. Gamma Markets API: same filter, direct market list
-   *   3. CLOB getMarkets() paginated: last resort, up to 5 pages
+   * 5-min BTC markets ONLY live in the Polymarket CLOB — Gamma does not list them.
+   * Strategy:
+   *   1. CLOB SDK paginated (primary) — up to 20 pages × 100 = 2000 markets scanned
+   *      Cache TTL raised to 5min once found (windows are predictable)
+   *   2. Gamma Markets API (fallback) — may find longer-term BTC markets
    *
    * Returns normalised array: { id, question, tokens, clobTokenIds, end_date_iso, ... }
    */
@@ -60,42 +61,35 @@ class PolymarketFeed {
       return this.marketsCache;
     }
 
-    // Strategy 1: Gamma Events API (most efficient — events contain their markets)
-    const fromEvents = await this._fetchViaEventsAPI();
-    if (fromEvents.length > 0) {
-      this.marketsCache = fromEvents;
-      this.lastMarketFetch = now;
-      console.log(`[PolymarketFeed] Events API: found ${fromEvents.length} 5-min BTC market(s)`);
-      fromEvents.forEach(m => console.log(`  → "${m.question?.slice(0, 70)}"`));
-      return this.marketsCache;
-    }
-
-    // Strategy 2: Gamma Markets API directly
-    const fromMarkets = await this._fetchViaMarketsAPI();
-    if (fromMarkets.length > 0) {
-      this.marketsCache = fromMarkets;
-      this.lastMarketFetch = now;
-      console.log(`[PolymarketFeed] Markets API: found ${fromMarkets.length} 5-min BTC market(s)`);
-      return this.marketsCache;
-    }
-
-    // Strategy 3: CLOB paginated (last resort — slower, scans up to 500 markets)
+    // Primary: CLOB SDK — 5-min markets ONLY appear here
     const fromCLOB = await this._fetchViaCLOB();
     if (fromCLOB.length > 0) {
       this.marketsCache = fromCLOB;
       this.lastMarketFetch = now;
-      console.log(`[PolymarketFeed] CLOB paginated: found ${fromCLOB.length} 5-min BTC market(s)`);
+      this.marketCacheTTL = 30000; // cache 30s once a market is found
+      console.log(`[PolymarketFeed] CLOB: found ${fromCLOB.length} active BTC market(s)`);
+      fromCLOB.forEach(m => console.log(`  → "${m.question?.slice(0, 70)}"`));
       return this.marketsCache;
     }
 
-    // Log a diagnostic dump once per minute to help diagnose misses
-    const diagInterval = 60000;
-    if (!this._lastDiagLog || (now - this._lastDiagLog) > diagInterval) {
+    // Fallback: Gamma Markets API
+    const fromMarkets = await this._fetchViaMarketsAPI();
+    if (fromMarkets.length > 0) {
+      this.marketsCache = fromMarkets;
+      this.lastMarketFetch = now;
+      this.marketCacheTTL = 30000;
+      console.log(`[PolymarketFeed] Gamma Markets: found ${fromMarkets.length} BTC market(s)`);
+      return this.marketsCache;
+    }
+
+    // Log diagnostic once per minute
+    if (!this._lastDiagLog || (now - this._lastDiagLog) > 60000) {
       this._lastDiagLog = now;
       this._logDiagnostic().catch(() => {});
     }
 
-    console.log('[PolymarketFeed] No 5-min BTC markets open right now — waiting for next window');
+    this.marketCacheTTL = 10000; // retry quickly when no market found
+    console.log('[PolymarketFeed] No active BTC markets found — waiting for next window');
     this.lastMarketFetch = now;
     this.marketsCache = [];
     return [];
@@ -175,13 +169,19 @@ class PolymarketFeed {
 
         if (found.length > 0) return found;
 
-        // Log how many BTC markets we saw but filtered — helps diagnose end-date misses
-        const btcCount = markets.filter(m => {
+        // Log BTC markets we saw but filtered — shows their actual end dates
+        const btcAll = markets.filter(m => {
           const q = (m.question||m.title||'').toLowerCase();
           return q.includes('btc') || q.includes('bitcoin');
-        }).length;
-        if (btcCount > 0) {
-          console.log(`[PolymarketFeed] Markets API: ${btcCount} BTC market(s) found but none within 30-min window`);
+        });
+        if (btcAll.length > 0) {
+          console.log(`[PolymarketFeed] Gamma Markets API: ${btcAll.length} BTC market(s), none within 2h:`);
+          btcAll.slice(0, 5).forEach(m => {
+            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+            const endMs = rawEnd ? (typeof rawEnd === 'number' ? (rawEnd > 1e12 ? rawEnd : rawEnd * 1000) : new Date(rawEnd).getTime()) : 0;
+            const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(0) : '?';
+            console.log(`  → "${(m.question||'').slice(0,60)}" ends in ${minsLeft} min`);
+          });
         }
       }
       return [];
@@ -191,7 +191,14 @@ class PolymarketFeed {
     }
   }
 
-  /** Strategy 3: CLOB getMarkets() with pagination (up to 5 pages × ~100 markets) */
+  /**
+   * CLOB SDK paginated market scan — primary strategy for 5-min BTC markets.
+   *
+   * 5-min BTC markets are ONLY in the CLOB, not in Gamma. They appear at an
+   * unpredictable page (sorted by condition_id hash), so we scan up to 20 pages
+   * (~2000 markets). No early exit on BTC count — we keep going until we find
+   * a SHORT-DURATION market or exhaust pages.
+   */
   async _fetchViaCLOB() {
     if (!this.clobClient) return [];
     try {
@@ -199,33 +206,50 @@ class PolymarketFeed {
       const nowSec = Math.floor(now / 1000);
       let allMarkets = [];
       let cursor;
-      const MAX_PAGES = 5;
+      const MAX_PAGES = 20; // scan up to 2000 markets
 
       for (let page = 0; page < MAX_PAGES; page++) {
-        const response = cursor
-          ? await this.clobClient.getMarkets(cursor)
-          : await this.clobClient.getMarkets();
+        let response;
+        try {
+          response = cursor
+            ? await this.clobClient.getMarkets(cursor)
+            : await this.clobClient.getMarkets();
+        } catch (pageErr) {
+          console.warn(`[PolymarketFeed] CLOB page ${page + 1} error: ${pageErr.message}`);
+          break;
+        }
 
         const pageMarkets = Array.isArray(response) ? response
           : (response?.data || response?.markets || []);
 
         allMarkets = allMarkets.concat(pageMarkets);
 
-        // Early exit if we already have enough BTC candidates
-        const btcCount = allMarkets.filter(m => {
-          const q = (m.question || '').toLowerCase();
-          return q.includes('btc') || q.includes('bitcoin');
-        }).length;
-        if (btcCount >= 5) break;
-
         const nextCursor = response?.next_cursor;
         if (!nextCursor || nextCursor === 'LTE=' || pageMarkets.length === 0) break;
         cursor = nextCursor;
       }
 
-      return allMarkets
+      // Collect ALL BTC markets found regardless of duration first
+      const allBTC = allMarkets.filter(m => {
+        const q = (m.question || '').toLowerCase();
+        return q.includes('btc') || q.includes('bitcoin');
+      });
+      console.log(`[PolymarketFeed] CLOB scanned ${allMarkets.length} markets, ${allBTC.length} BTC-related`);
+
+      // Log all BTC markets with their end dates for diagnostics
+      allBTC.forEach(m => {
+        const rawEnd = m.end_date_iso || m.endDateIso;
+        const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+        const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(1) : '?';
+        console.log(`  [CLOB BTC] "${m.question?.slice(0, 60)}" → ends in ${minsLeft} min`);
+      });
+
+      // Normalise + filter: end within 2 hours, duration ≤ 10 min (short windows)
+      const results = allBTC
         .map(m => this._normaliseMarket(m, nowSec))
         .filter(Boolean);
+
+      return results;
     } catch (err) {
       console.warn('[PolymarketFeed] CLOB paginated fetch failed:', err.message);
       return [];
@@ -322,8 +346,8 @@ class PolymarketFeed {
 
     // Must still be open
     if (endSec <= nowSec) return null;
-    // Within 30-minute window
-    if ((endSec - nowSec) > 1800) return null;
+    // Must end within 2 hours (wide enough for "next window" pre-loading)
+    if ((endSec - nowSec) > 7200) return null;
 
     // Parse start date
     const rawStart = m.start_date_iso || m.startDateIso || m.startDate || m.start_time;
