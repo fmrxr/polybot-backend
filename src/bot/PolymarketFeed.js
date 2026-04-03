@@ -107,12 +107,28 @@ class PolymarketFeed {
       }
 
       const withDuration = rawMarkets.map(m => {
-        // Try every possible end-time field name
-        const rawEnd = m.end_time || m.end_date_iso || m.endDateIso || m.game_end_time || m.resolution_time;
-        const endUTC = rawEnd ? new Date(rawEnd).getTime() : 0;
+        // Primary: end_date_iso
+        let endUTC = m.end_date_iso ? new Date(m.end_date_iso).getTime() : 0;
+        // Fallback: game_start_time + 300s (5-min windows may not have end_date_iso set)
+        if ((!endUTC || endUTC < nowUTC) && m.game_start_time) {
+          const startMs = new Date(m.game_start_time).getTime();
+          if (!isNaN(startMs)) endUTC = startMs + 300000;
+        }
         const durationSec = endUTC > nowUTC ? (endUTC - nowUTC) / 1000 : 0;
         return { ...m, durationSec, endUTC };
       });
+
+      // Also log any market with game_start_time (once per 5 min)
+      if (page === 0 && (nowUTC - (this._lastGameLog||0)) > 300000) {
+        const withGame = rawMarkets.filter(m => m.game_start_time);
+        if (withGame.length > 0) {
+          this._lastGameLog = nowUTC;
+          console.log(`[PolymarketFeed] CLOB page 1 — markets with game_start_time (${withGame.length}):`);
+          withGame.slice(0, 5).forEach(m =>
+            console.log(`  "${(m.question||'').slice(0,55)}" game_start=${m.game_start_time}`)
+          );
+        }
+      }
 
       const shortWindow = withDuration.filter(m => m.durationSec > 0 && m.durationSec <= 610);
 
@@ -146,7 +162,7 @@ class PolymarketFeed {
       const nowSec = Math.floor(nowUTC / 1000);
       const found = [];
 
-      for (let offset = 0; offset < 1000; offset += 500) {
+      for (let offset = 0; offset < 2000; offset += 500) {
         const url = `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=500&offset=${offset}`;
         let res;
         try { res = await fetch(url, { signal: AbortSignal.timeout(10000) }); } catch (e) { break; }
@@ -157,11 +173,17 @@ class PolymarketFeed {
         const markets = await res.json();
         if (!Array.isArray(markets) || markets.length === 0) break;
 
-        // All markets ending within 60 min (no keyword filter — reveals true names)
+        // All markets ending within 60 min OR with recent game_start_time (no keyword filter)
         const soon = markets.filter(m => {
           const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
           const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-          return endMs > nowUTC && (endMs - nowUTC) < 3600000;
+          if (endMs > nowUTC && (endMs - nowUTC) < 3600000) return true;
+          // Also include markets with game_start_time in last 10 min (rolling 5-min games)
+          if (m.game_start_time) {
+            const startMs = new Date(m.game_start_time).getTime();
+            return !isNaN(startMs) && startMs > nowUTC - 600000 && startMs <= nowUTC + 300000;
+          }
+          return false;
         });
 
         if (soon.length > 0 && (nowUTC - (this._lastGammaLog||0)) > 60000) {
