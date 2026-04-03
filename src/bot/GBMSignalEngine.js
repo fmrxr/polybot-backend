@@ -162,9 +162,9 @@ class GBMSignalEngine {
         //   3. Lag bonus when Polymarket visibly lags BTC
         // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
-        // btcDelta is already %, edge mapped to probability units (÷100):
-        // 0.1% move → 0.05 edge (5%), 0.2% → 0.10 (10%), capped at 0.15
-        const btcEdge = Math.min(Math.abs(btcDelta) * 0.5 / 100, 0.15);
+        // btcDelta is in % (e.g. 0.1 = 0.1% move)
+        // Map to probability edge: 0.1% → 0.05 (5%), 0.2% → 0.10 (10%), cap 0.15
+        const btcEdge = Math.min(Math.abs(btcDelta) * 0.5, 0.15);
         const microEdge = micro.confidence * 0.10;                  // up to 10% from microstructure
         const lagBonus = micro.hasMarketLag ? 0.05 : 0;             // +5% when lag detected
         const totalEdge = btcEdge + microEdge + lagBonus;
@@ -208,7 +208,7 @@ class GBMSignalEngine {
         // Evaluate BOTH sides — pick the better one
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
 
-        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 5.0;
+        const evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
 
         log.gates.gate2 = {
           evYes: evAnalysis.evYes,
