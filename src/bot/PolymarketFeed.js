@@ -76,13 +76,14 @@ class PolymarketFeed {
   }
 
   /**
-   * CLOB getMarkets — paginate and filter by time remaining (0–610s).
-   * On page 1, logs the raw field keys of the first market so we can see
-   * which field holds end_time (end_time vs end_date_iso vs game_end_time etc).
+   * CLOB getMarkets — paginate and filter by time remaining.
+   * 5-min windows: MIN_5MIN_DURATION (290s) to MAX_5MIN_DURATION (615s) remaining.
    */
   async _getActiveBTCMarkets() {
     if (!this.clobClient) return [];
     const nowUTC = Date.now();
+    const MIN_5MIN_DURATION = 290;
+    const MAX_5MIN_DURATION = 615;
     let cursor;
 
     for (let page = 0; page < 50; page++) {
@@ -98,7 +99,7 @@ class PolymarketFeed {
 
       const rawMarkets = Array.isArray(response) ? response : (response?.data || []);
 
-      // Page 1: log first market's raw keys so we know which end-time field to use
+      // Page 1: log first market's raw keys (throttled to once per 5 min)
       if (page === 0 && rawMarkets.length > 0 && (nowUTC - (this._lastClobFieldLog||0)) > 300000) {
         this._lastClobFieldLog = nowUTC;
         const sample = rawMarkets[0];
@@ -107,37 +108,38 @@ class PolymarketFeed {
       }
 
       const withDuration = rawMarkets.map(m => {
-        // Primary: end_date_iso
-        let endUTC = m.end_date_iso ? new Date(m.end_date_iso).getTime() : 0;
-        // Fallback: game_start_time + 300s (5-min windows may not have end_date_iso set)
+        // Append 'Z' to force UTC interpretation (strings without TZ suffix are parsed as local time in some engines)
+        let endUTC = m.end_date_iso ? new Date(m.end_date_iso + 'Z').getTime() : 0;
+        // Fallback: game_start_time + 300s
         if ((!endUTC || endUTC < nowUTC) && m.game_start_time) {
-          const startMs = new Date(m.game_start_time).getTime();
+          const startMs = new Date(m.game_start_time + 'Z').getTime();
           if (!isNaN(startMs)) endUTC = startMs + 300000;
         }
         const durationSec = endUTC > nowUTC ? (endUTC - nowUTC) / 1000 : 0;
         return { ...m, durationSec, endUTC };
       });
 
-      // Also log any market with game_start_time (once per 5 min)
-      if (page === 0 && (nowUTC - (this._lastGameLog||0)) > 300000) {
-        const withGame = rawMarkets.filter(m => m.game_start_time);
-        if (withGame.length > 0) {
-          this._lastGameLog = nowUTC;
-          console.log(`[PolymarketFeed] CLOB page 1 — markets with game_start_time (${withGame.length}):`);
-          withGame.slice(0, 5).forEach(m =>
-            console.log(`  "${(m.question||'').slice(0,55)}" game_start=${m.game_start_time}`)
-          );
-        }
+      const shortWindow = withDuration.filter(
+        m => m.durationSec >= MIN_5MIN_DURATION && m.durationSec <= MAX_5MIN_DURATION
+      );
+
+      // Diagnostic: when nothing in the window, log closest markets (throttled)
+      if (shortWindow.length === 0 && page === 0 && (nowUTC - (this._lastClobDiagLog||0)) > 120000) {
+        this._lastClobDiagLog = nowUTC;
+        const active = withDuration.filter(m => m.durationSec > 0).sort((a,b) => a.durationSec - b.durationSec);
+        console.log(`[PolymarketFeed] CLOB page 1 — no markets in ${MIN_5MIN_DURATION}–${MAX_5MIN_DURATION}s window. Closest ${active.length > 0 ? active.length : 0} active:`);
+        active.slice(0, 5).forEach(m =>
+          console.log(`  "${(m.question||'').trim().slice(0,55)}" | ${m.durationSec.toFixed(0)}s remaining`)
+        );
       }
 
-      const shortWindow = withDuration.filter(m => m.durationSec > 0 && m.durationSec <= 610);
-
       if (shortWindow.length > 0) {
-        console.log(`[PolymarketFeed] CLOB page ${page + 1} short-window markets:`);
+        console.log(`[PolymarketFeed] CLOB page ${page + 1} short-window markets (${shortWindow.length}):`);
         shortWindow.forEach(m =>
-          console.log(`  "${(m.question||'').slice(0, 60)}" | ${m.durationSec.toFixed(0)}s`)
+          console.log(`  "${(m.question||'').trim().slice(0, 60)}" | ${m.durationSec.toFixed(0)}s`)
         );
-        const btc = shortWindow.filter(m => /btc|bitcoin/i.test(m.question || ''));
+        // Trim + lowercase for reliable BTC matching
+        const btc = shortWindow.filter(m => /btc|bitcoin/i.test((m.question || '').trim()));
         if (btc.length > 0) {
           console.log(`[PolymarketFeed] CLOB: found ${btc.length} BTC 5-min market(s)`);
           const nowSec = Math.floor(nowUTC / 1000);
@@ -153,59 +155,75 @@ class PolymarketFeed {
   }
 
   /**
-   * Gamma /markets — plain active=true&closed=false, NO order param (avoids 422).
-   * Paginate with offset. Log ALL markets ending within 60 min (no keyword filter).
+   * Gamma /markets — multiple strategies, no broken order params.
+   * Strategy 1: sort by start_date descending (newest markets first — 5-min window just created)
+   * Strategy 2: is_50_50_outcome=true (BTC up/down is always 50/50)
+   * Strategy 3: paginate plain active markets, log everything ending <1h
    */
   async _fetchGammaShortWindow() {
-    try {
-      const nowUTC = Date.now();
-      const nowSec = Math.floor(nowUTC / 1000);
-      const found = [];
+    const nowUTC = Date.now();
+    const nowSec = Math.floor(nowUTC / 1000);
 
-      for (let offset = 0; offset < 2000; offset += 500) {
-        const url = `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=500&offset=${offset}`;
-        let res;
-        try { res = await fetch(url, { signal: AbortSignal.timeout(10000) }); } catch (e) { break; }
+    // Strategy 1: newest markets first — 5-min window was just created
+    for (const params of [
+      { active: 'true', closed: 'false', order: 'start_date', ascending: 'false', limit: '50' },
+      { active: 'true', closed: 'false', order: 'volume_24hr', ascending: 'false', limit: '200' },
+      { active: 'true', closed: 'false', is_50_50_outcome: 'true', limit: '200' },
+    ]) {
+      try {
+        const url = 'https://gamma-api.polymarket.com/markets?' + new URLSearchParams(params);
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
         if (!res.ok) {
-          console.warn(`[PolymarketFeed] Gamma /markets HTTP ${res.status}`);
-          break;
+          console.warn(`[PolymarketFeed] Gamma /markets HTTP ${res.status} (${JSON.stringify(params)})`);
+          continue;
         }
         const markets = await res.json();
-        if (!Array.isArray(markets) || markets.length === 0) break;
+        if (!Array.isArray(markets) || markets.length === 0) continue;
 
-        // All markets ending within 60 min OR with recent game_start_time (no keyword filter)
-        const soon = markets.filter(m => {
-          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
-          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-          if (endMs > nowUTC && (endMs - nowUTC) < 3600000) return true;
-          // Also include markets with game_start_time in last 10 min (rolling 5-min games)
-          if (m.game_start_time) {
-            const startMs = new Date(m.game_start_time).getTime();
-            return !isNaN(startMs) && startMs > nowUTC - 600000 && startMs <= nowUTC + 300000;
-          }
-          return false;
-        });
-
-        if (soon.length > 0 && (nowUTC - (this._lastGammaLog||0)) > 60000) {
+        // Log first 5 from each strategy (throttled) to see what's returned
+        if ((nowUTC - (this._lastGammaLog||0)) > 120000) {
           this._lastGammaLog = nowUTC;
-          console.log(`[PolymarketFeed] Gamma markets ending <60min (offset=${offset}):`);
-          soon.slice(0, 10).forEach(m => {
-            const endMs = new Date(m.end_date_iso || m.endDateIso || m.endDate).getTime();
-            console.log(`  "${(m.question||'').slice(0, 60)}" | ${((endMs-nowUTC)/1000).toFixed(0)}s`);
+          console.log(`[PolymarketFeed] Gamma (${JSON.stringify(params)}) first 5:`);
+          markets.slice(0, 5).forEach(m => {
+            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+            const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+            const minsLeft = endMs ? ((endMs - nowUTC) / 60000).toFixed(0) : '?';
+            console.log(`  "${(m.question||'').slice(0,55)}" | ends in ${minsLeft}min`);
           });
         }
 
-        const btc = soon.filter(m => /btc|bitcoin/i.test(m.question || m.title || ''));
-        const normed = btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
-        found.push(...normed);
-        if (found.length > 0) return found;
-        if (markets.length < 500) break;
+        // Find markets ending within 2h — append 'Z' to guarantee UTC parsing
+        const soon = markets.filter(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+          if (!rawEnd) return false;
+          const str = typeof rawEnd === 'string' ? rawEnd : String(rawEnd);
+          const endMs = new Date(str.includes('Z') || str.includes('+') ? str : str + 'Z').getTime();
+          return endMs > nowUTC && (endMs - nowUTC) < 7200000;
+        });
+
+        const btc = soon.filter(m => /btc|bitcoin/i.test((m.question || m.title || '').trim()));
+        if (btc.length > 0) {
+          console.log(`[PolymarketFeed] Gamma found ${btc.length} BTC market(s) ending <2h`);
+          return btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+        }
+
+        // Log anything ending within 1h regardless of keyword
+        const shortAll = soon.filter(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+          return (new Date(rawEnd).getTime() - nowUTC) < 3600000;
+        });
+        if (shortAll.length > 0) {
+          console.log(`[PolymarketFeed] Gamma <1h markets (no BTC keyword):`);
+          shortAll.slice(0, 5).forEach(m => {
+            const endMs = new Date(m.end_date_iso || m.endDateIso || m.endDate).getTime();
+            console.log(`  "${(m.question||'').slice(0,60)}" | ${((endMs-nowUTC)/1000).toFixed(0)}s`);
+          });
+        }
+      } catch (e) {
+        console.warn('[PolymarketFeed] Gamma strategy failed:', e.message);
       }
-      return found;
-    } catch (e) {
-      console.warn('[PolymarketFeed] Gamma short-window failed:', e.message);
-      return [];
     }
+    return [];
   }
 
   /**
@@ -227,9 +245,10 @@ class PolymarketFeed {
     // Parse end date — Gamma uses camelCase (endDate/endDateIso), CLOB uses snake_case
     const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.resolution_time || m.end_time;
     if (!rawEnd) return null;
+    // Append 'Z' to string timestamps that lack a TZ suffix to force UTC interpretation
     const endMs = typeof rawEnd === 'number'
       ? (rawEnd > 1e12 ? rawEnd : rawEnd * 1000)
-      : new Date(rawEnd).getTime();
+      : (() => { const s = String(rawEnd); return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime(); })();
     if (isNaN(endMs)) return null;
     const endSec = Math.floor(endMs / 1000);
 
@@ -243,7 +262,7 @@ class PolymarketFeed {
     let startSec = rawStart
       ? Math.floor((typeof rawStart === 'number'
         ? (rawStart > 1e12 ? rawStart : rawStart * 1000)
-        : new Date(rawStart).getTime()) / 1000)
+        : (() => { const s = String(rawStart); return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime(); })()) / 1000)
       : endSec - 300;
     if (!startSec || isNaN(startSec)) startSec = endSec - 300;
 
