@@ -183,7 +183,21 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS max_drawdown_pct   DECIMAL(5,2) DEFAULT 15.00,
         ADD COLUMN IF NOT EXISTS claude_auto_analysis BOOLEAN DEFAULT false,
         ADD COLUMN IF NOT EXISTS claude_last_analysis TIMESTAMPTZ,
-        ADD COLUMN IF NOT EXISTS claude_api_key_encrypted TEXT;
+        ADD COLUMN IF NOT EXISTS claude_api_key_encrypted TEXT,
+        ADD COLUMN IF NOT EXISTS encrypted_polymarket_api_key TEXT,
+        ADD COLUMN IF NOT EXISTS cached_polymarket_balance DECIMAL(20,2),
+        ADD COLUMN IF NOT EXISTS cached_balance_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS min_edge DECIMAL(5,4) DEFAULT 0.05,
+        ADD COLUMN IF NOT EXISTS snipe_before_close_sec INTEGER DEFAULT 10,
+        ADD COLUMN IF NOT EXISTS require_whale_convergence BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS max_trade_size DECIMAL(20,2) DEFAULT 100.00,
+        ADD COLUMN IF NOT EXISTS min_ev_threshold DECIMAL(5,2) DEFAULT 3.00,
+        ADD COLUMN IF NOT EXISTS min_prob_diff DECIMAL(5,3) DEFAULT 0.050,
+        ADD COLUMN IF NOT EXISTS direction_filter VARCHAR(10) DEFAULT 'BOTH',
+        ADD COLUMN IF NOT EXISTS market_prob_min DECIMAL(5,3) DEFAULT 0.10,
+        ADD COLUMN IF NOT EXISTS market_prob_max DECIMAL(5,3) DEFAULT 0.90,
+        ADD COLUMN IF NOT EXISTS claude_model VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false;
 
       ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),

@@ -14,10 +14,10 @@ router.get('/settings', async (req, res) => {
     const settings = result.rows[0];
     const hasKey = !!settings.encrypted_private_key;
     const hasApiKey = !!settings.encrypted_polymarket_api_key;
-    const hasClaudeKey = !!settings.claude_api_key;
+    const hasClaudeKey = !!settings.claude_api_key_encrypted;
     delete settings.encrypted_private_key;
     delete settings.encrypted_polymarket_api_key;
-    delete settings.claude_api_key;
+    delete settings.claude_api_key_encrypted;
     res.json({ ...settings, has_private_key: hasKey, has_polymarket_api_key: hasApiKey, has_claude_api_key: hasClaudeKey });
   } catch (err) {
     console.error('Settings GET error:', err);
@@ -63,7 +63,7 @@ router.put('/settings', async (req, res) => {
     await pool.query(`
       INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
         min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
-        claude_api_key, claude_model, auto_claude_analysis, updated_at)
+        claude_api_key_encrypted, claude_model, claude_auto_analysis, updated_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
@@ -81,9 +81,9 @@ router.put('/settings', async (req, res) => {
         min_edge = COALESCE($14, bot_settings.min_edge),
         snipe_before_close_sec = COALESCE($15, bot_settings.snipe_before_close_sec),
         require_whale_convergence = COALESCE($16, bot_settings.require_whale_convergence),
-        claude_api_key = COALESCE($17, bot_settings.claude_api_key),
+        claude_api_key_encrypted = COALESCE($17, bot_settings.claude_api_key_encrypted),
         claude_model = COALESCE($18, bot_settings.claude_model),
-        auto_claude_analysis = COALESCE($19, bot_settings.auto_claude_analysis),
+        claude_auto_analysis = COALESCE($19, bot_settings.claude_auto_analysis),
         updated_at = NOW()
     `, [
       req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
@@ -117,24 +117,24 @@ router.get('/dashboard', async (req, res) => {
     const cachedBalance = settingsResult.rows[0]?.cached_polymarket_balance;
     const cachedAt = settingsResult.rows[0]?.cached_balance_at;
 
-    // 1. Try running bot first (live, no extra overhead)
+    // Fetch on-chain USDC balance from Polygon (no L2 API credentials needed)
     let balance = null;
-    if (walletAddress && global.botManager && global.botManager.instances) {
+    if (walletAddress) {
       try {
-        const bot = global.botManager.instances.get(req.userId);
-        if (bot && bot.polymarket && bot.polymarket.getBalance) {
-          balance = await bot.polymarket.getBalance();
-        }
+        const { ethers } = require('ethers');
+        const rpc = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
+        const provider = new ethers.JsonRpcProvider(rpc);
+        const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
+        // USDC.e (bridged) — primary token Polymarket uses
+        const usdc = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', ERC20_ABI, provider);
+        const raw = await usdc.balanceOf(walletAddress);
+        balance = { usdc_balance: parseFloat(ethers.formatUnits(raw, 6)), address: walletAddress };
       } catch (e) {
-        console.error('Balance fetch error:', e.message);
-      }
-    }
-
-    // 2. Use cached CLOB balance if fresh enough (< 5 minutes old)
-    if (!balance && cachedBalance != null && cachedAt) {
-      const ageMs = Date.now() - new Date(cachedAt).getTime();
-      if (ageMs < 5 * 60 * 1000) {
-        balance = { usdc_balance: parseFloat(cachedBalance), address: walletAddress };
+        console.error('[Dashboard] On-chain balance error:', e.message);
+        // Fall back to cached
+        if (cachedBalance != null) {
+          balance = { usdc_balance: parseFloat(cachedBalance), address: walletAddress };
+        }
       }
     }
 
@@ -144,8 +144,8 @@ router.get('/dashboard', async (req, res) => {
         COUNT(*) FILTER (WHERE result = 'WIN' OR (result = 'CLOSED' AND pnl > 0)) as wins,
         COUNT(*) FILTER (WHERE result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0)) as losses,
         COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as total_pnl,
-        COALESCE(SUM(size) FILTER (WHERE size < 10000), 0) as total_invested,
-        COALESCE(AVG(size) FILTER (WHERE size < 10000), 0) as avg_trade_size,
+        COALESCE(SUM(trade_size) FILTER (WHERE trade_size < 10000), 0) as total_invested,
+        COALESCE(AVG(trade_size) FILTER (WHERE trade_size < 10000), 0) as avg_trade_size,
         COALESCE(MAX(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as best_trade,
         COALESCE(MIN(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as worst_trade,
         COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
@@ -185,8 +185,8 @@ router.get('/stats', async (req, res) => {
         COUNT(*) FILTER (WHERE result = 'WIN' OR (result = 'CLOSED' AND pnl > 0)) as wins,
         COUNT(*) FILTER (WHERE result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0)) as losses,
         COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as total_pnl,
-        COALESCE(SUM(size) FILTER (WHERE size < 10000), 0) as total_invested,
-        COALESCE(AVG(size) FILTER (WHERE size < 10000), 0) as avg_trade_size,
+        COALESCE(SUM(trade_size) FILTER (WHERE trade_size < 10000), 0) as total_invested,
+        COALESCE(AVG(trade_size) FILTER (WHERE trade_size < 10000), 0) as avg_trade_size,
         COALESCE(MAX(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as best_trade,
         COALESCE(MIN(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as worst_trade,
         COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
@@ -219,43 +219,34 @@ router.post('/reset-paper-balance', async (req, res) => {
   }
 });
 
-// GET /api/user/polymarket-balance — fetch real Polymarket in-exchange balance via CLOB API
-// Decrypts private key, authenticates with Polymarket, returns collateral balance.
-// Result is cached in DB for 5 minutes so dashboard can show it without the bot running.
+// GET /api/user/polymarket-balance — on-chain USDC balance on Polygon (no L2 creds needed)
 router.get('/polymarket-balance', async (req, res) => {
   try {
     const settingsResult = await pool.query(
-      'SELECT encrypted_private_key, polymarket_wallet_address FROM bot_settings WHERE user_id = $1',
+      'SELECT polymarket_wallet_address FROM bot_settings WHERE user_id = $1',
       [req.userId]
     );
-    const settings = settingsResult.rows[0];
-    if (!settings?.encrypted_private_key) {
-      return res.json({ balance: null, error: 'No private key configured' });
+    const walletAddress = settingsResult.rows[0]?.polymarket_wallet_address;
+    if (!walletAddress) {
+      return res.json({ balance: null, error: 'No wallet address configured' });
     }
 
-    const { decrypt } = require('../services/encryption');
-    const PolymarketFeed = require('../bot/PolymarketFeed');
+    const { ethers } = require('ethers');
+    const rpc = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
+    const provider = new ethers.JsonRpcProvider(rpc);
+    const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
+    const usdc = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', ERC20_ABI, provider);
+    const raw = await usdc.balanceOf(walletAddress);
+    const balance = parseFloat(ethers.formatUnits(raw, 6));
 
-    let privateKey;
-    try {
-      privateKey = decrypt(settings.encrypted_private_key);
-    } catch (e) {
-      return res.json({ balance: null, error: 'Could not decrypt private key' });
-    }
+    await pool.query(
+      'UPDATE bot_settings SET cached_polymarket_balance=$1, cached_balance_at=NOW() WHERE user_id=$2',
+      [balance, req.userId]
+    );
 
-    const balanceData = await PolymarketFeed.fetchBalance(privateKey, settings.polymarket_wallet_address);
-
-    if (balanceData) {
-      await pool.query(
-        'UPDATE bot_settings SET cached_polymarket_balance=$1, cached_balance_at=NOW() WHERE user_id=$2',
-        [balanceData.usdc, req.userId]
-      );
-      return res.json({ balance: balanceData.usdc, address: balanceData.wallet });
-    }
-
-    res.json({ balance: null, error: 'CLOB API did not return balance' });
+    res.json({ balance, address: walletAddress });
   } catch (err) {
-    console.error('Polymarket balance route error:', err);
+    console.error('Polymarket balance route error:', err.message);
     res.json({ balance: null, error: err.message });
   }
 });
