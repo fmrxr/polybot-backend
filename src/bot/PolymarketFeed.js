@@ -42,18 +42,20 @@ class PolymarketFeed {
 
   async fetchActiveBTCMarkets() {
     try {
-      // Check cache
+      // Short cache for 5-min markets — new windows open every 5 minutes
+      const CACHE_TTL = 30000; // 30 seconds
       if (this.marketsCache.length > 0 && this.lastMarketFetch &&
-          (Date.now() - this.lastMarketFetch) < this.marketCacheTTL) {
+          (Date.now() - this.lastMarketFetch) < CACHE_TTL) {
         return this.marketsCache;
       }
 
+      // Fetch sorted by end date ascending — nearest resolution first
       const response = await fetch('https://gamma-api.polymarket.com/markets?' + new URLSearchParams({
         closed: 'false',
         active: 'true',
-        limit: '50',
-        order: 'volume24hr',
-        ascending: 'false',
+        limit: '100',
+        order: 'end_date_min',
+        ascending: 'true',
       }));
 
       if (!response.ok) {
@@ -61,21 +63,51 @@ class PolymarketFeed {
       }
 
       const markets = await response.json();
+      const now = Date.now();
 
-      // Filter for BTC-related markets
-      const btcMarkets = markets.filter(m => {
+      // Filter: BTC/Bitcoin question + resolves within next 30 minutes
+      const btcShortTerm = markets.filter(m => {
         const q = (m.question || '').toLowerCase();
-        return q.includes('btc') || q.includes('bitcoin');
+        if (!q.includes('btc') && !q.includes('bitcoin')) return false;
+
+        // endDateIso / end_date_iso / endDate — try all variants
+        const raw = m.endDateIso || m.end_date_iso || m.endDate;
+        if (!raw) return false;
+
+        // Handle both ISO string and Unix timestamp (seconds or ms)
+        let endMs;
+        if (typeof raw === 'number') {
+          endMs = raw > 1e12 ? raw : raw * 1000; // seconds vs ms
+        } else {
+          endMs = new Date(raw).getTime();
+        }
+
+        if (isNaN(endMs)) return false;
+
+        const minutesUntilEnd = (endMs - now) / 60000;
+        return minutesUntilEnd > 0 && minutesUntilEnd <= 30;
       });
 
-      this.marketsCache = btcMarkets;
-      this.lastMarketFetch = Date.now();
+      if (btcShortTerm.length > 0) {
+        this.marketsCache = btcShortTerm;
+        this.lastMarketFetch = Date.now();
+        console.log(`[PolymarketFeed] Found ${btcShortTerm.length} BTC markets resolving within 30min`);
+        btcShortTerm.forEach(m => {
+          const raw = m.endDateIso || m.end_date_iso || m.endDate;
+          const mins = ((new Date(raw).getTime() - now) / 60000).toFixed(1);
+          console.log(`  → "${m.question?.slice(0, 60)}" — resolves in ${mins}min`);
+        });
+      } else {
+        // No 5-min window open right now — clear cache so we retry next tick
+        this.marketsCache = [];
+        this.lastMarketFetch = Date.now();
+        console.log('[PolymarketFeed] No BTC markets resolving within 30min — waiting for next window');
+      }
 
-      console.log(`[PolymarketFeed] Fetched ${btcMarkets.length} active BTC markets`);
-      return btcMarkets;
+      return this.marketsCache;
     } catch (err) {
       console.error('[PolymarketFeed] fetchActiveBTCMarkets failed:', err.message);
-      return this.marketsCache; // Return stale cache on error
+      return this.marketsCache;
     }
   }
 
