@@ -577,9 +577,15 @@ class BotInstance {
   }
 
   async _getLiveBalance() {
+    // Cache balance for 60s — no need to hit RPC on every 10s tick
+    if (this._balanceCache && (Date.now() - this._balanceCache.ts) < 60000) {
+      return this._balanceCache.value;
+    }
     try {
       if (this.settings.polymarket_wallet_address) {
         const { ethers } = require('ethers');
+        // staticNetwork skips ethers v6 background network-detection retries (stops log spam)
+        const POLYGON = ethers.Network.from(137);
         const rpcs = [
           process.env.POLYGON_RPC_URL,
           'https://polygon-bor-rpc.publicnode.com',
@@ -588,13 +594,15 @@ class BotInstance {
         const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
         for (const rpc of rpcs) {
           try {
-            const provider = new ethers.JsonRpcProvider(rpc);
+            const provider = new ethers.JsonRpcProvider(rpc, POLYGON, { staticNetwork: POLYGON });
             const usdc = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', ERC20_ABI, provider);
             const raw = await Promise.race([
               usdc.balanceOf(this.settings.polymarket_wallet_address),
               new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
             ]);
-            return parseFloat(ethers.formatUnits(raw, 6));
+            const balance = parseFloat(ethers.formatUnits(raw, 6));
+            this._balanceCache = { value: balance, ts: Date.now() };
+            return balance;
           } catch (e) { continue; }
         }
       }
