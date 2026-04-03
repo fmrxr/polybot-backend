@@ -61,7 +61,18 @@ class PolymarketFeed {
       return this.marketsCache;
     }
 
-    // 1. Gamma Events API (5-min BTC events show up here, question may just say "Up/Down")
+    // 1. Main Polymarket API (powers /crypto/5M — format: "BTC Up or Down — H:MM–H:MM ET")
+    const fromMainAPI = await this._fetchViaMainAPI();
+    if (fromMainAPI.length > 0) {
+      this.marketsCache = fromMainAPI;
+      this.lastMarketFetch = now;
+      this.marketCacheTTL = 30000;
+      console.log(`[PolymarketFeed] Main API: found ${fromMainAPI.length} BTC market(s)`);
+      fromMainAPI.forEach(m => console.log(`  → "${m.question?.slice(0, 70)}"`));
+      return this.marketsCache;
+    }
+
+    // 2. Gamma Events API (5-min BTC events show up here, question may just say "Up/Down")
     const fromEvents = await this._fetchViaEventsAPI();
     if (fromEvents.length > 0) {
       this.marketsCache = fromEvents;
@@ -72,7 +83,7 @@ class PolymarketFeed {
       return this.marketsCache;
     }
 
-    // 2. CLOB SDK — accepting_orders, sampling, crypto-tag
+    // 3. CLOB SDK — accepting_orders, sampling, crypto-tag
     const fromCLOB = await this._fetchViaCLOB();
     if (fromCLOB.length > 0) {
       this.marketsCache = fromCLOB;
@@ -115,6 +126,65 @@ class PolymarketFeed {
     this.lastMarketFetch = now;
     this.marketsCache = [];
     return [];
+  }
+
+  /**
+   * Main Polymarket REST API — powers the website's /crypto/5M section.
+   * Market format: "BTC Up or Down — 1:05–1:10 AM ET"
+   * Uses https://api.polymarket.com (different from gamma-api and clob)
+   */
+  async _fetchViaMainAPI() {
+    try {
+      const now = Date.now();
+      const nowSec = Math.floor(now / 1000);
+      const found = [];
+
+      const paramSets = [
+        { closed: 'false', active: 'true', limit: '100', tag_slug: 'crypto' },
+        { closed: 'false', active: 'true', limit: '200' },
+      ];
+
+      for (const params of paramSets) {
+        const url = 'https://api.polymarket.com/markets?' + new URLSearchParams(params);
+        let res;
+        try { res = await fetch(url, { signal: AbortSignal.timeout(6000) }); } catch (e) { continue; }
+        if (!res.ok) continue;
+        const data = await res.json();
+        const markets = Array.isArray(data) ? data : (data?.data || data?.markets || data?.results || []);
+        if (!markets.length) continue;
+
+        // Log ALL markets ending soon (no keyword filter — discover real market names)
+        const soon = markets.filter(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.end_time || m.resolution_time;
+          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+          return endMs > now && (endMs - now) < 7200000;
+        });
+        if (soon.length > 0 && (now - (this._lastMainApiLog||0)) > 120000) {
+          this._lastMainApiLog = now;
+          console.log(`[PolymarketFeed] api.polymarket.com: ${markets.length} markets, ${soon.length} ending <2h:`);
+          soon.slice(0, 6).forEach(m => {
+            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.end_time || m.resolution_time;
+            const endMs = new Date(rawEnd).getTime();
+            console.log(`  "${(m.question||m.title||'').slice(0,60)}" | ${((endMs-now)/60000).toFixed(1)}min`);
+          });
+        }
+
+        const btc = markets.filter(m => {
+          const q = (m.question || m.title || '').toLowerCase();
+          return q.includes('btc') || q.includes('bitcoin');
+        });
+        const results = btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
+        if (results.length > 0) {
+          console.log(`[PolymarketFeed] api.polymarket.com: found ${results.length} BTC market(s)`);
+          return results;
+        }
+        if (markets.length > 0) break; // got a response, don't retry
+      }
+      return found;
+    } catch (e) {
+      console.warn('[PolymarketFeed] api.polymarket.com failed:', e.message);
+      return [];
+    }
   }
 
   /**
@@ -184,6 +254,8 @@ class PolymarketFeed {
         'bitcoin-up-or-down', 'btc-up-or-down', 'bitcoin-5-minute',
         'btc-5-minute', 'bitcoin-price-5-min', 'will-bitcoin-go-up',
         'bitcoin-up-or-down-5-min', 'btc-5min', 'bitcoin-5min',
+        'crypto-5m', 'crypto-5-minute', 'btc-5m', '5-minute-bitcoin',
+        'bitcoin-5m', 'bitcoin-5-min', 'btc-up-down-5-min',
       ];
       for (const slug of btcSlugs) {
         try {
