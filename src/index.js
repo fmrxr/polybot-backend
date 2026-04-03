@@ -46,7 +46,7 @@ app.use('/api/claude', require('./routes/claude'));
 app.use('/api/admin', require('./routes/admin'));
 
 // --- Health Check ---
-app.get('/health', (req, res) => {
+app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     uptime: process.uptime(),
