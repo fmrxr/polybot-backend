@@ -162,7 +162,9 @@ class GBMSignalEngine {
         //   3. Lag bonus when Polymarket visibly lags BTC
         // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
-        const btcEdge = Math.min(Math.abs(btcDelta) * 0.05, 0.10); // up to 10% from BTC trend
+        // btcDelta is already %, edge mapped to probability units (÷100):
+        // 0.1% move → 0.05 edge (5%), 0.2% → 0.10 (10%), capped at 0.15
+        const btcEdge = Math.min(Math.abs(btcDelta) * 0.5 / 100, 0.15);
         const microEdge = micro.confidence * 0.10;                  // up to 10% from microstructure
         const lagBonus = micro.hasMarketLag ? 0.05 : 0;             // +5% when lag detected
         const totalEdge = btcEdge + microEdge + lagBonus;
@@ -219,6 +221,8 @@ class GBMSignalEngine {
           passed: evAnalysis.bestEV >= evFloor
         };
 
+        console.log(`[GBMSignalEngine] Gate2: btcDelta=${btcDelta.toFixed(3)}% edge=${(totalEdge*100).toFixed(2)}% modelProb=${modelProb.toFixed(3)} yesPrice=${yesPrice.toFixed(3)} EV=${evAnalysis.bestEV.toFixed(2)}% floor=${evFloor}%`);
+
         if (evAnalysis.bestEV < evFloor) {
           log.gates.gate2.passed = false;
           continue; // EV too low (including costs)
@@ -267,8 +271,8 @@ class GBMSignalEngine {
             continue;
           }
 
-          // Check strength
-          if (Math.abs(emaEdge) < minEdge / 100) {
+          // Check strength — emaEdge is already in %, compare directly to minEdge %
+          if (Math.abs(emaEdge) < minEdge) {
             log.gates.gate3.passed = false;
             continue;
           }
