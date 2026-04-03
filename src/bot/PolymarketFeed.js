@@ -166,9 +166,13 @@ class PolymarketFeed {
     const nowSec = Math.floor(nowUTC / 1000);
 
     const _endMs = (m) => {
-      const raw = m.end_date_iso || m.endDateIso || m.endDate;
+      // Gamma list uses endDate (full ISO) and endDateIso (date-only "2026-04-03" — useless).
+      // Must check endDate BEFORE endDateIso to avoid parsing date-only as midnight UTC.
+      const raw = m.end_date_iso || m.endDate || m.endDateIso;
       if (!raw) return 0;
       const s = typeof raw === 'string' ? raw : String(raw);
+      // Skip if date-only string (no time component) — would resolve to midnight UTC
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return 0;
       return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime();
     };
 
@@ -329,13 +333,18 @@ class PolymarketFeed {
     // Accept active, accepting_orders, or just not-closed markets
     if (m.archived) return null;
 
-    // Parse end date — Gamma uses camelCase (endDate/endDateIso), CLOB uses snake_case
-    const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.resolution_time || m.end_time;
+    // Parse end date — Gamma uses endDate (full ISO) + endDateIso (date-only, useless for time).
+    // Must check endDate BEFORE endDateIso. CLOB uses end_date_iso (snake_case).
+    const _ts = (v) => {
+      if (!v) return 0;
+      if (typeof v === 'number') return v > 1e12 ? v : v * 1000;
+      const s = String(v).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return 0; // date-only → skip
+      return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime();
+    };
+    const rawEnd = m.end_date_iso || m.endDate || m.endDateIso || m.resolution_time || m.end_time;
     if (!rawEnd) return null;
-    // Append 'Z' to string timestamps that lack a TZ suffix to force UTC interpretation
-    const endMs = typeof rawEnd === 'number'
-      ? (rawEnd > 1e12 ? rawEnd : rawEnd * 1000)
-      : (() => { const s = String(rawEnd); return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime(); })();
+    const endMs = _ts(rawEnd);
     if (isNaN(endMs)) return null;
     const endSec = Math.floor(endMs / 1000);
 
@@ -344,12 +353,10 @@ class PolymarketFeed {
     // Must end within 2 hours (wide enough for "next window" pre-loading)
     if ((endSec - nowSec) > 7200) return null;
 
-    // Parse start date
-    const rawStart = m.start_date_iso || m.startDateIso || m.startDate || m.start_time;
+    // Parse start date — same priority: startDate (full) before startDateIso (date-only)
+    const rawStart = m.start_date_iso || m.startDate || m.startDateIso || m.start_time;
     let startSec = rawStart
-      ? Math.floor((typeof rawStart === 'number'
-        ? (rawStart > 1e12 ? rawStart : rawStart * 1000)
-        : (() => { const s = String(rawStart); return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime(); })()) / 1000)
+      ? Math.floor(_ts(rawStart) / 1000)
       : endSec - 300;
     if (!startSec || isNaN(startSec)) startSec = endSec - 300;
 
@@ -367,7 +374,7 @@ class PolymarketFeed {
 
     return {
       ...m,
-      id: m.id || m.condition_id,
+      id: m.id || m.conditionId || m.condition_id,
       question: m.question || m.title || '',
       tokens,
       clobTokenIds: clobIds,
