@@ -88,8 +88,14 @@ class PolymarketFeed {
       return this.marketsCache;
     }
 
+    // Log a diagnostic dump once per minute to help diagnose misses
+    const diagInterval = 60000;
+    if (!this._lastDiagLog || (now - this._lastDiagLog) > diagInterval) {
+      this._lastDiagLog = now;
+      this._logDiagnostic().catch(() => {});
+    }
+
     console.log('[PolymarketFeed] No 5-min BTC markets open right now — waiting for next window');
-    // Update cache timestamp so we don't hammer the API every 10s when no market is open
     this.lastMarketFetch = now;
     this.marketsCache = [];
     return [];
@@ -111,9 +117,16 @@ class PolymarketFeed {
       });
 
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        console.warn(`[PolymarketFeed] Events API HTTP ${res.status}`);
+        return [];
+      }
       const events = await res.json();
-      if (!Array.isArray(events)) return [];
+      if (!Array.isArray(events)) {
+        console.warn('[PolymarketFeed] Events API: unexpected response shape:', typeof events);
+        return [];
+      }
+      console.log(`[PolymarketFeed] Events API: ${events.length} total events`);
 
       const found = [];
 
@@ -161,6 +174,15 @@ class PolymarketFeed {
           .filter(Boolean);
 
         if (found.length > 0) return found;
+
+        // Log how many BTC markets we saw but filtered — helps diagnose end-date misses
+        const btcCount = markets.filter(m => {
+          const q = (m.question||m.title||'').toLowerCase();
+          return q.includes('btc') || q.includes('bitcoin');
+        }).length;
+        if (btcCount > 0) {
+          console.log(`[PolymarketFeed] Markets API: ${btcCount} BTC market(s) found but none within 30-min window`);
+        }
       }
       return [];
     } catch (err) {
@@ -207,6 +229,70 @@ class PolymarketFeed {
     } catch (err) {
       console.warn('[PolymarketFeed] CLOB paginated fetch failed:', err.message);
       return [];
+    }
+  }
+
+  /**
+   * One-per-minute diagnostic: fetches raw events/markets and logs what's
+   * actually available, without filtering — so Railway logs reveal whether
+   * no BTC markets exist or our filters are too strict.
+   */
+  async _logDiagnostic() {
+    try {
+      const now = Date.now();
+      const nowSec = Math.floor(now / 1000);
+      console.log(`[PolymarketFeed] DIAGNOSTIC — ${new Date(now).toISOString()}`);
+
+      // Check Events API
+      const evRes = await fetch('https://gamma-api.polymarket.com/events?' + new URLSearchParams({
+        active: 'true', closed: 'false', order: 'end_date', ascending: 'true', limit: '20'
+      }), { signal: AbortSignal.timeout(5000) });
+      if (evRes.ok) {
+        const events = await evRes.json();
+        const btcEvents = (Array.isArray(events) ? events : []).filter(e => {
+          const t = (e.title || e.question || e.slug || '').toLowerCase();
+          return t.includes('btc') || t.includes('bitcoin');
+        });
+        if (btcEvents.length > 0) {
+          console.log(`[PolymarketFeed] DIAG Events API: ${btcEvents.length} BTC event(s):`);
+          btcEvents.forEach(e => {
+            const mCount = (e.markets || []).length;
+            const firstEnd = e.markets?.[0]?.endDate || e.markets?.[0]?.endDateIso || '?';
+            const minsLeft = firstEnd !== '?' ? ((new Date(firstEnd).getTime() - now) / 60000).toFixed(1) : '?';
+            console.log(`  → "${(e.title||e.slug||'').slice(0,60)}" — ${mCount} market(s), first ends in ${minsLeft} min`);
+          });
+        } else {
+          console.log(`[PolymarketFeed] DIAG Events API: 0 BTC events in top-20 by end_date`);
+          if (Array.isArray(events) && events.length > 0) {
+            // Show what IS at the top
+            const top = events.slice(0, 3).map(e => `"${(e.title||e.slug||'?').slice(0,40)}"`).join(', ');
+            console.log(`[PolymarketFeed] DIAG Top-3 events: ${top}`);
+          }
+        }
+      } else {
+        console.log(`[PolymarketFeed] DIAG Events API: HTTP ${evRes.status}`);
+      }
+
+      // Check Markets API for any BTC market regardless of end date
+      const mkRes = await fetch('https://gamma-api.polymarket.com/markets?' + new URLSearchParams({
+        active: 'true', closed: 'false', order: 'end_date', ascending: 'true', limit: '100'
+      }), { signal: AbortSignal.timeout(6000) });
+      if (mkRes.ok) {
+        const markets = await mkRes.json();
+        const btcAll = (Array.isArray(markets) ? markets : []).filter(m => {
+          const q = (m.question||m.title||'').toLowerCase();
+          return q.includes('btc') || q.includes('bitcoin');
+        });
+        console.log(`[PolymarketFeed] DIAG Markets API: ${btcAll.length} BTC market(s) (any end date):`);
+        btcAll.slice(0, 5).forEach(m => {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+          const endMs = rawEnd ? (typeof rawEnd === 'number' ? (rawEnd > 1e12 ? rawEnd : rawEnd * 1000) : new Date(rawEnd).getTime()) : 0;
+          const minsLeft = endMs ? ((endMs - now) / 60000).toFixed(1) : '?';
+          console.log(`  → "${(m.question||'').slice(0,60)}" ends in ${minsLeft} min`);
+        });
+      }
+    } catch (err) {
+      console.log(`[PolymarketFeed] DIAG failed: ${err.message}`);
     }
   }
 
