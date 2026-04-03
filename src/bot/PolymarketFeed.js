@@ -42,69 +42,111 @@ class PolymarketFeed {
 
   async fetchActiveBTCMarkets() {
     try {
-      // Short cache for 5-min markets — new windows open every 5 minutes
-      const CACHE_TTL = 30000; // 30 seconds
+      // Short cache — 5-min windows open frequently
+      const CACHE_TTL = 30000;
       if (this.marketsCache.length > 0 && this.lastMarketFetch &&
           (Date.now() - this.lastMarketFetch) < CACHE_TTL) {
         return this.marketsCache;
       }
 
-      // Fetch a broad set and filter client-side by end date
-      const response = await fetch('https://gamma-api.polymarket.com/markets?' + new URLSearchParams({
-        closed: 'false',
-        active: 'true',
-        limit: '200',
-      }));
+      if (!this.clobClient) throw new Error('CLOB client not initialized');
 
-      if (!response.ok) {
-        throw new Error(`Gamma API returned ${response.status}`);
-      }
-
-      const markets = await response.json();
       const now = Date.now();
+      const nowSec = Math.floor(now / 1000);
 
-      // Filter: BTC/Bitcoin question + resolves within next 30 minutes
-      const btcShortTerm = markets.filter(m => {
+      // Fetch active markets from CLOB — returns all currently tradeable markets
+      const response = await this.clobClient.getMarkets();
+      const allMarkets = Array.isArray(response) ? response
+        : (response?.data || response?.markets || []);
+
+      // Filter: active + BTC/Bitcoin question + resolves within 30 minutes
+      // Duration ~300s identifies 5-min markets; window must still be open
+      const btc5m = allMarkets.filter(m => {
+        if (!m.active) return false;
         const q = (m.question || '').toLowerCase();
         if (!q.includes('btc') && !q.includes('bitcoin')) return false;
 
-        // endDateIso / end_date_iso / endDate — try all variants
-        const raw = m.endDateIso || m.end_date_iso || m.endDate;
-        if (!raw) return false;
+        const endSec = m.end_date_iso
+          ? Math.floor(new Date(m.end_date_iso).getTime() / 1000)
+          : (m.resolution_time || m.end_time || 0);
 
-        // Handle both ISO string and Unix timestamp (seconds or ms)
-        let endMs;
-        if (typeof raw === 'number') {
-          endMs = raw > 1e12 ? raw : raw * 1000; // seconds vs ms
-        } else {
-          endMs = new Date(raw).getTime();
-        }
+        const startSec = m.start_date_iso
+          ? Math.floor(new Date(m.start_date_iso).getTime() / 1000)
+          : (m.start_time || 0);
 
-        if (isNaN(endMs)) return false;
+        if (!endSec) return false;
 
-        const minutesUntilEnd = (endMs - now) / 60000;
-        return minutesUntilEnd > 0 && minutesUntilEnd <= 30;
+        const minsUntilEnd = (endSec - nowSec) / 60;
+        if (minsUntilEnd <= 0 || minsUntilEnd > 30) return false;
+
+        // Prefer 5-min markets but accept any short-term BTC market
+        const durationSec = endSec - startSec;
+        return durationSec > 0 && durationSec <= 600; // ≤10 minute window
       });
 
-      if (btcShortTerm.length > 0) {
-        this.marketsCache = btcShortTerm;
-        this.lastMarketFetch = Date.now();
-        console.log(`[PolymarketFeed] Found ${btcShortTerm.length} BTC markets resolving within 30min`);
-        btcShortTerm.forEach(m => {
-          const raw = m.endDateIso || m.end_date_iso || m.endDate;
-          const mins = ((new Date(raw).getTime() - now) / 60000).toFixed(1);
-          console.log(`  → "${m.question?.slice(0, 60)}" — resolves in ${mins}min`);
+      // Normalise to expected shape: { id, question, tokens:[{token_id},...], clobTokenIds }
+      const normalised = btc5m.map(m => {
+        const tokens = m.tokens || [];
+        const clobIds = m.clobTokenIds || m.clob_token_ids || tokens.map(t => t.token_id);
+        return { ...m, tokens, clobTokenIds: clobIds };
+      });
+
+      this.marketsCache = normalised;
+      this.lastMarketFetch = now;
+
+      if (normalised.length > 0) {
+        console.log(`[PolymarketFeed] Found ${normalised.length} active 5-min BTC market(s)`);
+        normalised.forEach(m => {
+          console.log(`  → "${m.question?.slice(0, 70)}"`);
         });
       } else {
-        // No 5-min window open right now — clear cache so we retry next tick
-        this.marketsCache = [];
-        this.lastMarketFetch = Date.now();
-        console.log('[PolymarketFeed] No BTC markets resolving within 30min — waiting for next window');
+        console.log('[PolymarketFeed] No 5-min BTC markets open right now — waiting for next window');
       }
 
       return this.marketsCache;
     } catch (err) {
       console.error('[PolymarketFeed] fetchActiveBTCMarkets failed:', err.message);
+      // Fallback to Gamma API if CLOB client fails
+      return this._fetchBTCMarketsGammaFallback();
+    }
+  }
+
+  async _fetchBTCMarketsGammaFallback() {
+    try {
+      const now = Date.now();
+      const nowSec = Math.floor(now / 1000);
+      const response = await fetch('https://gamma-api.polymarket.com/markets?' + new URLSearchParams({
+        closed: 'false', active: 'true', limit: '200'
+      }));
+      if (!response.ok) return this.marketsCache;
+      const markets = await response.json();
+
+      const btc5m = markets.filter(m => {
+        const q = (m.question || '').toLowerCase();
+        if (!q.includes('btc') && !q.includes('bitcoin') && !q.includes('up or down')) return false;
+        const raw = m.endDate || m.endDateIso;
+        if (!raw) return false;
+        const endMs = typeof raw === 'number' ? (raw > 1e12 ? raw : raw * 1000) : new Date(raw).getTime();
+        if (isNaN(endMs)) return false;
+        const mins = (endMs - now) / 60000;
+        return mins > 0 && mins <= 30;
+      });
+
+      // Normalise clobTokenIds (may be JSON string or array)
+      btc5m.forEach(m => {
+        if (typeof m.clobTokenIds === 'string') {
+          try { m.clobTokenIds = JSON.parse(m.clobTokenIds); } catch(e) { m.clobTokenIds = []; }
+        }
+      });
+
+      if (btc5m.length > 0) {
+        this.marketsCache = btc5m;
+        this.lastMarketFetch = now;
+        console.log(`[PolymarketFeed] Gamma fallback: ${btc5m.length} BTC market(s) within 30min`);
+      }
+      return this.marketsCache;
+    } catch (err) {
+      console.error('[PolymarketFeed] Gamma fallback failed:', err.message);
       return this.marketsCache;
     }
   }

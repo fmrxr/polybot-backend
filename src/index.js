@@ -8,6 +8,9 @@ const BotManager = require('./bot/BotManager');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// --- Trust proxy (Railway sits behind a load balancer) ---
+app.set('trust proxy', 1);
+
 // --- Security ---
 app.use(helmet());
 

@@ -406,8 +406,106 @@
     }
   </style>
   <script src="/config.js"></script>
+  <style>
+    /* ─── LOGIN OVERLAY ─── */
+    #loginOverlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #loginOverlay.hidden { display: none; }
+    .login-card {
+      width: 100%; max-width: 400px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-hi);
+      padding: 40px 36px;
+    }
+    .login-logo {
+      text-align: center; margin-bottom: 32px;
+    }
+    .login-logo-text {
+      font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 800;
+      color: var(--amber); letter-spacing: 6px;
+    }
+    .login-logo-sub {
+      font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+      color: var(--text-muted); margin-top: 6px;
+    }
+    .login-tabs {
+      display: flex; gap: 0; margin-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+    .login-tab {
+      flex: 1; padding: 10px; text-align: center;
+      font-family: var(--font); font-size: 11px; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--text-muted);
+      border: none; background: transparent; cursor: pointer;
+      border-bottom: 2px solid transparent; transition: all 0.15s;
+      margin-bottom: -1px;
+    }
+    .login-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+    .login-label {
+      display: block; font-size: 10px; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;
+    }
+    .login-input {
+      width: 100%; padding: 10px 12px;
+      background: var(--bg-input); border: 1px solid var(--border);
+      color: var(--text-hi); font-family: var(--font); font-size: 13px;
+      margin-bottom: 16px; outline: none; transition: border-color 0.15s;
+    }
+    .login-input:focus { border-color: var(--amber); }
+    .login-btn {
+      width: 100%; padding: 12px;
+      background: var(--amber); color: var(--bg); border: none;
+      font-family: var(--font); font-size: 12px; letter-spacing: 2px;
+      text-transform: uppercase; font-weight: 700; cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .login-btn:hover { opacity: 0.85; }
+    .login-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .login-error {
+      background: var(--red-glow); border: 1px solid var(--red);
+      color: var(--red); font-size: 11px; padding: 8px 12px;
+      margin-bottom: 16px; display: none;
+    }
+    .login-error.visible { display: block; }
+  </style>
 </head>
 <body>
+
+<!-- ═══════════════════════════════════════════════════════ LOGIN OVERLAY -->
+<div id="loginOverlay" class="hidden">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-logo-text">AXIOM</div>
+      <div class="login-logo-sub">Polymarket Trading Terminal</div>
+    </div>
+    <div class="login-tabs">
+      <button class="login-tab active" id="ltab-login" onclick="switchLoginTab('login')">Login</button>
+      <button class="login-tab" id="ltab-register" onclick="switchLoginTab('register')">Register</button>
+    </div>
+    <div id="login-error" class="login-error"></div>
+    <!-- Login form -->
+    <form id="form-login" onsubmit="handleLogin(event)">
+      <label class="login-label">Email</label>
+      <input class="login-input" id="login-email" type="email" placeholder="you@email.com" required autocomplete="email">
+      <label class="login-label">Password</label>
+      <input class="login-input" id="login-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+      <button class="login-btn" id="btn-login" type="submit">Login</button>
+    </form>
+    <!-- Register form -->
+    <form id="form-register" style="display:none" onsubmit="handleRegister(event)">
+      <label class="login-label">Email</label>
+      <input class="login-input" id="reg-email" type="email" placeholder="you@email.com" required autocomplete="email">
+      <label class="login-label">Password</label>
+      <input class="login-input" id="reg-password" type="password" placeholder="Min 8 characters" required autocomplete="new-password">
+      <label class="login-label">Confirm Password</label>
+      <input class="login-input" id="reg-confirm" type="password" placeholder="Repeat password" required autocomplete="new-password">
+      <button class="login-btn" id="btn-register" type="submit">Create Account</button>
+    </form>
+  </div>
+</div>
 
 <nav>
   <div class="nav-container">
@@ -916,16 +1014,75 @@
   let currentPage = 1;
   let tradesPerPage = 10;
 
+  function showLoginPage() {
+    document.getElementById('loginOverlay').classList.remove('hidden');
+  }
+  function hideLoginPage() {
+    document.getElementById('loginOverlay').classList.add('hidden');
+  }
+  function switchLoginTab(tab) {
+    document.getElementById('form-login').style.display = tab === 'login' ? '' : 'none';
+    document.getElementById('form-register').style.display = tab === 'register' ? '' : 'none';
+    document.getElementById('ltab-login').classList.toggle('active', tab === 'login');
+    document.getElementById('ltab-register').classList.toggle('active', tab === 'register');
+    showLoginError('');
+  }
+  function showLoginError(msg) {
+    const el = document.getElementById('login-error');
+    el.textContent = msg; el.classList.toggle('visible', !!msg);
+  }
+  async function handleLogin(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-login');
+    btn.disabled = true; btn.textContent = 'Logging in…';
+    showLoginError('');
+    try {
+      const res = await fetch((window.API_BASE||'')+'/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: document.getElementById('login-email').value.trim(), password: document.getElementById('login-password').value })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Login failed');
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('userEmail', data.user?.email || '');
+      hideLoginPage();
+      await init();
+    } catch (err) { showLoginError(err.message); }
+    finally { btn.disabled = false; btn.textContent = 'Login'; }
+  }
+  async function handleRegister(e) {
+    e.preventDefault();
+    const pass = document.getElementById('reg-password').value;
+    const confirm = document.getElementById('reg-confirm').value;
+    if (pass !== confirm) return showLoginError('Passwords do not match');
+    const btn = document.getElementById('btn-register');
+    btn.disabled = true; btn.textContent = 'Creating account…';
+    showLoginError('');
+    try {
+      const res = await fetch((window.API_BASE||'')+'/api/auth/register', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: document.getElementById('reg-email').value.trim(), password: pass })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Registration failed');
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('userEmail', data.user?.email || '');
+      hideLoginPage();
+      await init();
+    } catch (err) { showLoginError(err.message); }
+    finally { btn.disabled = false; btn.textContent = 'Create Account'; }
+  }
+
   async function init() {
     try {
       const token = localStorage.getItem('token');
-      if (!token) { window.location.href = '/login.html'; return; }
+      if (!token) { showLoginPage(); return; }
 
       const userRes = await fetch((window.API_BASE||'')+'/api/user/settings', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!userRes.ok) {
-        if (userRes.status === 401) { localStorage.removeItem('token'); window.location.href = '/login.html'; }
+        if (userRes.status === 401) { localStorage.removeItem('token'); showLoginPage(); }
         return;
       }
       const userSettings = await userRes.json();
@@ -1731,7 +1888,7 @@
   function logout() {
     localStorage.removeItem('token');
     localStorage.removeItem('userEmail');
-    window.location.href = '/login.html';
+    showLoginPage();
   }
 
   window.addEventListener('load', init);

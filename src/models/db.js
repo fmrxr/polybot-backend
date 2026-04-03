@@ -159,6 +159,9 @@ const initDB = async () => {
     `);
     // Add columns that may not exist in older deployments (safe to run multiple times)
     await client.query(`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user';
+
       ALTER TABLE trades
         ADD COLUMN IF NOT EXISTS status        VARCHAR(50)    DEFAULT 'open',
         ADD COLUMN IF NOT EXISTS trade_size    DECIMAL(20,2),
