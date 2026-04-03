@@ -234,7 +234,7 @@ router.get('/polymarket-balance', async (req, res) => {
     }
 
     const { decrypt } = require('../services/encryption');
-    const { PolymarketFeed } = require('../bot/PolymarketFeed');
+    const PolymarketFeed = require('../bot/PolymarketFeed');
 
     let privateKey;
     try {
@@ -248,9 +248,9 @@ router.get('/polymarket-balance', async (req, res) => {
     if (balanceData) {
       await pool.query(
         'UPDATE bot_settings SET cached_polymarket_balance=$1, cached_balance_at=NOW() WHERE user_id=$2',
-        [balanceData.usdc_balance, req.userId]
+        [balanceData.usdc, req.userId]
       );
-      return res.json({ balance: balanceData.usdc_balance, address: balanceData.address });
+      return res.json({ balance: balanceData.usdc, address: balanceData.wallet });
     }
 
     res.json({ balance: null, error: 'CLOB API did not return balance' });
