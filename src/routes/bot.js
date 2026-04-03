@@ -124,4 +124,80 @@ router.get('/signals', authMiddleware, async (req, res) => {
   }
 });
 
+// --- Get Decisions (alias for signals, used by signal monitor) ---
+router.get('/decisions', authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
+
+    const result = await pool.query(
+      'SELECT * FROM signals WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+      [req.userId, limit]
+    );
+
+    // Normalise field names so the frontend can read them uniformly
+    const rows = result.rows.map(r => ({
+      ...r,
+      verdict:    r.verdict,
+      direction:  r.direction,
+      reason:     r.reason,
+      // expose gate data under 'data' key so renderSignals() can read d.gate_failed etc.
+      data: {
+        ev_adjusted:  r.ev_adj,
+        spread_pct:   r.spread_pct  || null,
+        lag_age_sec:  r.lag_age_sec || null,
+        gate_failed:  r.gate_failed || null,
+        gate1_passed: r.gate1_passed,
+        gate2_passed: r.gate2_passed,
+        gate3_passed: r.gate3_passed,
+      }
+    }));
+
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch decisions' });
+  }
+});
+
+// --- Gate Stats (signal monitor summary) ---
+router.get('/gate-stats', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*)                                                        AS total,
+        COUNT(*) FILTER (WHERE verdict = 'TRADE')                      AS trade_count,
+        COUNT(*) FILTER (WHERE verdict = 'SKIP')                       AS skip_count,
+        CASE WHEN COUNT(*) > 0
+          THEN ROUND(COUNT(*) FILTER (WHERE verdict='SKIP')::numeric / COUNT(*) * 100, 1)
+          ELSE 0 END                                                    AS skip_rate,
+        ROUND(AVG(ev_adj)    FILTER (WHERE ev_adj    IS NOT NULL), 2)  AS avg_ev_adj,
+        ROUND(AVG(lag_age_sec) FILTER (WHERE lag_age_sec IS NOT NULL), 1) AS avg_lag_age,
+        ROUND(AVG(spread_pct)  FILTER (WHERE spread_pct  IS NOT NULL), 3) AS avg_spread_pct,
+        ROUND(
+          COUNT(*) FILTER (WHERE gate1_passed = true)::numeric /
+          NULLIF(COUNT(*), 0) * 100, 1)                                AS gate1_rate,
+        ROUND(
+          COUNT(*) FILTER (WHERE gate2_passed = true)::numeric /
+          NULLIF(COUNT(*), 0) * 100, 1)                                AS gate2_pass_rate,
+        ROUND(
+          (100 - COUNT(*) FILTER (WHERE verdict='SKIP')::numeric /
+          NULLIF(COUNT(*), 0) * 100), 1)                               AS avg_total_cost,
+        COUNT(*) FILTER (WHERE gate_failed = 0.2)                      AS skip_lag,
+        COUNT(*) FILTER (WHERE gate_failed = 0.3)                      AS skip_chase,
+        COUNT(*) FILTER (WHERE gate_failed = 0.4)                      AS skip_ev_trend,
+        COUNT(*) FILTER (WHERE gate_failed = 1)                        AS skip_gate1,
+        COUNT(*) FILTER (WHERE gate_failed = 1.5)                      AS skip_gate1_5,
+        COUNT(*) FILTER (WHERE gate_failed = 2 OR gate_failed = 2.5)   AS skip_gate2,
+        COUNT(*) FILTER (WHERE gate_failed = 3)                        AS skip_gate3,
+        MAX(created_at)                                                 AS last_decision_at
+      FROM signals
+      WHERE user_id = $1 AND created_at > NOW() - INTERVAL '24 hours'
+    `, [req.userId]);
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('[gate-stats]', err.message);
+    res.status(500).json({ error: 'Failed to fetch gate stats' });
+  }
+});
+
 module.exports = router;

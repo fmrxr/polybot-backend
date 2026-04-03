@@ -397,10 +397,11 @@ class BotInstance {
         ? (effectiveExit - entryPrice) * tradeSize / entryPrice
         : (entryPrice - effectiveExit) * tradeSize / entryPrice;
 
+      const result = pnl > 0 ? 'WIN' : 'LOSS';
       await pool.query(`
-        UPDATE trades SET status = 'closed', exit_price = $1, pnl = $2, close_reason = $3, closed_at = NOW()
-        WHERE id = $4
-      `, [effectiveExit, pnl, reason, trade.id]);
+        UPDATE trades SET status = 'closed', exit_price = $1, pnl = $2, close_reason = $3, result = $4, closed_at = NOW()
+        WHERE id = $5
+      `, [effectiveExit, pnl, reason, result, trade.id]);
 
       if (this.settings.paper_trading) {
         this.paperBalance += tradeSize + pnl;
@@ -535,9 +536,21 @@ class BotInstance {
   async _logSignal(signal) {
     try {
       if (!signal?.log) return;
+      // Derive gate_failed code from which gate blocked execution
+      let gateFailed = null;
+      const gates = signal.log?.gates || {};
+      if (signal.verdict === 'SKIP') {
+        if (gates.freshness && !gates.freshness.passed)  gateFailed = 0.2;
+        else if (gates.chase && !gates.chase.passed)     gateFailed = 0.3;
+        else if (gates.evTrend && !gates.evTrend.passed) gateFailed = 0.4;
+        else if (gates.gate1 && !gates.gate1.passed)     gateFailed = 1;
+        else if (gates.gate2 && !gates.gate2.passed)     gateFailed = 2;
+        else if (gates.gate3 && !gates.gate3.passed)     gateFailed = 3;
+      }
+
       await pool.query(`
-        INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       `, [
         this.userId,
         signal.market?.id || signal.marketId || null,
@@ -549,9 +562,12 @@ class BotInstance {
         signal.evRaw || null,
         signal.evAdj || null,
         signal.emaEdge || null,
-        signal.log?.gates?.gate1?.passed || false,
-        signal.log?.gates?.gate2?.passed || false,
-        signal.log?.gates?.gate3?.passed || false
+        gates.gate1?.passed || false,
+        gates.gate2?.passed || false,
+        gates.gate3?.passed || false,
+        gateFailed,
+        gates.freshness?.lagAge || null,
+        signal.orderBook?.spread || null
       ]);
     } catch (err) {
       // Don't crash on signal logging failure

@@ -147,6 +147,19 @@ const initDB = async () => {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Add columns that may not exist in older deployments
+    await client.query(`
+      ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS result     VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS slippage   DECIMAL(10, 6),
+        ADD COLUMN IF NOT EXISTS lag_age_sec INTEGER;
+
+      ALTER TABLE signals
+        ADD COLUMN IF NOT EXISTS gate_failed  DECIMAL(5, 2),
+        ADD COLUMN IF NOT EXISTS lag_age_sec  INTEGER,
+        ADD COLUMN IF NOT EXISTS spread_pct   DECIMAL(10, 4);
+    `);
+
     console.log('[DB] Tables initialized successfully');
   } catch (err) {
     console.error('[DB] Table initialization error:', err.message);

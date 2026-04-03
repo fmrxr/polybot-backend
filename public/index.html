@@ -1974,9 +1974,10 @@
         const res = await fetch((window.API_BASE||'')+'/api/bot/decisions?limit=100', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+        if (!res.ok) return;
         const data = await res.json();
-        signals = data || [];
-
+        // /decisions returns array directly; /signals returns {signals:[]}
+        signals = Array.isArray(data) ? data : (data.signals || data || []);
         renderSignals();
       } catch (err) {
         console.error('Load signals error:', err);
@@ -2154,34 +2155,48 @@
         return;
       }
 
-      // Filter out ANALYSIS verdicts (Claude feedback rows)
+      // Filter out ANALYSIS verdicts
       const filtered = signals.filter(s => s.verdict !== 'ANALYSIS');
       const recentDash = filtered.slice(0, 10);
       const recentStream = filtered.slice(0, 50);
 
-      // Helper: derive filter label from data.gate_failed
-      function filterLabel(d) {
-        if (!d) return '';
-        const gf = parseFloat(d.gate_failed);
+      // Signals come from /api/bot/decisions which wraps a 'data' object,
+      // but also keep fallback to flat signal columns for /api/bot/signals.
+      function getField(signal, flatKey, dataKey) {
+        return signal.data?.[dataKey] ?? signal[flatKey] ?? null;
+      }
+
+      function filterLabel(signal) {
+        const gf = parseFloat(getField(signal, 'gate_failed', 'gate_failed'));
         if (gf === 0.2) return '<span style="color:#a855f7">A:Lag</span>';
         if (gf === 0.3) return '<span style="color:#f59e0b">B:Chase</span>';
         if (gf === 0.4) return '<span style="color:#fb923c">C:EV↓</span>';
         if (gf === 1 || gf === 1.5) return '<span style="color:#38bdf8">G1</span>';
         if (gf === 2 || gf === 2.5) return '<span style="color:#4ade80">G2</span>';
         if (gf === 3) return '<span style="color:#f87171">G3</span>';
+        // If no gate_failed, show which gates passed
+        if (signal.gate1_passed === false) return '<span style="color:#38bdf8">G1</span>';
+        if (signal.gate2_passed === false) return '<span style="color:#4ade80">G2</span>';
+        if (signal.gate3_passed === false) return '<span style="color:#f87171">G3</span>';
         return '';
       }
 
       function buildRow(signal, cols) {
-        const d = signal.data || {};
         const time = new Date(signal.created_at).toLocaleTimeString();
-        const dir = signal.direction === 'UP' ? '<span style="color:#22c55e">▲</span>'
-                  : signal.direction === 'DOWN' ? '<span style="color:#ef4444">▼</span>'
-                  : '<span style="color:#94a3b8">—</span>';
-        const filter = filterLabel(d);
-        const lag = d.lag_age_sec != null ? parseFloat(d.lag_age_sec).toFixed(0) + 's' : '—';
-        const evAdj = d.ev_adjusted != null ? (parseFloat(String(d.ev_adjusted).replace('%',''))).toFixed(1) + '%' : '—';
-        const spread = d.spread_pct != null ? (parseFloat(String(d.spread_pct).replace('%',''))).toFixed(2) + '%' : '—';
+        const dir = signal.direction === 'YES' || signal.direction === 'UP'
+          ? '<span style="color:#22c55e">▲</span>'
+          : signal.direction === 'NO' || signal.direction === 'DOWN'
+          ? '<span style="color:#ef4444">▼</span>'
+          : '<span style="color:#94a3b8">—</span>';
+        const filter = filterLabel(signal);
+        const lagRaw = getField(signal, 'lag_age_sec', 'lag_age_sec');
+        const lag = lagRaw != null ? parseFloat(lagRaw).toFixed(0) + 's' : '—';
+        const evRaw = getField(signal, 'ev_adj', 'ev_adjusted');
+        const evAdj = evRaw != null
+          ? (parseFloat(evRaw) > 1 ? parseFloat(evRaw).toFixed(1) : (parseFloat(evRaw)*100).toFixed(1)) + '%'
+          : '—';
+        const spreadRaw = getField(signal, 'spread_pct', 'spread_pct');
+        const spread = spreadRaw != null ? parseFloat(spreadRaw).toFixed(2) + '%' : '—';
         const verdict = signal.verdict;
         const vColor = verdict === 'TRADE' ? '#22c55e' : verdict === 'SKIP' ? '#ef4444' : '#94a3b8';
         const reason = (signal.reason || '').substring(0, 60);
@@ -2198,7 +2213,6 @@
             <span style="color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${reason}</span>
           </div>`;
         } else {
-          // Dashboard compact (5 cols)
           return `<div class="signal-row ${verdict === 'TRADE' ? 'trade' : 'skip'}" style="display:grid; grid-template-columns:70px 40px 70px 70px 1fr; gap:6px; align-items:center; padding:5px 8px; font-size:12px;">
             <span style="color:#94a3b8">${time}</span>
             <span>${dir}</span>
@@ -2232,22 +2246,26 @@
                   : trade.direction;
         const pnl = parseFloat(trade.pnl) || 0;
         const pnlColor = pnl > 0 ? '#22c55e' : pnl < 0 ? '#ef4444' : '#94a3b8';
-        const evAdj = trade.ev_at_entry != null
-          ? (parseFloat(trade.ev_at_entry) * 100).toFixed(1) + '%'
-          : (trade.expected_value != null ? (parseFloat(trade.expected_value)*100).toFixed(1)+'%' : '—');
+        // ev_adj is stored in % (e.g. 4.5 means 4.5%), ev_at_entry as decimal
+        const evRaw = trade.ev_adj ?? trade.ev_at_entry ?? null;
+        const evAdj = evRaw != null
+          ? (parseFloat(evRaw) > 1 ? parseFloat(evRaw).toFixed(1) : (parseFloat(evRaw)*100).toFixed(1)) + '%'
+          : '—';
         const lag = trade.lag_age_sec != null ? parseInt(trade.lag_age_sec) + 's' : '—';
         const slip = trade.slippage != null && parseFloat(trade.slippage) > 0
           ? (parseFloat(trade.slippage)*100).toFixed(2)+'%' : '—';
-        const result = trade.result || '…';
+        // result: use result column if set, otherwise derive from status+pnl
+        const result = trade.result || (trade.status === 'closed' ? (pnl > 0 ? 'WIN' : 'LOSS') : 'OPEN');
         const resultColor = result === 'WIN' ? '#22c55e' : result === 'LOSS' ? '#ef4444' : '#94a3b8';
-        const exitReason = (trade.exit_reason || trade.order_status || 'open').replace(/_/g,' ');
+        const exitReason = (trade.close_reason || trade.exit_reason || trade.status || 'open').replace(/_/g,' ');
+        const size = parseFloat(trade.trade_size || trade.size || 0);
 
         html += `
           <tr onclick="showTradeDetail(${idx})" style="cursor:pointer;">
             <td>${time}</td>
             <td>${dir}</td>
             <td>$${parseFloat(trade.entry_price).toFixed(3)}</td>
-            <td>$${parseFloat(trade.size).toFixed(2)}</td>
+            <td>$${size.toFixed(2)}</td>
             <td style="color:#38bdf8">${evAdj}</td>
             <td style="color:#94a3b8">${lag}</td>
             <td style="color:#f59e0b">${slip}</td>
@@ -2260,7 +2278,7 @@
 
       tbody.innerHTML = html;
 
-      const totalPages = Math.ceil(data.total / tradesPerPage);
+      const totalPages = Math.ceil((data.total || trades.length) / tradesPerPage);
       let paginationHtml = '';
       for (let i = 1; i <= totalPages; i++) {
         paginationHtml += `<button class="${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
@@ -2313,12 +2331,12 @@
 
         <h4 style="margin-top: 20px; margin-bottom: 12px;">EV + Execution</h4>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
-          <div><span style="color:var(--text-muted)">EV at entry:</span> <strong>${trade.ev_at_entry != null ? (parseFloat(trade.ev_at_entry)*100).toFixed(2)+'%' : '—'}</strong></div>
-          <div><span style="color:var(--text-muted)">EV peak:</span> <strong>${trade.ev_peak != null ? (parseFloat(trade.ev_peak)*100).toFixed(2)+'%' : '—'}</strong></div>
+          <div><span style="color:var(--text-muted)">EV adj:</span> <strong>${(()=>{const v=trade.ev_adj??trade.ev_at_entry;return v!=null?(parseFloat(v)>1?parseFloat(v).toFixed(1):(parseFloat(v)*100).toFixed(2))+'%':'—'})()}</strong></div>
+          <div><span style="color:var(--text-muted)">Gate 1 score:</span> <strong>${trade.gate1_score != null ? parseFloat(trade.gate1_score).toFixed(3) : '—'}</strong></div>
           <div><span style="color:var(--text-muted)">Lag age:</span> <strong>${trade.lag_age_sec != null ? trade.lag_age_sec+'s' : '—'}</strong></div>
           <div><span style="color:var(--text-muted)">Slippage:</span> <strong>${trade.slippage != null ? (parseFloat(trade.slippage)*100).toFixed(3)+'%' : '—'}</strong></div>
-          <div><span style="color:var(--text-muted)">Exit reason:</span> <strong>${(trade.exit_reason || trade.order_status || '—').replace(/_/g,' ')}</strong></div>
-          <div><span style="color:var(--text-muted)">Result:</span> <strong style="color:${trade.result==='WIN'?'#22c55e':trade.result==='LOSS'?'#ef4444':'#94a3b8'}">${trade.result || '…'}</strong></div>
+          <div><span style="color:var(--text-muted)">Exit reason:</span> <strong>${(trade.close_reason||trade.exit_reason||'—').replace(/_/g,' ')}</strong></div>
+          <div><span style="color:var(--text-muted)">Result:</span> <strong style="color:${(()=>{const r=trade.result||(trade.status==='closed'?(parseFloat(trade.pnl||0)>0?'WIN':'LOSS'):'OPEN');return r==='WIN'?'#22c55e':r==='LOSS'?'#ef4444':'#94a3b8'})()}">${trade.result||(trade.status==='closed'?(parseFloat(trade.pnl||0)>0?'WIN':'LOSS'):'OPEN')}</strong></div>
           <div><span style="color:var(--text-muted)">Filled at:</span> <strong>$${parseFloat(trade.entry_price).toFixed(3)}</strong></div>
           <div><span style="color:var(--text-muted)">Time:</span> <strong>${new Date(trade.created_at).toLocaleString()}</strong></div>
         </div>
