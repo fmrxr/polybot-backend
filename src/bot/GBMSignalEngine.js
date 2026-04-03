@@ -72,17 +72,23 @@ class GBMSignalEngine {
       // --- Evaluate each market ---
       for (const market of markets) {
         const marketId = market.id || market.condition_id;
-        const yesToken = market.tokens?.[0];
-        const noToken = market.tokens?.[1];
 
-        if (!yesToken?.token_id) continue;
+        // Gamma API returns clobTokenIds[]; CLOB API returns tokens[].token_id — support both
+        const yesTokenId = market.tokens?.[0]?.token_id || market.clobTokenIds?.[0];
+        const noTokenId  = market.tokens?.[1]?.token_id || market.clobTokenIds?.[1];
+
+        if (!yesTokenId) {
+          console.warn(`[GBMSignalEngine] Market ${marketId} has no token IDs — skipping`);
+          continue;
+        }
 
         // ==========================================
         // STEP 1: GET REAL MARKET DATA
         // ==========================================
-        const orderBook = await this.polymarket.getOrderBook(yesToken.token_id);
+        const orderBook = await this.polymarket.getOrderBook(yesTokenId);
 
         if (!orderBook || orderBook.bestBid === null || orderBook.bestAsk === null) {
+          console.warn(`[GBMSignalEngine] No valid order book for token ${yesTokenId} (market: ${market.question?.slice(0,50)})`);
           continue; // Can't evaluate without real data
         }
 
@@ -271,7 +277,7 @@ class GBMSignalEngine {
         // ALL GATES PASSED — GENERATE SIGNAL
         // ==========================================
         const entryPrice = direction === 'YES' ? orderBook.bestAsk : (1 - orderBook.bestBid);
-        const tokenId = direction === 'YES' ? yesToken.token_id : (noToken?.token_id || yesToken.token_id);
+        const tokenId = direction === 'YES' ? yesTokenId : (noTokenId || yesTokenId);
 
         log.verdict = 'TRADE';
         log.reason = `EV-driven signal: ${direction} @ EV ${evAnalysis.bestEV.toFixed(2)}%, micro=${micro.confidence.toFixed(3)}, modelProb=${modelProb.toFixed(3)}`;
@@ -297,9 +303,13 @@ class GBMSignalEngine {
         };
       }
 
-      // No market passed
+      // No market passed — log summary of what happened
+      const gateNames = Object.keys(log.gates);
+      const failedAt = gateNames.find(k => log.gates[k]?.passed === false) || 'all_markets_skipped';
       log.verdict = 'SKIP';
       log.reason = 'No market passed all gates';
+      log.skipDetail = failedAt;
+      console.log(`[GBMSignalEngine] SKIP — ${failedAt}`, JSON.stringify(log.gates).slice(0, 200));
       return { verdict: 'SKIP', log };
 
     } catch (err) {
