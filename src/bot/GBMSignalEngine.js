@@ -290,7 +290,9 @@ class GBMSignalEngine {
             ? ((this.emaShort - this.emaLong) / this.emaLong) * 100
             : 0;
 
-          const minEdge = parseFloat(this.settings.gate3_min_edge) || 5.0;
+          // min_edge is the UI slider (0.02–0.10 decimal = %). gate3_min_edge was 5.0%
+          // which requires ~17% BTC move to pass — unreachable. Use min_edge instead.
+          const minEdge = parseFloat(this.settings.min_edge) || 0.05;
           const isBullish = emaEdge > 0;
 
           log.gates.gate3 = {
