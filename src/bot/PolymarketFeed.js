@@ -61,18 +61,40 @@ class PolymarketFeed {
       return this.marketsCache;
     }
 
-    // Primary: CLOB SDK — 5-min markets ONLY appear here
+    // 1. Gamma Events API (5-min BTC events show up here, question may just say "Up/Down")
+    const fromEvents = await this._fetchViaEventsAPI();
+    if (fromEvents.length > 0) {
+      this.marketsCache = fromEvents;
+      this.lastMarketFetch = now;
+      this.marketCacheTTL = 30000;
+      console.log(`[PolymarketFeed] Events: found ${fromEvents.length} BTC market(s)`);
+      fromEvents.forEach(m => console.log(`  → "${m.question?.slice(0, 70)}"`));
+      return this.marketsCache;
+    }
+
+    // 2. CLOB SDK — accepting_orders, sampling, crypto-tag
     const fromCLOB = await this._fetchViaCLOB();
     if (fromCLOB.length > 0) {
       this.marketsCache = fromCLOB;
       this.lastMarketFetch = now;
-      this.marketCacheTTL = 30000; // cache 30s once a market is found
+      this.marketCacheTTL = 30000;
       console.log(`[PolymarketFeed] CLOB: found ${fromCLOB.length} active BTC market(s)`);
       fromCLOB.forEach(m => console.log(`  → "${m.question?.slice(0, 70)}"`));
       return this.marketsCache;
     }
 
-    // Fallback: Gamma Markets API
+    // 3. Short-window scan — find ANY Gamma market ending in next 30 min (no keyword filter)
+    const fromShort = await this._fetchShortWindowMarkets();
+    if (fromShort.length > 0) {
+      this.marketsCache = fromShort;
+      this.lastMarketFetch = now;
+      this.marketCacheTTL = 30000;
+      console.log(`[PolymarketFeed] Short-window: found ${fromShort.length} BTC market(s)`);
+      fromShort.forEach(m => console.log(`  → "${m.question?.slice(0, 70)}"`));
+      return this.marketsCache;
+    }
+
+    // 4. Gamma Markets keyword fallback
     const fromMarkets = await this._fetchViaMarketsAPI();
     if (fromMarkets.length > 0) {
       this.marketsCache = fromMarkets;
@@ -95,48 +117,98 @@ class PolymarketFeed {
     return [];
   }
 
-  /** Strategy 1: Gamma Events endpoint — returns events with embedded markets */
+  /**
+   * Short-window scan: fetch ALL Gamma markets sorted by soonest end_date.
+   * No BTC keyword filter — logs everything ending in 2h so we can identify
+   * what the 5-min BTC market is actually named. Returns BTC-matching ones.
+   */
+  async _fetchShortWindowMarkets() {
+    try {
+      const now = Date.now();
+      const nowSec = Math.floor(now / 1000);
+      const res = await fetch(
+        'https://gamma-api.polymarket.com/markets?active=true&closed=false&order=end_date&ascending=true&limit=50',
+        { signal: AbortSignal.timeout(6000) }
+      );
+      if (!res.ok) return [];
+      const markets = await res.json();
+      if (!Array.isArray(markets)) return [];
+
+      // Find markets ending within 2h
+      const soon = markets.filter(m => {
+        const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+        const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+        return endMs > now && (endMs - now) < 7200000;
+      });
+
+      // Log ALL short-window markets (no keyword filter) — reveals the market's real name
+      if ((now - (this._lastShortLog||0)) > 120000) {
+        this._lastShortLog = now;
+        if (soon.length > 0) {
+          console.log(`[PolymarketFeed] ALL markets ending <2h (${soon.length} total):`);
+          soon.slice(0, 10).forEach(m => {
+            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
+            const endMs = new Date(rawEnd).getTime();
+            const minsLeft = ((endMs - now) / 60000).toFixed(1);
+            const tags = (m.tags||[]).map(t=>t.slug||t.label||'').join(',');
+            console.log(`  "${(m.question||'').slice(0,55)}" | ${minsLeft}min | tags:${tags||'none'}`);
+          });
+        } else {
+          console.log('[PolymarketFeed] Short-window: 0 Gamma markets ending within 2h');
+        }
+      }
+
+      // Return any that have BTC context (broad keyword check including tags/slug)
+      return soon
+        .filter(m => {
+          const q = (m.question || m.title || m.slug || '').toLowerCase();
+          const tags = (m.tags || []).map(t => (t.slug||t.label||'').toLowerCase()).join(' ');
+          const combined = q + ' ' + tags;
+          return combined.includes('btc') || combined.includes('bitcoin') || combined.includes('crypto');
+        })
+        .map(m => this._normaliseMarket(m, nowSec, false, true))
+        .filter(Boolean);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /** Gamma Events endpoint — finds BTC events with embedded short-window markets */
   async _fetchViaEventsAPI() {
     try {
       const now = Date.now();
       const nowSec = Math.floor(now / 1000);
-
-      // Fetch events sorted by soonest end_date first — 5-min BTC events will be at top
-      const url = 'https://gamma-api.polymarket.com/events?' + new URLSearchParams({
-        active: 'true',
-        closed: 'false',
-        order: 'end_date',
-        ascending: 'true',
-        limit: '100',
-      });
-
-      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) {
-        console.warn(`[PolymarketFeed] Events API HTTP ${res.status}`);
-        return [];
-      }
-      const events = await res.json();
-      if (!Array.isArray(events)) {
-        console.warn('[PolymarketFeed] Events API: unexpected response shape:', typeof events);
-        return [];
-      }
-      console.log(`[PolymarketFeed] Events API: ${events.length} total events`);
-
       const found = [];
 
-      for (const event of events) {
-        // Each event has { slug, title, markets: [...] }
-        const title = (event.title || event.question || event.slug || '').toLowerCase();
-        const isBTCEvent = title.includes('btc') || title.includes('bitcoin');
-        if (!isBTCEvent) continue;
+      // Two passes with different param sets — avoid order=end_date which causes 422
+      const paramSets = [
+        { active: 'true', closed: 'false', tag_slug: 'crypto', limit: '50' },
+        { active: 'true', closed: 'false', limit: '100' },
+      ];
 
-        const markets = event.markets || [];
-        for (const m of markets) {
-          // Markets inside a known-BTC event don't need their own BTC keyword check
-          // (their questions might just say "Up" or "Down")
-          const normalised = this._normaliseMarket(m, nowSec, true);
-          if (normalised) found.push(normalised);
+      for (const params of paramSets) {
+        const url = 'https://gamma-api.polymarket.com/events?' + new URLSearchParams(params);
+        let res;
+        try {
+          res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        } catch (e) { continue; }
+        if (!res.ok) continue;
+        const events = await res.json();
+        if (!Array.isArray(events)) continue;
+
+        for (const event of events) {
+          const title = (event.title || event.question || event.slug || '').toLowerCase();
+          const isBTCEvent = title.includes('btc') || title.includes('bitcoin') || title.includes('crypto');
+          if (!isBTCEvent) continue;
+
+          for (const m of (event.markets || [])) {
+            // Markets inside BTC/crypto event skip keyword check — question may just say "Up"/"Down"
+            const normalised = this._normaliseMarket(m, nowSec, true, true);
+            if (normalised) found.push(normalised);
+          }
         }
+
+        if (found.length > 0) break; // stop at first successful pass
       }
 
       return found;
