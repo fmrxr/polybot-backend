@@ -30,9 +30,8 @@ class ChainlinkFeed {
   async fetchPrice() {
     const rpcUrls = [
       process.env.ETH_RPC_URL,
-      'https://eth.llamarpc.com',
-      'https://rpc.ankr.com/eth',
       'https://ethereum.publicnode.com',
+      'https://cloudflare-eth.com',
     ].filter(Boolean);
 
     for (const rpc of rpcUrls) {

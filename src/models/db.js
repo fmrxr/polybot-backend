@@ -146,17 +146,44 @@ const initDB = async () => {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
-    // Add columns that may not exist in older deployments
+    // Add columns that may not exist in older deployments (safe to run multiple times)
     await client.query(`
       ALTER TABLE trades
-        ADD COLUMN IF NOT EXISTS result     VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS slippage   DECIMAL(10, 6),
-        ADD COLUMN IF NOT EXISTS lag_age_sec INTEGER;
+        ADD COLUMN IF NOT EXISTS status        VARCHAR(50)    DEFAULT 'open',
+        ADD COLUMN IF NOT EXISTS trade_size    DECIMAL(20,2),
+        ADD COLUMN IF NOT EXISTS market_id     VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS market_question TEXT,
+        ADD COLUMN IF NOT EXISTS trade_type    VARCHAR(50)    DEFAULT 'signal',
+        ADD COLUMN IF NOT EXISTS signal_confidence DECIMAL(5,3),
+        ADD COLUMN IF NOT EXISTS ev_adj        DECIMAL(10,4),
+        ADD COLUMN IF NOT EXISTS gate1_score   DECIMAL(5,3),
+        ADD COLUMN IF NOT EXISTS gate2_score   DECIMAL(10,4),
+        ADD COLUMN IF NOT EXISTS gate3_score   DECIMAL(10,4),
+        ADD COLUMN IF NOT EXISTS close_reason  VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS closed_at     TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS result        VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS slippage      DECIMAL(10,6),
+        ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER;
+
+      ALTER TABLE bot_settings
+        ADD COLUMN IF NOT EXISTS copy_bot_active    BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS gate1_threshold    DECIMAL(5,3) DEFAULT 0.450,
+        ADD COLUMN IF NOT EXISTS gate2_ev_floor     DECIMAL(5,2) DEFAULT 3.00,
+        ADD COLUMN IF NOT EXISTS gate3_enabled      BOOLEAN DEFAULT true,
+        ADD COLUMN IF NOT EXISTS gate3_min_edge     DECIMAL(5,2) DEFAULT 5.00,
+        ADD COLUMN IF NOT EXISTS snipe_timer_seconds INTEGER DEFAULT 10,
+        ADD COLUMN IF NOT EXISTS stale_lag_seconds  INTEGER DEFAULT 20,
+        ADD COLUMN IF NOT EXISTS chase_threshold    DECIMAL(5,2) DEFAULT 8.00,
+        ADD COLUMN IF NOT EXISTS whale_convergence  BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS max_drawdown_pct   DECIMAL(5,2) DEFAULT 15.00,
+        ADD COLUMN IF NOT EXISTS claude_auto_analysis BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS claude_last_analysis TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS claude_api_key_encrypted TEXT;
 
       ALTER TABLE signals
-        ADD COLUMN IF NOT EXISTS gate_failed  DECIMAL(5, 2),
-        ADD COLUMN IF NOT EXISTS lag_age_sec  INTEGER,
-        ADD COLUMN IF NOT EXISTS spread_pct   DECIMAL(10, 4);
+        ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),
+        ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
+        ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4);
     `);
 
     console.log('[DB] Tables initialized successfully');

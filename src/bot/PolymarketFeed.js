@@ -155,11 +155,9 @@ class PolymarketFeed {
         walletAddress
       );
       // Fetch USDC balance on Polygon
-      const balance = await client.getBalance();
-      return {
-        usdc: parseFloat(balance || '0'),
-        wallet: walletAddress
-      };
+      const result = await client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
+      const usdc = parseFloat(result?.balance ?? result?.usdc_balance ?? result ?? '0');
+      return { usdc, wallet: walletAddress };
     } catch (err) {
       console.error('[PolymarketFeed] fetchBalance failed:', err.message);
       return { usdc: 0, wallet: walletAddress };
