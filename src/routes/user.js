@@ -6,6 +6,34 @@ const { encrypt, decrypt } = require('../services/encryption');
 const router = express.Router();
 router.use(authMiddleware);
 
+// Free public Polygon RPCs (no API key needed) — tried in order
+const POLYGON_RPCS = [
+  process.env.POLYGON_RPC_URL,
+  'https://polygon-bor-rpc.publicnode.com',
+  'https://1rpc.io/matic',
+  'https://polygon.drpc.org',
+].filter(Boolean);
+
+async function getPolygonUsdcBalance(walletAddress) {
+  const { ethers } = require('ethers');
+  const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
+  const USDC_E = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e on Polygon
+  for (const rpc of POLYGON_RPCS) {
+    try {
+      const provider = new ethers.JsonRpcProvider(rpc);
+      const usdc = new ethers.Contract(USDC_E, ERC20_ABI, provider);
+      const raw = await Promise.race([
+        usdc.balanceOf(walletAddress),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+      ]);
+      return parseFloat(ethers.formatUnits(raw, 6));
+    } catch (e) {
+      console.warn(`[Balance] RPC ${rpc} failed: ${e.message}`);
+    }
+  }
+  return null;
+}
+
 // GET /api/user/settings
 router.get('/settings', async (req, res) => {
   try {
@@ -120,21 +148,11 @@ router.get('/dashboard', async (req, res) => {
     // Fetch on-chain USDC balance from Polygon (no L2 API credentials needed)
     let balance = null;
     if (walletAddress) {
-      try {
-        const { ethers } = require('ethers');
-        const rpc = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
-        const provider = new ethers.JsonRpcProvider(rpc);
-        const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
-        // USDC.e (bridged) — primary token Polymarket uses
-        const usdc = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', ERC20_ABI, provider);
-        const raw = await usdc.balanceOf(walletAddress);
-        balance = { usdc_balance: parseFloat(ethers.formatUnits(raw, 6)), address: walletAddress };
-      } catch (e) {
-        console.error('[Dashboard] On-chain balance error:', e.message);
-        // Fall back to cached
-        if (cachedBalance != null) {
-          balance = { usdc_balance: parseFloat(cachedBalance), address: walletAddress };
-        }
+      const usdc = await getPolygonUsdcBalance(walletAddress);
+      if (usdc !== null) {
+        balance = { usdc_balance: usdc, address: walletAddress };
+      } else if (cachedBalance != null) {
+        balance = { usdc_balance: parseFloat(cachedBalance), address: walletAddress };
       }
     }
 
@@ -231,13 +249,10 @@ router.get('/polymarket-balance', async (req, res) => {
       return res.json({ balance: null, error: 'No wallet address configured' });
     }
 
-    const { ethers } = require('ethers');
-    const rpc = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
-    const provider = new ethers.JsonRpcProvider(rpc);
-    const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
-    const usdc = new ethers.Contract('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', ERC20_ABI, provider);
-    const raw = await usdc.balanceOf(walletAddress);
-    const balance = parseFloat(ethers.formatUnits(raw, 6));
+    const balance = await getPolygonUsdcBalance(walletAddress);
+    if (balance === null) {
+      return res.json({ balance: null, error: 'All Polygon RPCs failed' });
+    }
 
     await pool.query(
       'UPDATE bot_settings SET cached_polymarket_balance=$1, cached_balance_at=NOW() WHERE user_id=$2',
