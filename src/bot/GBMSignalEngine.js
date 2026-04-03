@@ -204,7 +204,7 @@ class GBMSignalEngine {
         // Spread is a COST COMPONENT, not a gate
         // ==========================================
         const costs = {
-          spread: Math.min(spread, 0.03), // cap at 3% — maker adverse selection only; full spread is not a cost for limit orders
+          spread: 0, // limit orders at mid — not crossing the spread, real cost is slippage + fees only
           estimatedSlippage: 0.005,
           fees: 0.002
         };
