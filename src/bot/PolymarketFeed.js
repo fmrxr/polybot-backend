@@ -1,4 +1,12 @@
-const { ClobClient } = require('@polymarket/clob-client');
+// ClobClient is ESM-only — must be loaded with dynamic import()
+let _ClobClient = null;
+async function getClobClient() {
+  if (!_ClobClient) {
+    const mod = await import('@polymarket/clob-client');
+    _ClobClient = mod.ClobClient;
+  }
+  return _ClobClient;
+}
 
 class PolymarketFeed {
   constructor(privateKey, walletAddress) {
@@ -12,6 +20,7 @@ class PolymarketFeed {
 
   async initialize() {
     try {
+      const ClobClient = await getClobClient();
       if (this.privateKey && this.walletAddress) {
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
@@ -137,6 +146,7 @@ class PolymarketFeed {
    */
   static async fetchBalance(privateKey, walletAddress) {
     try {
+      const ClobClient = await getClobClient();
       const client = new ClobClient(
         'https://clob.polymarket.com',
         137,
