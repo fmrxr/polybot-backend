@@ -155,72 +155,133 @@ class PolymarketFeed {
   }
 
   /**
-   * Gamma /markets — multiple strategies, no broken order params.
-   * Strategy 1: sort by start_date descending (newest markets first — 5-min window just created)
-   * Strategy 2: is_50_50_outcome=true (BTC up/down is always 50/50)
-   * Strategy 3: paginate plain active markets, log everything ending <1h
+   * Gamma market discovery — no order= params (causes 422).
+   * S0: slug lookup — btc-updown-5m-<epochSec> for current + adjacent windows
+   * S1: end_date_min/max — directly query markets ending in next 10 min
+   * S2: accepting_orders=true — markets currently open for trading
+   * S3: paginated plain active scan — log everything ending <1h
    */
   async _fetchGammaShortWindow() {
     const nowUTC = Date.now();
     const nowSec = Math.floor(nowUTC / 1000);
 
-    // Strategy 1: newest markets first — 5-min window was just created
-    for (const params of [
-      { active: 'true', closed: 'false', order: 'start_date', ascending: 'false', limit: '50' },
-      { active: 'true', closed: 'false', order: 'volume_24hr', ascending: 'false', limit: '200' },
-      { active: 'true', closed: 'false', is_50_50_outcome: 'true', limit: '200' },
-    ]) {
+    const _endMs = (m) => {
+      const raw = m.end_date_iso || m.endDateIso || m.endDate;
+      if (!raw) return 0;
+      const s = typeof raw === 'string' ? raw : String(raw);
+      return new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z').getTime();
+    };
+
+    const _normalise = (m) => this._normaliseMarket(m, nowSec, false, true);
+
+    // ── Strategy 0: slug-based lookup (btc-updown-5m-<epochSec>) ──────────────
+    // 5-min windows align to 300s boundaries. Try current, previous, and next.
+    const windowBase = Math.floor(nowSec / 300) * 300;
+    for (const t of [windowBase, windowBase + 300, windowBase - 300]) {
+      const slug = `btc-updown-5m-${t}`;
       try {
-        const url = 'https://gamma-api.polymarket.com/markets?' + new URLSearchParams(params);
-        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) {
-          console.warn(`[PolymarketFeed] Gamma /markets HTTP ${res.status} (${JSON.stringify(params)})`);
-          continue;
-        }
-        const markets = await res.json();
-        if (!Array.isArray(markets) || markets.length === 0) continue;
-
-        // Log first 5 from each strategy (throttled) to see what's returned
-        if ((nowUTC - (this._lastGammaLog||0)) > 120000) {
-          this._lastGammaLog = nowUTC;
-          console.log(`[PolymarketFeed] Gamma (${JSON.stringify(params)}) first 5:`);
-          markets.slice(0, 5).forEach(m => {
-            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
-            const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-            const minsLeft = endMs ? ((endMs - nowUTC) / 60000).toFixed(0) : '?';
-            console.log(`  "${(m.question||'').slice(0,55)}" | ends in ${minsLeft}min`);
-          });
-        }
-
-        // Find markets ending within 2h — append 'Z' to guarantee UTC parsing
-        const soon = markets.filter(m => {
-          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
-          if (!rawEnd) return false;
-          const str = typeof rawEnd === 'string' ? rawEnd : String(rawEnd);
-          const endMs = new Date(str.includes('Z') || str.includes('+') ? str : str + 'Z').getTime();
-          return endMs > nowUTC && (endMs - nowUTC) < 7200000;
-        });
-
-        const btc = soon.filter(m => /btc|bitcoin/i.test((m.question || m.title || '').trim()));
-        if (btc.length > 0) {
-          console.log(`[PolymarketFeed] Gamma found ${btc.length} BTC market(s) ending <2h`);
-          return btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
-        }
-
-        // Log anything ending within 1h regardless of keyword
-        const shortAll = soon.filter(m => {
-          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate;
-          return (new Date(rawEnd).getTime() - nowUTC) < 3600000;
-        });
-        if (shortAll.length > 0) {
-          console.log(`[PolymarketFeed] Gamma <1h markets (no BTC keyword):`);
-          shortAll.slice(0, 5).forEach(m => {
-            const endMs = new Date(m.end_date_iso || m.endDateIso || m.endDate).getTime();
-            console.log(`  "${(m.question||'').slice(0,60)}" | ${((endMs-nowUTC)/1000).toFixed(0)}s`);
-          });
+        const res = await fetch(`https://gamma-api.polymarket.com/markets/slug/${slug}`,
+          { signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const m = await res.json();
+          const endMs = _endMs(m);
+          console.log(`[PolymarketFeed] Slug ${slug} → "${(m.question||'').trim().slice(0,55)}" | ends in ${endMs ? ((endMs-nowUTC)/1000).toFixed(0)+'s' : '?'}`);
+          if (endMs > nowUTC) {
+            const norm = _normalise(m);
+            if (norm) { console.log('[PolymarketFeed] S0 slug match — found BTC 5-min market'); return [norm]; }
+          }
+        } else if (res.status !== 404) {
+          console.warn(`[PolymarketFeed] Slug ${slug} HTTP ${res.status}`);
         }
       } catch (e) {
-        console.warn('[PolymarketFeed] Gamma strategy failed:', e.message);
+        console.warn(`[PolymarketFeed] Slug ${slug} failed: ${e.message}`);
+      }
+    }
+
+    // ── Strategy 1: end_date_min/max ──────────────────────────────────────────
+    const endMin = new Date(nowUTC).toISOString();
+    const endMax = new Date(nowUTC + 10 * 60 * 1000).toISOString();
+    try {
+      const url = `https://gamma-api.polymarket.com/markets?end_date_min=${endMin}&end_date_max=${endMax}&active=true&closed=false&limit=100`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const markets = await res.json();
+        if (Array.isArray(markets) && markets.length > 0) {
+          console.log(`[PolymarketFeed] S1 end_date window → ${markets.length} market(s):`);
+          markets.forEach(m => console.log(`  "${(m.question||'').trim().slice(0,60)}" | slug=${m.slug||'?'}`));
+          const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
+          if (btc.length > 0) {
+            console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s)`);
+            return btc.map(_normalise).filter(Boolean);
+          }
+        }
+      } else {
+        console.warn(`[PolymarketFeed] S1 end_date HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.warn('[PolymarketFeed] S1 failed:', e.message);
+    }
+
+    // ── Strategy 2: accepting_orders=true ────────────────────────────────────
+    try {
+      const url = 'https://gamma-api.polymarket.com/markets?accepting_orders=true&active=true&closed=false&limit=200';
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const markets = await res.json();
+        if (Array.isArray(markets) && markets.length > 0) {
+          const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
+          if (btc.length > 0) {
+            console.log(`[PolymarketFeed] S2 accepting_orders found ${btc.length} BTC market(s)`);
+            return btc.map(_normalise).filter(Boolean);
+          }
+          // Log slugs of anything short-lived so we can see the slug pattern
+          const anyShort = markets.filter(m => { const ms = _endMs(m); return ms > nowUTC && (ms-nowUTC) < 3600000; });
+          if (anyShort.length > 0) {
+            console.log(`[PolymarketFeed] S2 <1h non-BTC (${anyShort.length}) — slugs for pattern:`);
+            anyShort.slice(0,5).forEach(m => console.log(`  slug=${m.slug||'?'} | "${(m.question||'').trim().slice(0,50)}"`));
+          }
+        }
+      } else {
+        console.warn(`[PolymarketFeed] S2 accepting_orders HTTP ${res.status}`);
+      }
+    } catch (e) {
+      console.warn('[PolymarketFeed] S2 failed:', e.message);
+    }
+
+    // ── Strategy 3: paginate all active, look for BTC slug / <1h end ─────────
+    for (let offset = 0; offset <= 1000; offset += 200) {
+      try {
+        const url = `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&offset=${offset}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) break;
+        const markets = await res.json();
+        if (!Array.isArray(markets) || markets.length === 0) break;
+
+        // Slug pattern match
+        const bySlug = markets.filter(m => /btc.*(5m|5min|updown)/i.test(m.slug || ''));
+        if (bySlug.length > 0) {
+          console.log(`[PolymarketFeed] S3 slug pattern found (${bySlug.length}):`);
+          bySlug.forEach(m => console.log(`  slug=${m.slug} | "${(m.question||'').trim().slice(0,50)}"`));
+          return bySlug.map(_normalise).filter(Boolean);
+        }
+
+        const shortAll = markets.filter(m => {
+          const ms = _endMs(m); return ms > nowUTC && (ms-nowUTC) < 3600000;
+        });
+        if (shortAll.length > 0) {
+          console.log(`[PolymarketFeed] S3 offset=${offset} — ${shortAll.length} markets ending <1h:`);
+          shortAll.forEach(m =>
+            console.log(`  slug=${m.slug||'?'} | "${(m.question||'').trim().slice(0,50)}" | ${((_endMs(m)-nowUTC)/1000).toFixed(0)}s`)
+          );
+          const btc = shortAll.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
+          if (btc.length > 0) {
+            console.log(`[PolymarketFeed] S3 found ${btc.length} BTC market(s)`);
+            return btc.map(_normalise).filter(Boolean);
+          }
+        }
+      } catch (e) {
+        console.warn(`[PolymarketFeed] S3 offset=${offset} failed:`, e.message);
+        break;
       }
     }
     return [];
