@@ -80,77 +80,8 @@ class PolymarketFeed {
    * 5-min windows: MIN_5MIN_DURATION (290s) to MAX_5MIN_DURATION (615s) remaining.
    */
   async _getActiveBTCMarkets() {
-    if (!this.clobClient) return [];
-    const nowUTC = Date.now();
-    const MIN_5MIN_DURATION = 290;
-    const MAX_5MIN_DURATION = 615;
-    let cursor;
-
-    for (let page = 0; page < 50; page++) {
-      let response;
-      try {
-        response = cursor
-          ? await this.clobClient.getMarkets(cursor)
-          : await this.clobClient.getMarkets();
-      } catch (e) {
-        console.warn(`[PolymarketFeed] CLOB page ${page + 1} error: ${e.message}`);
-        break;
-      }
-
-      const rawMarkets = Array.isArray(response) ? response : (response?.data || []);
-
-      // Page 1: log first market's raw keys (throttled to once per 5 min)
-      if (page === 0 && rawMarkets.length > 0 && (nowUTC - (this._lastClobFieldLog||0)) > 300000) {
-        this._lastClobFieldLog = nowUTC;
-        const sample = rawMarkets[0];
-        console.log(`[PolymarketFeed] CLOB market fields: ${Object.keys(sample).join(', ')}`);
-        console.log(`[PolymarketFeed] CLOB sample end fields: end_time=${sample.end_time} end_date_iso=${sample.end_date_iso} game_end_time=${sample.game_end_time}`);
-      }
-
-      const withDuration = rawMarkets.map(m => {
-        // Append 'Z' to force UTC interpretation (strings without TZ suffix are parsed as local time in some engines)
-        let endUTC = m.end_date_iso ? new Date(m.end_date_iso + 'Z').getTime() : 0;
-        // Fallback: game_start_time + 300s
-        if ((!endUTC || endUTC < nowUTC) && m.game_start_time) {
-          const startMs = new Date(m.game_start_time + 'Z').getTime();
-          if (!isNaN(startMs)) endUTC = startMs + 300000;
-        }
-        const durationSec = endUTC > nowUTC ? (endUTC - nowUTC) / 1000 : 0;
-        return { ...m, durationSec, endUTC };
-      });
-
-      const shortWindow = withDuration.filter(
-        m => m.durationSec >= MIN_5MIN_DURATION && m.durationSec <= MAX_5MIN_DURATION
-      );
-
-      // Diagnostic: when nothing in the window, log closest markets (throttled)
-      if (shortWindow.length === 0 && page === 0 && (nowUTC - (this._lastClobDiagLog||0)) > 120000) {
-        this._lastClobDiagLog = nowUTC;
-        const active = withDuration.filter(m => m.durationSec > 0).sort((a,b) => a.durationSec - b.durationSec);
-        console.log(`[PolymarketFeed] CLOB page 1 — no markets in ${MIN_5MIN_DURATION}–${MAX_5MIN_DURATION}s window. Closest ${active.length > 0 ? active.length : 0} active:`);
-        active.slice(0, 5).forEach(m =>
-          console.log(`  "${(m.question||'').trim().slice(0,55)}" | ${m.durationSec.toFixed(0)}s remaining`)
-        );
-      }
-
-      if (shortWindow.length > 0) {
-        console.log(`[PolymarketFeed] CLOB page ${page + 1} short-window markets (${shortWindow.length}):`);
-        shortWindow.forEach(m =>
-          console.log(`  "${(m.question||'').trim().slice(0, 60)}" | ${m.durationSec.toFixed(0)}s`)
-        );
-        // Trim + lowercase for reliable BTC matching
-        const btc = shortWindow.filter(m => /btc|bitcoin/i.test((m.question || '').trim()));
-        if (btc.length > 0) {
-          console.log(`[PolymarketFeed] CLOB: found ${btc.length} BTC 5-min market(s)`);
-          const nowSec = Math.floor(nowUTC / 1000);
-          return btc.map(m => this._normaliseMarket(m, nowSec, false, true)).filter(Boolean);
-        }
-      }
-
-      const nextCursor = response?.next_cursor;
-      if (!nextCursor || nextCursor === 'LTE=' || rawMarkets.length === 0) break;
-      cursor = nextCursor;
-    }
+    // CLOB getMarkets() only returns historical markets (2023) — skip entirely.
+    // 5-min BTC markets are found via slug lookup in _fetchGammaShortWindow.
     return [];
   }
 
@@ -211,12 +142,9 @@ class PolymarketFeed {
       if (res.ok) {
         const markets = await res.json();
         if (Array.isArray(markets) && markets.length > 0) {
-          console.log(`[PolymarketFeed] S1 end_date window → ${markets.length} market(s):`);
-          markets.forEach(m => console.log(`  "${(m.question||'').trim().slice(0,60)}" | slug=${m.slug||'?'}`));
           const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
           if (btc.length > 0) {
-            console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) — raw fields: ${Object.keys(btc[0]).join(', ')}`);
-            console.log(`[PolymarketFeed] S1 btc[0] dates: end_date_iso=${btc[0].end_date_iso} endDateIso=${btc[0].endDateIso} endDate=${btc[0].endDate}`);
+            console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s)`);
             // Try _normaliseMarket first
             const normalised = btc.map(_normalise).filter(Boolean);
             if (normalised.length > 0) return normalised;
@@ -249,71 +177,6 @@ class PolymarketFeed {
       console.warn('[PolymarketFeed] S1 failed:', e.message);
     }
 
-    // ── Strategy 2: accepting_orders=true ────────────────────────────────────
-    try {
-      const url = 'https://gamma-api.polymarket.com/markets?accepting_orders=true&active=true&closed=false&limit=200';
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (res.ok) {
-        const markets = await res.json();
-        if (Array.isArray(markets) && markets.length > 0) {
-          const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
-          if (btc.length > 0) {
-            console.log(`[PolymarketFeed] S2 accepting_orders found ${btc.length} BTC market(s)`);
-            const normalised = btc.map(_normalise).filter(Boolean);
-            if (normalised.length > 0) return normalised;
-            // Fall through — normalise failed, S3 will try
-            console.warn('[PolymarketFeed] S2: _normalise returned null for all');
-          }
-          // Log slugs of anything short-lived so we can see the slug pattern
-          const anyShort = markets.filter(m => { const ms = _endMs(m); return ms > nowUTC && (ms-nowUTC) < 3600000; });
-          if (anyShort.length > 0) {
-            console.log(`[PolymarketFeed] S2 <1h non-BTC (${anyShort.length}) — slugs for pattern:`);
-            anyShort.slice(0,5).forEach(m => console.log(`  slug=${m.slug||'?'} | "${(m.question||'').trim().slice(0,50)}"`));
-          }
-        }
-      } else {
-        console.warn(`[PolymarketFeed] S2 accepting_orders HTTP ${res.status}`);
-      }
-    } catch (e) {
-      console.warn('[PolymarketFeed] S2 failed:', e.message);
-    }
-
-    // ── Strategy 3: paginate all active, look for BTC slug / <1h end ─────────
-    for (let offset = 0; offset <= 1000; offset += 200) {
-      try {
-        const url = `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&offset=${offset}`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) break;
-        const markets = await res.json();
-        if (!Array.isArray(markets) || markets.length === 0) break;
-
-        // Slug pattern match
-        const bySlug = markets.filter(m => /btc.*(5m|5min|updown)/i.test(m.slug || ''));
-        if (bySlug.length > 0) {
-          console.log(`[PolymarketFeed] S3 slug pattern found (${bySlug.length}):`);
-          bySlug.forEach(m => console.log(`  slug=${m.slug} | "${(m.question||'').trim().slice(0,50)}"`));
-          return bySlug.map(_normalise).filter(Boolean);
-        }
-
-        const shortAll = markets.filter(m => {
-          const ms = _endMs(m); return ms > nowUTC && (ms-nowUTC) < 3600000;
-        });
-        if (shortAll.length > 0) {
-          console.log(`[PolymarketFeed] S3 offset=${offset} — ${shortAll.length} markets ending <1h:`);
-          shortAll.forEach(m =>
-            console.log(`  slug=${m.slug||'?'} | "${(m.question||'').trim().slice(0,50)}" | ${((_endMs(m)-nowUTC)/1000).toFixed(0)}s`)
-          );
-          const btc = shortAll.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
-          if (btc.length > 0) {
-            console.log(`[PolymarketFeed] S3 found ${btc.length} BTC market(s)`);
-            return btc.map(_normalise).filter(Boolean);
-          }
-        }
-      } catch (e) {
-        console.warn(`[PolymarketFeed] S3 offset=${offset} failed:`, e.message);
-        break;
-      }
-    }
     return [];
   }
 
