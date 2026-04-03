@@ -73,9 +73,12 @@ class GBMSignalEngine {
       for (const market of markets) {
         const marketId = market.id || market.condition_id;
 
-        // Gamma API returns clobTokenIds[]; CLOB API returns tokens[].token_id — support both
-        const yesTokenId = market.tokens?.[0]?.token_id || market.clobTokenIds?.[0];
-        const noTokenId  = market.tokens?.[1]?.token_id || market.clobTokenIds?.[1];
+        // Gamma API returns clobTokenIds as a JSON string "[\"id1\",\"id2\"]" — must parse it
+        // CLOB API returns tokens[].token_id — support both
+        let clobIds = market.clobTokenIds;
+        if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = []; } }
+        const yesTokenId = market.tokens?.[0]?.token_id || clobIds?.[0];
+        const noTokenId  = market.tokens?.[1]?.token_id || clobIds?.[1];
 
         if (!yesTokenId) {
           console.warn(`[GBMSignalEngine] Market ${marketId} has no token IDs — skipping`);
