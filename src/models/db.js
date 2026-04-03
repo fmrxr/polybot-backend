@@ -216,6 +216,15 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4);
     `);
 
+    // Close any legacy open trades that pre-date the token_id column
+    const legacy = await client.query(`
+      UPDATE trades SET status = 'closed', close_reason = 'LEGACY_NO_TOKEN_ID', closed_at = NOW()
+      WHERE token_id IS NULL AND status = 'open'
+    `);
+    if (legacy.rowCount > 0) {
+      console.log(`[DB] Closed ${legacy.rowCount} legacy trade(s) with no token_id`);
+    }
+
     console.log('[DB] Tables initialized successfully');
   } catch (err) {
     console.error('[DB] Table initialization error:', err.message);
