@@ -1270,6 +1270,21 @@
         binanceDot.style.background = 'var(--green)';
         document.getElementById('binanceTime').textContent = `BTC $${Math.round(btcPrice).toLocaleString()}`;
       }
+      const chainlinkDot = document.getElementById('chainlinkStatus');
+      const chainlinkLbl = document.getElementById('chainlinkTime');
+      if (data.chainlinkPrice) {
+        if (chainlinkDot) chainlinkDot.style.background = 'var(--green)';
+        if (chainlinkLbl) chainlinkLbl.textContent = `$${Math.round(data.chainlinkPrice).toLocaleString()}`;
+      } else if (data.botRunning) {
+        if (chainlinkDot) chainlinkDot.style.background = 'var(--amber)';
+        if (chainlinkLbl) chainlinkLbl.textContent = 'Fetching...';
+      }
+      const subtitleEl = document.getElementById('statusSubtitle');
+      if (subtitleEl) {
+        subtitleEl.textContent = data.botRunning
+          ? (btcPrice ? `BTC $${Math.round(btcPrice).toLocaleString()} · All feeds nominal` : 'All feeds nominal')
+          : 'Bot is stopped';
+      }
     } catch (err) { console.error('Load status error:', err); }
   }
 
@@ -1355,6 +1370,7 @@
       if (el('smAvgLag'))    el('smAvgLag').textContent  = s.avg_lag_age != null ? fmt1(s.avg_lag_age) + 's' : '—';
       if (el('smAvgSpread')) el('smAvgSpread').textContent = s.avg_spread_pct != null ? fmt2(s.avg_spread_pct) + '%' : '—';
       if (el('gate1Rate'))   el('gate1Rate').textContent = fmt1(s.gate1_rate) + '%';
+      if (el('gate1Conf'))   el('gate1Conf').textContent = s.avg_gate1_conf != null ? parseFloat(s.avg_gate1_conf).toFixed(2) : '—';
       if (el('gate2EV'))     el('gate2EV').textContent   = fmt1(s.avg_ev_adj) + '%';
       if (el('gate2Cost'))   el('gate2Cost').textContent = fmt2(s.avg_total_cost) + '%';
       if (el('gate2Rate'))   el('gate2Rate').textContent = fmt1(s.gate2_pass_rate) + '%';
@@ -1555,6 +1571,17 @@
           <td><button class="secondary" style="padding:3px 10px;font-size:10px;" onclick="showHistoryAnalysis(${i})">View</button></td>
         </tr>`).join('');
       window._claudeHistory = history;
+      const totalEl = document.getElementById('totalAnalyzed');
+      if (totalEl) totalEl.textContent = history.length;
+      const nextEl = document.getElementById('nextAnalysisTrigger');
+      if (nextEl) {
+        if (history.length > 0) {
+          const lastCount = history[0].trade_count || 0;
+          nextEl.textContent = `Last run at ${lastCount} trades`;
+        } else {
+          nextEl.textContent = 'After 50 more trades';
+        }
+      }
     } catch (err) { console.log('Claude history not available'); }
   }
 
@@ -1732,10 +1759,16 @@
       if (balEl) balEl.value = '$' + parseFloat(settings.paper_balance).toFixed(2);
     }
     if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
-    if (settings.min_edge) document.getElementById('minEdge').value = settings.min_edge;
+    if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
+    if (settings.snipe_before_close_sec) { document.getElementById('snipeTiming').value = settings.snipe_before_close_sec; updateSliderValue('snipeTiming'); }
+    if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
+    if (settings.gate2_ev_floor) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
+    if (settings.gate3_enabled !== undefined) document.getElementById('gate3Enabled').checked = settings.gate3_enabled;
     if (settings.claude_model) document.getElementById('claudeModel').value = settings.claude_model;
     if (settings.claude_auto_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.claude_auto_analysis;
     if (settings.auto_claude_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.auto_claude_analysis;
+    const autoSt = settings.claude_auto_analysis ?? settings.auto_claude_analysis;
+    if (autoSt !== undefined) document.getElementById('autoStatus').textContent = autoSt ? 'ON' : 'OFF';
     const claudeKeySpan = document.getElementById('claudeStatus');
     if (settings.has_claude_api_key) {
       if (claudeKeySpan) { claudeKeySpan.textContent = 'API Key saved ✓'; claudeKeySpan.style.color = 'var(--green)'; }
@@ -1814,6 +1847,9 @@
   async function saveStrategySettings() {
     const token = localStorage.getItem('token');
     const settings = {
+      gate1_threshold: parseFloat(document.getElementById('gate1Threshold').value),
+      gate2_ev_floor: parseFloat(document.getElementById('gate2Floor').value),
+      gate3_enabled: document.getElementById('gate3Enabled').checked,
       min_edge: parseFloat(document.getElementById('minEdge').value),
       snipe_before_close_sec: parseInt(document.getElementById('snipeTiming').value)
     };

@@ -62,6 +62,7 @@ router.get('/status', authMiddleware, async (req, res) => {
       paperTrading: status?.paperTrading ?? true,
       paperBalance: status?.paperBalance || null,
       btcPrice: status?.btcPrice || null,
+      chainlinkPrice: status?.chainlinkPrice || null,
       peakBalance: status?.peakBalance || null,
       drawdownCooldownUntil: status?.drawdownCooldownUntil || null,
       trades: {
@@ -161,9 +162,10 @@ router.get('/gate-stats', authMiddleware, async (req, res) => {
         CASE WHEN COUNT(*) > 0
           THEN ROUND(COUNT(*) FILTER (WHERE verdict='SKIP')::numeric / COUNT(*) * 100, 1)
           ELSE 0 END                                                    AS skip_rate,
-        ROUND(AVG(ev_adj)    FILTER (WHERE ev_adj    IS NOT NULL), 2)  AS avg_ev_adj,
-        ROUND(AVG(lag_age_sec) FILTER (WHERE lag_age_sec IS NOT NULL), 1) AS avg_lag_age,
-        ROUND(AVG(spread_pct)  FILTER (WHERE spread_pct  IS NOT NULL), 3) AS avg_spread_pct,
+        ROUND(AVG(ev_adj)       FILTER (WHERE ev_adj       IS NOT NULL), 2)  AS avg_ev_adj,
+        ROUND(AVG(confidence)   FILTER (WHERE confidence   IS NOT NULL), 3)  AS avg_gate1_conf,
+        ROUND(AVG(lag_age_sec)  FILTER (WHERE lag_age_sec  IS NOT NULL), 1)  AS avg_lag_age,
+        ROUND(AVG(spread_pct)   FILTER (WHERE spread_pct   IS NOT NULL), 3)  AS avg_spread_pct,
         ROUND(
           COUNT(*) FILTER (WHERE gate1_passed = true)::numeric /
           NULLIF(COUNT(*), 0) * 100, 1)                                AS gate1_rate,
