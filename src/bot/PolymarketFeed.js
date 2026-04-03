@@ -59,12 +59,6 @@ class PolymarketFeed {
     }
 
     const nowSec = Math.floor(now / 1000);
-
-    // Discover crypto tag ID once and cache it
-    if (this._cryptoTagId === undefined) {
-      this._cryptoTagId = await this._discoverTagId();
-    }
-
     const markets = await this._fetchByEvents(nowSec);
 
     if (markets.length > 0) {
@@ -84,103 +78,62 @@ class PolymarketFeed {
   }
 
   /**
-   * Discover the crypto tag ID via GET /tags (per docs).
-   * Cached on this instance — only fetched once per bot lifecycle.
-   */
-  async _discoverTagId() {
-    try {
-      const res = await fetch('https://gamma-api.polymarket.com/tags', { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return null;
-      const tags = await res.json();
-      if (!Array.isArray(tags)) return null;
-
-      // Log all tags once so we can see what's available
-      console.log(`[PolymarketFeed] /tags: ${tags.map(t => `${t.slug||t.label}(${t.id})`).join(', ')}`);
-
-      // Find crypto tag — prefer exact match, then partial
-      const crypto = tags.find(t => (t.slug || t.label || '').toLowerCase() === 'crypto')
-        || tags.find(t => (t.slug || t.label || '').toLowerCase().includes('crypto'));
-      if (crypto) {
-        console.log(`[PolymarketFeed] Using tag: "${crypto.slug||crypto.label}" id=${crypto.id}`);
-        return crypto.id;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /**
    * Fetch active events from Gamma API per docs.
-   * Uses: GET /events?active=true&closed=false&tag_id=X&order=end_date&ascending=true
-   * Paginates with offset. Finds markets ending within 2h.
-   * Logs ALL short-window markets (no keyword filter) to reveal true names.
+   * GET /events?active=true&closed=false&limit=100 — paginate with offset.
+   * NOTE: order=end_date causes 422 — do NOT use it.
+   * Logs ALL markets ending within 2h (no keyword filter) to reveal true names.
    */
   async _fetchByEvents(nowSec) {
     const now = nowSec * 1000;
     const found = [];
 
-    // Per docs: tag_id filtered first, then all active events
-    const paramSets = [];
-    if (this._cryptoTagId) {
-      paramSets.push({
-        active: 'true', closed: 'false',
-        tag_id: String(this._cryptoTagId),
-        order: 'end_date', ascending: 'true', limit: '100',
-      });
-    }
-    paramSets.push({ active: 'true', closed: 'false', order: 'end_date', ascending: 'true', limit: '100' });
+    // Paginate through active events — per docs, use offset for pagination
+    for (let offset = 0; offset < 500; offset += 100) {
+      const params = { active: 'true', closed: 'false', limit: '100', offset: String(offset) };
+      const url = 'https://gamma-api.polymarket.com/events?' + new URLSearchParams(params);
 
-    for (const baseParams of paramSets) {
-      // Paginate up to 500 events using offset per docs
-      for (let offset = 0; offset < 500; offset += 100) {
-        const params = offset > 0 ? { ...baseParams, offset: String(offset) } : baseParams;
-        const url = 'https://gamma-api.polymarket.com/events?' + new URLSearchParams(params);
-
-        let res;
-        try { res = await fetch(url, { signal: AbortSignal.timeout(8000) }); } catch (e) { break; }
-        if (!res.ok) {
-          console.warn(`[PolymarketFeed] GET /events HTTP ${res.status} params=${JSON.stringify(params)}`);
-          break;
-        }
-        const events = await res.json();
-        if (!Array.isArray(events) || events.length === 0) break;
-
-        const shortWindow = [];
-        for (const ev of events) {
-          for (const m of (ev.markets || [])) {
-            const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.end_time;
-            const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
-            if (!endMs || endMs <= now) continue;
-            const minsLeft = (endMs - now) / 60000;
-            if (minsLeft > 120) continue;
-            shortWindow.push({ m, ev, minsLeft });
-          }
-        }
-
-        // Log ALL short-window markets (no filter) — reveals the real market name
-        if (shortWindow.length > 0 && (now - (this._lastShortLog||0)) > 60000) {
-          this._lastShortLog = now;
-          console.log(`[PolymarketFeed] Markets ending <2h (offset=${offset}):`);
-          shortWindow.slice(0, 10).forEach(({ m, ev, minsLeft }) => {
-            const tag = ev.tags?.[0]?.slug || '?';
-            console.log(`  "${(m.question||ev.title||'').slice(0,60)}" | ${minsLeft.toFixed(1)}min | tag:${tag}`);
-          });
-        }
-
-        // Filter BTC — question OR parent event title must contain btc/bitcoin
-        for (const { m, ev } of shortWindow) {
-          const combined = (m.question + ' ' + ev.title + ' ' + (ev.slug||'')).toLowerCase();
-          if (combined.includes('btc') || combined.includes('bitcoin')) {
-            const norm = this._normaliseMarket(m, nowSec, true, true);
-            if (norm && !found.find(x => x.id === norm.id)) found.push(norm);
-          }
-        }
-
-        if (found.length > 0) return found;
-        if (events.length < 100) break; // last page
+      let res;
+      try { res = await fetch(url, { signal: AbortSignal.timeout(8000) }); } catch (e) { break; }
+      if (!res.ok) {
+        console.warn(`[PolymarketFeed] GET /events HTTP ${res.status} offset=${offset}`);
+        break;
       }
-      if (found.length > 0) break;
+      const events = await res.json();
+      if (!Array.isArray(events) || events.length === 0) break;
+
+      const shortWindow = [];
+      for (const ev of events) {
+        for (const m of (ev.markets || [])) {
+          const rawEnd = m.end_date_iso || m.endDateIso || m.endDate || m.end_time;
+          const endMs = rawEnd ? new Date(rawEnd).getTime() : 0;
+          if (!endMs || endMs <= now) continue;
+          const minsLeft = (endMs - now) / 60000;
+          if (minsLeft > 120) continue;
+          shortWindow.push({ m, ev, minsLeft });
+        }
+      }
+
+      // Log ALL short-window markets without keyword filter — reveals real names
+      if (shortWindow.length > 0 && (now - (this._lastShortLog||0)) > 60000) {
+        this._lastShortLog = now;
+        console.log(`[PolymarketFeed] Markets ending <2h at offset=${offset}:`);
+        shortWindow.slice(0, 10).forEach(({ m, ev, minsLeft }) => {
+          const tag = ev.tags?.[0]?.slug || '?';
+          console.log(`  "${(m.question||ev.title||'').slice(0,60)}" | ${minsLeft.toFixed(1)}min | tag:${tag}`);
+        });
+      }
+
+      // Filter BTC — question OR parent event title must contain btc/bitcoin
+      for (const { m, ev } of shortWindow) {
+        const combined = (m.question + ' ' + ev.title + ' ' + (ev.slug||'')).toLowerCase();
+        if (combined.includes('btc') || combined.includes('bitcoin')) {
+          const norm = this._normaliseMarket(m, nowSec, true, true);
+          if (norm && !found.find(x => x.id === norm.id)) found.push(norm);
+        }
+      }
+
+      if (found.length > 0) return found;
+      if (events.length < 100) break; // last page reached
     }
     return found;
   }
