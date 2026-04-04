@@ -546,7 +546,46 @@
     </div>
   </div>
 
-  <!-- KPI Grid -->
+  <!-- Trade Performance P&L strip -->
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px;">
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:10px 14px;">
+        <div style="font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Balance</div>
+        <div style="font-size:18px;font-weight:700;" id="dbBalance">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:1px;" id="dbBalanceMode">PAPER</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:10px 14px;">
+        <div style="font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Today's P&L</div>
+        <div style="font-size:18px;font-weight:700;" id="dailyPnL">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:1px;" id="pnlStatus">—</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:10px 14px;">
+        <div style="font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Total P&L</div>
+        <div style="font-size:18px;font-weight:700;" id="dbTotalPnl">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:1px;" id="dbRoi">ROI —</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:10px 14px;">
+        <div style="font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Win Rate</div>
+        <div style="font-size:18px;font-weight:700;" id="dbWinRate">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:1px;" id="dbWinsLosses">— W / — L</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:10px 14px;">
+        <div style="font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Total Trades</div>
+        <div style="font-size:18px;font-weight:700;" id="dbTotalTrades">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:1px;" id="dbAvgSize">avg $— /trade</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPI Grid (signal metrics) -->
   <div class="metrics-grid">
     <div class="metric-card">
       <div class="metric-label">Skip Rate</div>
@@ -564,9 +603,9 @@
       <div class="metric-status green" id="marketLagStatus">Active</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">Today's P&L</div>
-      <div class="metric-value"><span id="dailyPnL">—</span></div>
-      <div class="metric-status green" id="pnlStatus">Profitable</div>
+      <div class="metric-label">Avg Trade Size</div>
+      <div class="metric-value"><span id="dbAvgTradeKpi">—</span></div>
+      <div class="metric-status green">Sizing</div>
     </div>
   </div>
 
@@ -1476,9 +1515,14 @@
       await loadTrades();
       await loadClaudeAnalysis();
 
-      setInterval(async () => { await loadBotStatus(); await loadSignals(); }, 5000);
+      setInterval(async () => { await loadBotStatus(); await loadSignals(); await loadDashboard(); }, 10000);
       setInterval(loadDashboard, 30000);
       setInterval(loadGateStats, 30000);
+      // Auto-refresh trades every 20s — picks up newly closed trades and updates open count
+      setInterval(() => {
+        const tradesPage = document.getElementById('trades');
+        if (tradesPage?.classList.contains('active')) loadTrades();
+      }, 20000);
 
       // Start real-time SSE stream for live market viewer
       initLiveStream();
@@ -1610,32 +1654,71 @@
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!res.ok) return;
-      const data = await res.json();
-      const walletEl = document.getElementById('walletAddressDisplay');
-      const walletDot = document.getElementById('walletDot');
-      if (data.wallet_address) {
-        walletEl.textContent = data.wallet_address.slice(0,6)+'...'+data.wallet_address.slice(-4);
-        walletEl.title = data.wallet_address;
-        walletDot.style.background = 'var(--green)';
-        const walletInput = document.getElementById('polymarketWallet');
-        if (walletInput && !walletInput.value) walletInput.value = data.wallet_address;
+      const d = await res.json();
+      const el = id => document.getElementById(id);
+
+      // Wallet + balance (feed status panel)
+      if (d.wallet_address) {
+        el('walletAddressDisplay').textContent = d.wallet_address.slice(0,6)+'...'+d.wallet_address.slice(-4);
+        el('walletAddressDisplay').title = d.wallet_address;
+        el('walletDot').style.background = 'var(--green)';
+        const wi = el('polymarketWallet');
+        if (wi && !wi.value) wi.value = d.wallet_address;
       } else {
-        walletEl.textContent = 'Not configured';
-        walletDot.style.background = 'var(--red)';
+        el('walletAddressDisplay').textContent = 'Not configured';
+        el('walletDot').style.background = 'var(--red)';
       }
-      const balEl = document.getElementById('usdcBalanceDisplay');
-      const balLabelEls = document.querySelectorAll('.balance-label');
-      if (data.paper_trading) {
-        balEl.textContent = `$${parseFloat(data.paper_balance||0).toFixed(2)} PAPER`;
+      const balEl = el('usdcBalanceDisplay');
+      document.querySelectorAll('.balance-label').forEach(e => e.textContent = d.paper_trading ? 'Paper:' : 'USDC:');
+      if (d.paper_trading) {
+        balEl.textContent = `$${parseFloat(d.paper_balance||0).toFixed(2)} PAPER`;
         balEl.style.color = 'var(--yellow)';
-        balLabelEls.forEach(el => el.textContent = 'Paper:');
       } else {
-        balEl.textContent = data.polymarket_balance != null ? `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC` : '— USDC';
+        balEl.textContent = d.polymarket_balance != null ? `$${parseFloat(d.polymarket_balance).toFixed(2)} USDC` : '— USDC';
         balEl.style.color = 'var(--green)';
-        balLabelEls.forEach(el => el.textContent = 'USDC:');
-        const pmBal = document.getElementById('polymarketBalance');
-        if (pmBal && data.polymarket_balance != null) pmBal.textContent = `$${parseFloat(data.polymarket_balance).toFixed(2)} USDC`;
+        const pmBal = el('polymarketBalance');
+        if (pmBal && d.polymarket_balance != null) pmBal.textContent = `$${parseFloat(d.polymarket_balance).toFixed(2)} USDC`;
       }
+
+      // ── Trade Performance strip ──────────────────────────────
+      const balance = d.paper_trading ? parseFloat(d.paper_balance||0) : parseFloat(d.polymarket_balance||0);
+      const isPaper  = d.paper_trading !== false;
+      if (el('dbBalance')) {
+        el('dbBalance').textContent = '$' + balance.toFixed(2);
+        el('dbBalance').style.color = isPaper ? 'var(--yellow)' : 'var(--green)';
+      }
+      if (el('dbBalanceMode')) el('dbBalanceMode').textContent = isPaper ? 'PAPER MODE' : 'LIVE MODE';
+
+      const dailyPnl   = parseFloat(d.daily_pnl  || 0);
+      const totalPnl   = parseFloat(d.total_pnl   || 0);
+      const roi        = parseFloat(d.roi         || 0);
+      const winRate    = parseFloat(d.win_rate    || 0);
+      const wins       = parseInt(d.wins          || 0);
+      const losses     = parseInt(d.losses        || 0);
+      const total      = parseInt(d.total_trades  || 0);
+      const avgSize    = total > 0 ? parseFloat(d.total_invested||0) / total : 0;
+
+      if (el('dailyPnL')) {
+        el('dailyPnL').textContent = (dailyPnl >= 0 ? '+' : '') + '$' + Math.abs(dailyPnl).toFixed(2);
+        el('dailyPnL').style.color = dailyPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      if (el('pnlStatus')) {
+        el('pnlStatus').textContent = dailyPnl > 0 ? 'Profitable today' : dailyPnl < 0 ? 'Loss today' : 'Break even';
+        el('pnlStatus').style.color = dailyPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      if (el('dbTotalPnl')) {
+        el('dbTotalPnl').textContent = (totalPnl >= 0 ? '+' : '') + '$' + Math.abs(totalPnl).toFixed(2);
+        el('dbTotalPnl').style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      if (el('dbRoi')) el('dbRoi').textContent = `ROI ${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`;
+      if (el('dbWinRate')) {
+        el('dbWinRate').textContent = winRate.toFixed(1) + '%';
+        el('dbWinRate').style.color = winRate >= 50 ? 'var(--green)' : 'var(--red)';
+      }
+      if (el('dbWinsLosses')) el('dbWinsLosses').textContent = `${wins} W / ${losses} L`;
+      if (el('dbTotalTrades')) el('dbTotalTrades').textContent = total;
+      if (el('dbAvgSize')) el('dbAvgSize').textContent = `avg $${avgSize.toFixed(0)} /trade`;
+      if (el('dbAvgTradeKpi')) el('dbAvgTradeKpi').textContent = `$${avgSize.toFixed(0)}`;
     } catch (err) { console.error('Dashboard load error:', err); }
   }
 
@@ -2571,10 +2654,21 @@
       const f = el('lvFlips'); if (f) f.textContent = state.flipCount;
     }
 
-    // Balance
+    // Balance — update all balance display elements from live SSE stream
     if (state.paperBalance != null) {
+      const bal = parseFloat(state.paperBalance);
       const b = el('lvBalance');
-      if (b) b.textContent = '$' + parseFloat(state.paperBalance).toFixed(2);
+      if (b) b.textContent = '$' + bal.toFixed(2);
+      // Update dashboard balance strip in real-time (paper mode only)
+      const dbBal = el('dbBalance');
+      if (dbBal && el('dbBalanceMode')?.textContent?.includes('PAPER')) {
+        dbBal.textContent = '$' + bal.toFixed(2);
+      }
+      // Update feed-status panel
+      const usdcEl = el('usdcBalanceDisplay');
+      if (usdcEl && usdcEl.textContent?.includes('PAPER')) {
+        usdcEl.textContent = '$' + bal.toFixed(2) + ' PAPER';
+      }
     }
 
     // Store all live market prices for open trade cards
