@@ -998,7 +998,10 @@
         </div>
         <div class="form-hint">Seconds between signal evaluations</div>
       </div>
-      <button class="primary" onclick="saveStrategySettings()" style="width:100%;margin-top:4px;">Save Strategy Settings</button>
+      <div style="display:flex;gap:8px;margin-top:4px;">
+        <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
+        <button class="secondary" onclick="resetSettingsToDefaults('strategy')" style="flex:0 0 auto;">Reset</button>
+      </div>
     </div>
   </div>
 
@@ -1028,7 +1031,10 @@
         <input type="number" id="dailyTradeLimit" value="10" min="5" max="50" step="1">
         <div class="form-hint">Phase A: 5–10 trades/day optimal</div>
       </div>
-      <button class="primary" onclick="saveRiskSettings()" style="width:100%;margin-top:4px;">Save Risk Settings</button>
+      <div style="display:flex;gap:8px;margin-top:4px;">
+        <button class="primary" onclick="saveRiskSettings()" style="flex:1;">Save Risk Settings</button>
+        <button class="secondary" onclick="resetSettingsToDefaults('risk')" style="flex:0 0 auto;">Reset</button>
+      </div>
     </div>
   </div>
 
@@ -1948,6 +1954,39 @@
       if (res.ok) showAlert('Risk settings saved', 'success');
       else showAlert('Failed to save settings', 'error');
     } catch (err) { showAlert('Error saving settings', 'error'); }
+  }
+
+  function resetSettingsToDefaults(tab) {
+    const DEFAULTS = {
+      strategy: {
+        gate1Threshold: 0.45,
+        gate2Floor: 3.0,
+        gate3Enabled: true,
+        minEdge: 0.02,
+        snipeTiming: 10
+      },
+      risk: {
+        kellyCap: 0.10,
+        maxTradeSize: 20,
+        maxDailyLoss: 50,
+        dailyTradeLimit: 10
+      }
+    };
+    const d = DEFAULTS[tab];
+    if (!d) return;
+    if (tab === 'strategy') {
+      document.getElementById('gate1Threshold').value = d.gate1Threshold; updateSliderValue('gate1Threshold');
+      document.getElementById('gate2Floor').value = d.gate2Floor; updateSliderValue('gate2Floor');
+      document.getElementById('gate3Enabled').checked = d.gate3Enabled;
+      document.getElementById('minEdge').value = d.minEdge; updateSliderValue('minEdge');
+      document.getElementById('snipeTiming').value = d.snipeTiming; updateSliderValue('snipeTiming');
+    } else if (tab === 'risk') {
+      document.getElementById('kellyCap').value = d.kellyCap; updateSliderValue('kellyCap');
+      document.getElementById('maxTradeSize').value = d.maxTradeSize;
+      document.getElementById('maxDailyLoss').value = d.maxDailyLoss;
+      document.getElementById('dailyTradeLimit').value = d.dailyTradeLimit;
+    }
+    showAlert('Reset to defaults — click Save to apply', 'info');
   }
 
   async function saveAdvancedSettings() {
