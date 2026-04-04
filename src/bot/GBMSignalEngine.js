@@ -91,9 +91,12 @@ class GBMSignalEngine {
         // ==========================================
         const orderBook = await this.polymarket.getOrderBook(yesTokenId);
 
+        // DIAGNOSTIC: log actual order book prices to prove live data is being fetched
+        console.log(`[OrderBook] ${market.question?.slice(0,40)} | bid=${orderBook?.bestBid} ask=${orderBook?.bestAsk} mid=${orderBook?.midPrice} depth=${orderBook?.totalDepth?.toFixed(0)}`);
+
         if (!orderBook || orderBook.bestBid === null || orderBook.bestAsk === null) {
-          console.warn(`[GBMSignalEngine] No valid order book for token ${yesTokenId} (market: ${market.question?.slice(0,50)})`);
-          continue; // Can't evaluate without real data
+          console.warn(`[GBMSignalEngine] No valid order book for token ${yesTokenId} — bid/ask null, skipping`);
+          continue;
         }
 
         const yesPrice = orderBook.midPrice;

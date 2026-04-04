@@ -854,16 +854,22 @@ class BotInstance {
         const noId   = m.tokens?.[1]?.token_id || clobIds[1];
         const yesBook = yesId ? this._lastOrderBooks[yesId] : null;
         const noBook  = noId  ? this._lastOrderBooks[noId]  : null;
+        // yesBid/yesAsk are the actual Polymarket order book prices (match what UI shows)
+        // yesPrice (mid) is used internally for Kelly; display uses ask (buy price)
         return {
           id:        m.id || m.condition_id,
           question:  m.question,
           endIso:    m.end_date_iso,
           startIso:  m.start_date_iso,
-          yesPrice:  yesBook?.midPrice ?? null,
-          noPrice:   noBook?.midPrice  ?? null,
-          spread:    yesBook?.spread   ?? null,
-          bidDepth:  yesBook?.bidDepth ?? null,
-          askDepth:  yesBook?.askDepth ?? null,
+          yesPrice:  yesBook?.midPrice  ?? null,
+          noPrice:   noBook?.midPrice   ?? null,
+          yesBid:    yesBook?.bestBid   ?? null,
+          yesAsk:    yesBook?.bestAsk   ?? null,
+          noBid:     noBook?.bestBid    ?? null,
+          noAsk:     noBook?.bestAsk    ?? null,
+          spread:    yesBook?.spread    ?? null,
+          bidDepth:  yesBook?.bidDepth  ?? null,
+          askDepth:  yesBook?.askDepth  ?? null,
         };
       });
 

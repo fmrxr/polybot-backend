@@ -2702,21 +2702,22 @@
       if (hdr) hdr.style.display = '';
       const q = el('lvMarketQ'); if (q) q.textContent = mkt.question || '—';
 
-      // YES price (token probability, 0-1 scale)
+      // YES price — show ask price (what you pay to buy on Polymarket), fall back to mid
       const yesEl = el('lvYesPrice');
       if (yesEl) {
-        if (mkt.yesPrice != null) {
-          yesEl.textContent = parseFloat(mkt.yesPrice).toFixed(3);
-          yesEl.style.color = mkt.yesPrice > 0.5 ? 'var(--green)' : 'var(--text-muted)';
+        const yesAsk = mkt.yesAsk ?? mkt.yesPrice;
+        if (yesAsk != null) {
+          yesEl.textContent = parseFloat(yesAsk).toFixed(3);
+          yesEl.style.color = yesAsk > 0.52 ? 'var(--green)' : yesAsk < 0.48 ? 'var(--red)' : 'var(--text-muted)';
         } else { yesEl.textContent = '—'; }
       }
-      // NO price
+      // NO price — show ask price
       const noEl = el('lvNoPrice');
       if (noEl) {
-        const noPrice = mkt.noPrice ?? (mkt.yesPrice != null ? 1 - mkt.yesPrice : null);
-        if (noPrice != null) {
-          noEl.textContent = parseFloat(noPrice).toFixed(3);
-          noEl.style.color = noPrice > 0.5 ? 'var(--red)' : 'var(--text-muted)';
+        const noAsk = mkt.noAsk ?? mkt.noPrice ?? (mkt.yesAsk != null ? (1 - mkt.yesAsk).toFixed(3) : null);
+        if (noAsk != null) {
+          noEl.textContent = parseFloat(noAsk).toFixed(3);
+          noEl.style.color = parseFloat(noAsk) > 0.52 ? 'var(--green)' : parseFloat(noAsk) < 0.48 ? 'var(--red)' : 'var(--text-muted)';
         } else { noEl.textContent = '—'; }
       }
 
