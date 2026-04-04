@@ -280,29 +280,28 @@ class GBMSignalEngine {
         }
 
         // ==========================================
-        // GATE 3: EMA TREND CONFIRMATION (optional)
+        // GATE 3: BTC MOMENTUM DIRECTION CONFIRMATION (optional)
+        // Uses btcDelta (30s window) — same signal driving EV, no lag.
+        // Replaces slow EMA which had ~11min half-life and always conflicted
+        // with short-term momentum signals on 5-min binary markets.
         // ==========================================
         const direction = evAnalysis.bestDirection;
-        let emaEdge = 0;
+        let emaEdge = btcDelta; // kept as emaEdge for return object compatibility
 
         if (this.settings.gate3_enabled !== false) {
-          emaEdge = this.emaShort && this.emaLong
-            ? ((this.emaShort - this.emaLong) / this.emaLong) * 100
-            : 0;
-
-          // min_edge is the UI slider (0.02–0.10 decimal = %). gate3_min_edge was 5.0%
-          // which requires ~17% BTC move to pass — unreachable. Use min_edge instead.
-          const minEdge = parseFloat(this.settings.min_edge) || 0.05;
-          const isBullish = emaEdge > 0;
+          // btcDelta > 0 = BTC rising (bullish), < 0 = falling (bearish)
+          const isBullish = btcDelta > 0;
+          // Minimum strength: same 0.02% threshold used to declare directional signal at Gate2
+          const minDelta = parseFloat(this.settings.min_edge) || 0.02;
 
           log.gates.gate3 = {
-            emaEdge,
-            minEdge,
+            btcDelta,
+            minDelta,
             direction,
             passed: false
           };
 
-          // Check alignment: YES direction needs bullish EMA, NO needs bearish
+          // Direction alignment: YES needs BTC rising, NO needs BTC falling
           if (direction === 'YES' && !isBullish) {
             log.gates.gate3.passed = false;
             continue;
@@ -312,8 +311,8 @@ class GBMSignalEngine {
             continue;
           }
 
-          // Check strength — emaEdge is already in %, compare directly to minEdge %
-          if (Math.abs(emaEdge) < minEdge) {
+          // Strength check: btcDelta must meet minimum threshold
+          if (Math.abs(btcDelta) < minDelta) {
             log.gates.gate3.passed = false;
             continue;
           }
