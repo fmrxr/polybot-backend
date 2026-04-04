@@ -921,13 +921,14 @@
 
   <!-- Filters + search -->
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-    <div style="display:flex;gap:4px;">
-      <button id="filterAll"  class="tab active" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('all')">All</button>
-      <button id="filterOpen" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('open')">Open</button>
-      <button id="filterWin"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('win')">Wins</button>
-      <button id="filterLoss" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('loss')">Losses</button>
-      <button id="filterYes"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('yes')">YES</button>
-      <button id="filterNo"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('no')">NO</button>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+      <button id="filterAll"   class="tab active" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('all')">All</button>
+      <button id="filterToday" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('today')">Today</button>
+      <button id="filterOpen"  class="tab" style="font-size:11px;padding:5px 12px;color:var(--yellow);" onclick="setTradeFilter('open')">⬤ Live</button>
+      <button id="filterWin"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('win')">Wins</button>
+      <button id="filterLoss"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('loss')">Losses</button>
+      <button id="filterYes"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('yes')">YES</button>
+      <button id="filterNo"    class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('no')">NO</button>
     </div>
     <input id="tradeSearch" type="text" placeholder="Search market…" oninput="renderTrades(window._lastTradeData)"
       style="flex:1;min-width:120px;padding:5px 10px;font-size:12px;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;">
@@ -1031,7 +1032,7 @@
         <label>Signal Interval</label>
         <div class="slider-container">
           <input type="range" id="snipeTiming" min="5" max="60" step="5" value="10" onchange="updateSliderValue('snipeTiming')">
-          <span class="slider-value" id="sniperTimingValue">10s</span>
+          <span class="slider-value" id="snipeTimingValue">10s</span>
         </div>
         <div class="form-hint">Seconds between signal evaluations (10s recommended)</div>
       </div>
@@ -1284,7 +1285,7 @@
     document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
     event?.target.classList.add('active');
     if (pageId === 'claude') loadClaudeAnalysis();
-    if (pageId === 'trades') loadTrades();
+    if (pageId === 'trades') { setTradeFilter('today'); loadTrades(); }
     if (pageId === 'signals') { loadGateStats(); loadSignals(); }
   }
 
@@ -1794,12 +1795,14 @@
     const search = (document.getElementById('tradeSearch')?.value || '').toLowerCase();
     const filter = window._tradeFilter || 'all';
 
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
     let filtered = trades.filter(t => {
       const q = t.market_question || '';
       if (search && !q.toLowerCase().includes(search)) return false;
       const pnl = parseFloat(t.pnl) || 0;
       const result = t.result || (t.status === 'closed' ? (pnl > 0 ? 'WIN' : 'LOSS') : 'OPEN');
       const dir = (t.direction || '').toUpperCase();
+      if (filter === 'today') return new Date(t.created_at) >= todayStart;
       if (filter === 'open')  return t.status === 'open';
       if (filter === 'win')   return result === 'WIN';
       if (filter === 'loss')  return result === 'LOSS';
@@ -1850,8 +1853,9 @@
       const tradeType = (trade.trade_type || 'signal');
       const typeColor = tradeType === 'copy' ? 'var(--yellow)' : 'var(--cyan)';
 
+      const isLive = trade.status === 'open';
       html += `
-      <div class="panel" style="margin-bottom:8px;cursor:pointer;" onclick="toggleTradeExpand(${globalIdx}, this)">
+      <div class="panel" style="margin-bottom:8px;cursor:pointer;${isLive ? 'border-color:var(--yellow);box-shadow:0 0 8px rgba(255,200,0,.15);' : ''}" onclick="toggleTradeExpand(${globalIdx}, this)">
         <div class="panel-body" style="padding:12px 14px;">
 
           <!-- Top row: market + badge -->
@@ -1859,7 +1863,7 @@
             <div style="font-size:12px;color:var(--text);font-weight:500;line-height:1.4;">${qShort}</div>
             <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
               <span style="font-size:10px;padding:2px 7px;border-radius:3px;border:1px solid ${typeColor};color:${typeColor};letter-spacing:.5px;">${tradeType.toUpperCase()}</span>
-              <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:3px;background:${result==='WIN'?'rgba(0,255,136,.1)':result==='LOSS'?'rgba(255,77,77,.1)':'rgba(255,200,0,.08)'};color:${rColor};">${result}</span>
+              <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:3px;background:${result==='WIN'?'rgba(0,255,136,.1)':result==='LOSS'?'rgba(255,77,77,.1)':'rgba(255,200,0,.08)'};color:${rColor};">${isLive ? '⬤ LIVE' : result}</span>
             </div>
           </div>
 
@@ -1933,7 +1937,7 @@
   function setTradeFilter(f) {
     window._tradeFilter = f;
     currentPage = 1;
-    ['all','open','win','loss','yes','no'].forEach(k => {
+    ['all','today','open','win','loss','yes','no'].forEach(k => {
       const btn = document.getElementById('filter' + k.charAt(0).toUpperCase() + k.slice(1));
       if (btn) btn.classList.toggle('active', k === f);
     });
