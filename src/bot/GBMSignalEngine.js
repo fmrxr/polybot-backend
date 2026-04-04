@@ -117,15 +117,22 @@ class GBMSignalEngine {
           }
         }
 
-        // Fall back to Gamma API token price if both CLOB books have no real spread
+        // Fall back to Gamma API outcomePrices if both CLOB books have no real spread.
+        // Gamma returns outcomePrices as JSON string: '["0.487","0.513"]'
+        // outcomePrices[0] = YES/Up price, outcomePrices[1] = NO/Down price
+        // This is the real market-implied probability, not CLOB boundary orders.
         if (yesPrice == null) {
-          const gammaYes = parseFloat(market.tokens?.[0]?.price);
-          const gammaNot = parseFloat(market.tokens?.[1]?.price);
-          const gammaPrice = (gammaYes > 0.05 && gammaYes < 0.95) ? gammaYes
-            : (gammaNot > 0.05 && gammaNot < 0.95) ? 1 - gammaNot : null;
-          if (gammaPrice != null) {
-            yesPrice = gammaPrice;
-            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — using Gamma price: yesPrice=${yesPrice.toFixed(3)}`);
+          let op = market.outcomePrices;
+          if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
+          console.log(`[Gamma] outcomePrices=${JSON.stringify(op)}`);
+          const gammaYes = op ? parseFloat(op[0]) : NaN;
+          const gammaNo  = op ? parseFloat(op[1]) : NaN;
+          if (!isNaN(gammaYes) && gammaYes > 0.05 && gammaYes < 0.95) {
+            yesPrice = gammaYes;
+            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma outcomePrices: yesPrice=${yesPrice.toFixed(3)}`);
+          } else if (!isNaN(gammaNo) && gammaNo > 0.05 && gammaNo < 0.95) {
+            yesPrice = 1 - gammaNo;
+            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma NO price: noPrice=${gammaNo.toFixed(3)} yesPrice=${yesPrice.toFixed(3)}`);
           }
         }
 
