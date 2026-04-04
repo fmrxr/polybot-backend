@@ -99,6 +99,16 @@ class GBMSignalEngine {
         const spread = orderBook.spread || 0;
 
         // ==========================================
+        // PRE-FILTER 0: Spread / Liquidity Check
+        // Skip markets where spread > 20% — EV uses mid price but actual fill
+        // uses bid/ask, so wide spreads produce phantom EV that Kelly kills anyway.
+        // ==========================================
+        const maxSpread = this.settings.max_spread || 0.20;
+        if (spread > maxSpread) {
+          continue;
+        }
+
+        // ==========================================
         // PRE-FILTER A: Signal Freshness
         // Check how old the last Binance tick is (WebSocket-based, not on-chain)
         // Chainlink on-chain BTC/USD updates every 5-30 min — too slow for a 20s threshold
@@ -289,30 +299,23 @@ class GBMSignalEngine {
         let emaEdge = btcDelta; // kept as emaEdge for return object compatibility
 
         if (this.settings.gate3_enabled !== false) {
-          // btcDelta > 0 = BTC rising (bullish), < 0 = falling (bearish)
+          // Direction alignment only — strength is already captured by Gate2 EV.
+          // Gate2 only produces directional signals when |btcDelta| >= 0.02%,
+          // so there's no need to re-check magnitude here.
           const isBullish = btcDelta > 0;
-          // Minimum strength: same 0.02% threshold used to declare directional signal at Gate2
-          const minDelta = parseFloat(this.settings.min_edge) || 0.02;
 
           log.gates.gate3 = {
             btcDelta,
-            minDelta,
             direction,
             passed: false
           };
 
-          // Direction alignment: YES needs BTC rising, NO needs BTC falling
+          // YES needs BTC rising, NO needs BTC falling
           if (direction === 'YES' && !isBullish) {
             log.gates.gate3.passed = false;
             continue;
           }
           if (direction === 'NO' && isBullish) {
-            log.gates.gate3.passed = false;
-            continue;
-          }
-
-          // Strength check: btcDelta must meet minimum threshold
-          if (Math.abs(btcDelta) < minDelta) {
             log.gates.gate3.passed = false;
             continue;
           }
