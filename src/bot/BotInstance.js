@@ -391,15 +391,28 @@ class BotInstance {
           continue;
         }
 
+        // Stale trade guard: 5-min markets resolve within 5 min of window end.
+        // If a trade has been open > 10 min with no price feed, the market is dead.
+        const tradeAgeMin = (Date.now() - new Date(trade.created_at).getTime()) / 60000;
+        const STALE_TRADE_MIN = 10;
+
         const livePrice = await this.polymarket.getLiveTokenPrice(trade.token_id);
 
         if (!livePrice) {
           consecutivePriceFailures++;
           this._log('WARN', `Price fetch failed for ${trade.token_id} (${consecutivePriceFailures}/${MAX_PRICE_FAILURES})`);
 
+          if (tradeAgeMin > STALE_TRADE_MIN) {
+            this._log('WARN', `🧹 Stale trade ${trade.id} — open ${tradeAgeMin.toFixed(0)}min with no price feed. Closing at entry.`);
+            await this._closePosition(trade, parseFloat(trade.entry_price), 'STALE_MARKET_RESOLVED');
+            consecutivePriceFailures = 0;
+            continue;
+          }
+
           if (consecutivePriceFailures >= MAX_PRICE_FAILURES) {
             this._log('CRITICAL', `🛑 Emergency close: ${MAX_PRICE_FAILURES} consecutive price failures`);
             await this._closePosition(trade, parseFloat(trade.entry_price), 'EMERGENCY_PRICE_FEED_DOWN');
+            consecutivePriceFailures = 0;
           }
           continue;
         }
