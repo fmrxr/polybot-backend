@@ -306,15 +306,42 @@ class PolymarketFeed {
     }
   }
 
-  /** Get live token price (mid-price from order book) */
+  /** Get live token price from CLOB order book.
+   * Returns null if the book has only boundary orders (bid=0.01/ask=0.99)
+   * so callers can fall back to Gamma API outcomePrices. */
   async getLiveTokenPrice(tokenId) {
     try {
       const book = await this.getOrderBook(tokenId);
-      return book?.midPrice ?? null;
+      if (!book || book.midPrice == null) return null;
+      // Boundary-only books (spread > 90%) yield a meaningless midPrice of 0.5.
+      // Return null so the caller uses a better source (Gamma outcomePrices).
+      const spread = book.spread ?? (book.bestAsk - book.bestBid);
+      if (spread != null && spread > 0.90) return null;
+      return book.midPrice;
     } catch (err) {
       console.error(`[PolymarketFeed] getLiveTokenPrice failed for ${tokenId}:`, err.message);
       return null;
     }
+  }
+
+  /** Fetch current YES token price from Gamma API outcomePrices.
+   * Use when CLOB book is boundary-only. clobTokenIds[0] = YES token. */
+  async getLivePriceFromGamma(marketId, tokenId) {
+    try {
+      const r = await fetch(`https://gamma-api.polymarket.com/markets/${marketId}`,
+        { signal: AbortSignal.timeout(4000) });
+      if (!r.ok) return null;
+      const m = await r.json();
+      let op = m.outcomePrices;
+      if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { return null; } }
+      if (!Array.isArray(op) || op.length < 2) return null;
+      // Match tokenId to clobTokenIds to find which index is ours
+      let clobIds = m.clobTokenIds;
+      if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch(_) { clobIds = []; } }
+      const idx = clobIds?.indexOf(tokenId);
+      const price = idx >= 0 ? parseFloat(op[idx]) : parseFloat(op[0]);
+      return (!isNaN(price) && price > 0.02 && price < 0.98) ? price : null;
+    } catch (_) { return null; }
   }
 
   /** Fetch USDC balance for a wallet */

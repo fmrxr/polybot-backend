@@ -435,7 +435,12 @@ class BotInstance {
 
         const tradeAgeMin = (Date.now() - new Date(trade.created_at).getTime()) / 60000;
 
-        const livePrice = await this.polymarket.getLiveTokenPrice(trade.token_id);
+        // CLOB returns null when book is boundary-only (spread > 90%) — use Gamma fallback
+        let livePrice = await this.polymarket.getLiveTokenPrice(trade.token_id);
+        if (!livePrice && trade.market_id) {
+          livePrice = await this.polymarket.getLivePriceFromGamma(trade.market_id, trade.token_id);
+          if (livePrice) this._log('INFO', `📡 Gamma price fallback: token=${trade.token_id?.slice(0,8)}... price=${livePrice.toFixed(3)}`);
+        }
 
         if (!livePrice) {
           consecutivePriceFailures++;

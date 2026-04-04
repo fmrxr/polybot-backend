@@ -206,10 +206,13 @@ class GBMSignalEngine {
         //   2. Microstructure confidence (order book imbalance / whale / depth)
         //   3. Lag bonus when Polymarket visibly lags BTC
         // ==========================================
-        const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
+        const btcDelta = this.binance.getWindowDeltaScore(60); // % change over 60s (wider window catches moves that quieted in last 30s)
 
-        // Skip flat-BTC windows — no directional signal means EV ≈ -cost only
-        if (Math.abs(btcDelta) < 0.02) {
+        // Skip flat-BTC windows — no directional signal means EV ≈ -cost only.
+        // Exception: if Gamma price is already meaningfully off 0.5 (|yesPrice - 0.5| > 0.02),
+        // the market has priced a move we may still have edge on if time remains.
+        const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.02;
+        if (Math.abs(btcDelta) < 0.02 && !gammaPriceSignificant) {
           continue;
         }
 
