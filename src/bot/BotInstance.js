@@ -332,8 +332,8 @@ class BotInstance {
       return;
     }
 
-    // Final safety guard — should never happen after earlier checks, but prevents DB crash
-    if (!isFinite(tradeSize) || tradeSize <= 0) {
+    // Final safety guard — must be a positive finite number before any DB insert
+    if (!tradeSize || !isFinite(tradeSize) || isNaN(tradeSize) || tradeSize <= 0) {
       this._log('ERROR', `Invalid tradeSize=${tradeSize} — aborting trade`);
       return;
     }

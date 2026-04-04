@@ -165,6 +165,7 @@ const initDB = async () => {
       ALTER TABLE trades
         ADD COLUMN IF NOT EXISTS status        VARCHAR(50)    DEFAULT 'open',
         ADD COLUMN IF NOT EXISTS trade_size    DECIMAL(20,2),
+        ADD COLUMN IF NOT EXISTS size          DECIMAL(20,2),
         ADD COLUMN IF NOT EXISTS market_id     VARCHAR(255),
         ADD COLUMN IF NOT EXISTS market_question TEXT,
         ADD COLUMN IF NOT EXISTS trade_type    VARCHAR(50)    DEFAULT 'signal',
@@ -218,9 +219,12 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
         ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4);
 
-      -- Drop NOT NULL on legacy 'size' column — main bot uses 'trade_size', old column breaks inserts
-      ALTER TABLE trades ALTER COLUMN size DROP NOT NULL;
     `);
+
+    // Ensure legacy 'size' column has no NOT NULL constraint (old schema had it; new schema uses trade_size)
+    try {
+      await client.query(`ALTER TABLE trades ALTER COLUMN size DROP NOT NULL`);
+    } catch (_) { /* column may not exist or constraint already dropped — safe to ignore */ }
 
     // Close any legacy open trades that pre-date the token_id column
     const legacy = await client.query(`

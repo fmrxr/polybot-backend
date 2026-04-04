@@ -99,6 +99,13 @@ class GBMSignalEngine {
           continue;
         }
 
+        // Skip markets with no real price discovery — bid=0.01/ask=0.99 is boundary liquidity, not a real price
+        const bookSpread = orderBook.spread ?? (orderBook.bestAsk - orderBook.bestBid);
+        if (bookSpread > 0.10) {
+          console.log(`[GBMSignalEngine] SKIP — spread ${(bookSpread * 100).toFixed(0)}% too wide (no real price discovery)`);
+          continue;
+        }
+
         const yesPrice = orderBook.midPrice;
         const spread = orderBook.spread || 0;
 
@@ -166,6 +173,11 @@ class GBMSignalEngine {
         //   3. Lag bonus when Polymarket visibly lags BTC
         // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(30); // % change over 30s
+
+        // Skip flat-BTC windows — no directional signal means EV ≈ -cost only
+        if (Math.abs(btcDelta) < 0.02) {
+          continue;
+        }
 
         // Map to probability edge: 0.1% BTC move → 0.05 (5%), cap 0.15
         const btcEdge = Math.min(Math.abs(btcDelta) * 0.5, 0.15);
