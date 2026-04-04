@@ -323,7 +323,11 @@ class GBMSignalEngine {
         // ==========================================
         // ALL GATES PASSED — GENERATE SIGNAL
         // ==========================================
-        const entryPrice = direction === 'YES' ? orderBook.bestAsk : (1 - orderBook.bestBid);
+        // entryPrice = token mid price (0–1) — used for Kelly market probability.
+        // For YES: mid of YES token. For NO: 1 - YES mid (= NO token mid).
+        // Do NOT use bestAsk/bestBid here — wide spreads on illiquid markets
+        // make b=(1/entry)-1 collapse to ~0 and kill Kelly even on valid signals.
+        const entryPrice = direction === 'YES' ? yesPrice : (1 - yesPrice);
         const tokenId = direction === 'YES' ? yesTokenId : (noTokenId || yesTokenId);
 
         log.verdict = 'TRADE';

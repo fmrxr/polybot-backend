@@ -288,7 +288,11 @@ class BotInstance {
     const { direction, entryPrice, tokenId, market, confidence, evAdj, modelProb, marketId } = signal;
 
     // --- Kelly Criterion with MODEL probability ---
-    const mProb = modelProb || Math.min(0.99, Math.max(0.01, entryPrice + 0.03));
+    // modelProb is always P(YES). For NO trades, flip it to get P(NO token resolves).
+    // entryPrice is the token mid (0–1), so b = payout per dollar risked.
+    const mProb = direction === 'NO'
+      ? Math.min(0.99, Math.max(0.01, 1 - (modelProb || entryPrice)))
+      : Math.min(0.99, Math.max(0.01, modelProb || entryPrice));
     const b = (1 / entryPrice) - 1;
     let kellyFraction = b > 0 ? Math.max(0, (mProb * b - (1 - mProb)) / b) : 0;
 
