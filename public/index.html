@@ -900,7 +900,7 @@
   </div>
 
   <!-- Performance metrics (full row) -->
-  <div id="proMetricsCard" style="display:none;" class="panel" style="margin-bottom:12px;">
+  <div id="proMetricsCard" class="panel" style="margin-bottom:12px;">
     <div class="panel-header" style="cursor:pointer;" onclick="toggleMetricsExpand()">
       <span class="panel-title">Advanced Metrics</span>
       <span id="metricsChevron" style="font-size:11px;color:var(--text-muted);">▼</span>
@@ -1003,37 +1003,37 @@
       <div class="form-group">
         <label>Gate 1: Microstructure Confidence</label>
         <div class="slider-container">
-          <input type="range" id="gate1Threshold" min="0.40" max="0.50" step="0.01" value="0.45" onchange="updateSliderValue('gate1Threshold')">
+          <input type="range" id="gate1Threshold" min="0.10" max="0.90" step="0.01" value="0.45" onchange="updateSliderValue('gate1Threshold')">
           <span class="slider-value" id="gate1ThresholdValue">0.45</span>
         </div>
-        <div class="form-hint">Informational — Gate 2 EV is primary filter</div>
+        <div class="form-hint">Informational only — Gate 2 EV is the real filter</div>
       </div>
       <div class="form-group">
         <label>Gate 2: EV Hard Floor</label>
         <div class="slider-container">
-          <input type="range" id="gate2Floor" min="1" max="10" step="0.1" value="5" onchange="updateSliderValue('gate2Floor')">
-          <span class="slider-value" id="gate2FloorValue">5%</span>
+          <input type="range" id="gate2Floor" min="0.5" max="20" step="0.5" value="3" onchange="updateSliderValue('gate2Floor')">
+          <span class="slider-value" id="gate2FloorValue">3%</span>
         </div>
-        <div class="form-hint">Minimum EV_adj after fees, spread, and slippage</div>
+        <div class="form-hint">Minimum EV% required to trade — lower = more trades, higher = higher quality</div>
       </div>
       <div class="form-group">
-        <label><input type="checkbox" id="gate3Enabled" checked onchange="updateSetting()"> Gate 3: EMA Confirmation Enabled</label>
+        <label><input type="checkbox" id="gate3Enabled" checked onchange="updateSetting()"> Gate 3: BTC Momentum Direction Confirmation</label>
       </div>
       <div class="form-group">
-        <label>Min Edge</label>
+        <label>Gate 3: Min BTC Delta (momentum threshold)</label>
         <div class="slider-container">
-          <input type="range" id="minEdge" min="0.02" max="0.10" step="0.01" value="0.05" onchange="updateSliderValue('minEdge')">
-          <span class="slider-value" id="minEdgeValue">5%</span>
+          <input type="range" id="minEdge" min="0.01" max="0.20" step="0.01" value="0.02" onchange="updateSliderValue('minEdge')">
+          <span class="slider-value" id="minEdgeValue">2%</span>
         </div>
-        <div class="form-hint">Model must outperform market by this amount</div>
+        <div class="form-hint">Min 30s BTC % move required for directional trade — lower = more trades</div>
       </div>
       <div class="form-group">
         <label>Signal Interval</label>
         <div class="slider-container">
-          <input type="range" id="snipeTiming" min="5" max="30" step="1" value="10" onchange="updateSliderValue('snipeTiming')">
+          <input type="range" id="snipeTiming" min="5" max="60" step="5" value="10" onchange="updateSliderValue('snipeTiming')">
           <span class="slider-value" id="sniperTimingValue">10s</span>
         </div>
-        <div class="form-hint">Seconds between signal evaluations</div>
+        <div class="form-hint">Seconds between signal evaluations (10s recommended)</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:4px;">
         <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
@@ -1605,7 +1605,6 @@
       exEl.style.color = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)';
     }
     if (s.total_trades === 0) return;
-    document.getElementById('proMetricsCard').style.display = 'block';
     const sharpeColor = s.sharpe >= 1 ? 'var(--green)' : s.sharpe >= 0 ? 'var(--yellow)' : 'var(--red)';
     const pfColor     = s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--yellow)' : 'var(--red)';
     const expColor    = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)';
@@ -2014,11 +2013,12 @@
     const span  = document.getElementById(id+'Value');
     if (!span) return;
     const v = input.value;
-    if      (id.includes('Floor') || id.includes('Edge')) span.textContent = (parseFloat(v)*100).toFixed(1)+'%';
-    else if (id.includes('Threshold'))                     span.textContent = v;
-    else if (id.includes('Timing'))                        span.textContent = v+'s';
-    else if (id.includes('Cap'))                           span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
-    else                                                   span.textContent = v;
+    if      (id === 'gate2Floor')    span.textContent = parseFloat(v).toFixed(1)+'%';
+    else if (id === 'minEdge')       span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
+    else if (id.includes('Threshold')) span.textContent = parseFloat(v).toFixed(2);
+    else if (id.includes('Timing'))  span.textContent = v+'s';
+    else if (id.includes('Cap'))     span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
+    else                             span.textContent = v;
   }
 
   function updateSetting() {}
@@ -2115,6 +2115,7 @@
         gate3Enabled: true,
         minEdge: 0.02,
         snipeTiming: 10
+
       },
       risk: {
         kellyCap: 0.10,
