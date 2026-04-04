@@ -2076,8 +2076,11 @@
       const typeColor = tradeType === 'copy' ? 'var(--yellow)' : 'var(--cyan)';
 
       const isLive = trade.status === 'open';
+      const liveAttrs = isLive
+        ? `data-live-market="${trade.market_id}" data-live-dir="${dir}" data-live-entry="${entry}" data-live-size="${size}"`
+        : '';
       html += `
-      <div class="panel" style="margin-bottom:8px;cursor:pointer;${isLive ? 'border-color:var(--yellow);box-shadow:0 0 8px rgba(255,200,0,.15);' : ''}" onclick="toggleTradeExpand(${globalIdx}, this)">
+      <div class="panel" style="margin-bottom:8px;cursor:pointer;${isLive ? 'border-color:var(--yellow);box-shadow:0 0 8px rgba(255,200,0,.15);' : ''}" onclick="toggleTradeExpand(${globalIdx}, this)" ${liveAttrs}>
         <div class="panel-body" style="padding:12px 14px;">
 
           <!-- Top row: market + badge -->
@@ -2104,8 +2107,8 @@
               <div style="font-size:14px;font-weight:600;">${entry.toFixed(3)}</div>
             </div>
             <div>
-              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Exit</div>
-              <div style="font-size:14px;font-weight:600;color:var(--text-muted);">${exitP > 0 ? exitP.toFixed(3) : '—'}</div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">${isLive ? 'Current' : 'Exit'}</div>
+              <div style="font-size:14px;font-weight:600;color:${isLive ? 'var(--yellow)' : 'var(--text-muted)'};" class="${isLive ? 'live-cur' : ''}">${isLive ? '…' : (exitP > 0 ? exitP.toFixed(3) : '—')}</div>
             </div>
             <div>
               <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">EV adj</div>
@@ -2113,7 +2116,7 @@
             </div>
             <div style="text-align:right;">
               <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">P&amp;L</div>
-              <div style="font-size:18px;font-weight:700;color:${pnlColor};">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div>
+              <div style="font-size:18px;font-weight:700;color:${pnlColor};" class="${isLive ? 'live-pnl' : ''}">${isLive ? '…' : pnlSign + '$' + Math.abs(pnl).toFixed(2)}</div>
             </div>
           </div>
 
@@ -2497,6 +2500,7 @@
   const _maxEVHistory  = 60;
   let   _liveES        = null; // EventSource instance
   let   _liveTimer     = null; // countdown interval
+  let   _liveMarkets   = {};   // marketId -> { yesPrice, noPrice } — updated from SSE every 200ms
 
   function initLiveStream() {
     const token = localStorage.getItem('token');
@@ -2572,6 +2576,30 @@
       const b = el('lvBalance');
       if (b) b.textContent = '$' + parseFloat(state.paperBalance).toFixed(2);
     }
+
+    // Store all live market prices for open trade cards
+    (state.markets || []).forEach(m => {
+      if (m.id && m.yesPrice != null) {
+        _liveMarkets[m.id] = { yesPrice: m.yesPrice, noPrice: m.noPrice ?? (1 - m.yesPrice) };
+      }
+    });
+    // Push live prices into any open trade cards currently rendered
+    document.querySelectorAll('[data-live-market]').forEach(el => {
+      const mid   = el.getAttribute('data-live-market');
+      const dir   = el.getAttribute('data-live-dir');
+      const entry = parseFloat(el.getAttribute('data-live-entry'));
+      const size  = parseFloat(el.getAttribute('data-live-size'));
+      const mkt0  = _liveMarkets[mid];
+      if (!mkt0) return;
+      const cur = dir === 'YES' ? mkt0.yesPrice : mkt0.noPrice;
+      if (cur == null || isNaN(entry) || isNaN(size)) return;
+      const pnl = (cur - entry) * size / entry;
+      const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
+      const curEl = el.querySelector('.live-cur');
+      const pnlEl = el.querySelector('.live-pnl');
+      if (curEl) curEl.textContent = cur.toFixed(3);
+      if (pnlEl) { pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2); pnlEl.style.color = pnlColor; }
+    });
 
     // Markets — pick first active one
     const mkt = (state.markets || [])[0];

@@ -208,9 +208,11 @@ class BotInstance {
       if (evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
         this._log('INFO', `✅ EV-driven flip: ${currentDirection} → ${newSignal.direction} (EV gain: +${evGain.toFixed(2)}%)`);
 
-        // Close existing position
-        const livePrice = await this.polymarket.getLiveTokenPrice(existingTrade.token_id);
-        await this._closePosition(existingTrade, livePrice || parseFloat(existingTrade.entry_price), 'EV_FLIP');
+        // Close existing position at live price — fall back to last cached book price, not entry
+        const livePrice = await this.polymarket.getLiveTokenPrice(existingTrade.token_id)
+          ?? this._lastOrderBooks[existingTrade.token_id]?.midPrice
+          ?? parseFloat(existingTrade.entry_price);
+        await this._closePosition(existingTrade, livePrice, 'EV_FLIP');
 
         // Record flip
         this.recentFlips.push(Date.now());
@@ -591,13 +593,23 @@ class BotInstance {
         try { clobIds = JSON.parse(clobIds); } catch (_) { return null; }
       }
 
-      const yesWon = parseFloat(outcomePrices[0]) >= 0.5;
-      const isYesToken = clobIds?.[0] === tokenId;
-      const isNoToken  = clobIds?.[1] === tokenId;
-
-      if (isYesToken) return yesWon ? 0.99 : 0.01;
-      if (isNoToken)  return yesWon ? 0.01 : 0.99;
-      return null; // tokenId not found in this market
+      const yesPrice0 = parseFloat(outcomePrices[0]);
+      // Only trust a clear winner: 1.0 = YES won, 0.0 = NO won
+      // Avoid 0.5/0.5 which means UMA hasn't resolved yet (challenge period)
+      if (yesPrice0 >= 0.9) {
+        // YES won
+        const isYesToken = clobIds?.[0] === tokenId;
+        const isNoToken  = clobIds?.[1] === tokenId;
+        if (isYesToken) return 0.99;
+        if (isNoToken)  return 0.01;
+      } else if (yesPrice0 <= 0.1) {
+        // NO won
+        const isYesToken = clobIds?.[0] === tokenId;
+        const isNoToken  = clobIds?.[1] === tokenId;
+        if (isYesToken) return 0.01;
+        if (isNoToken)  return 0.99;
+      }
+      return null; // ambiguous or not yet resolved
     } catch (err) {
       this._log('WARN', `Gamma resolution lookup failed for ${marketId}: ${err.message}`);
       return null;
