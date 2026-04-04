@@ -192,16 +192,34 @@ class BotInstance {
       // If signal says same direction, no flip needed
       if (newSignal.direction === currentDirection) return false;
 
+      // Minimum hold time — don't flip a position < 2 minutes old.
+      // BTC oscillates ±0.03% naturally every 30s; without this, flips fire on noise.
+      const holdTimeMin = (Date.now() - new Date(existingTrade.created_at).getTime()) / 60000;
+      if (holdTimeMin < 2.0) {
+        this._log('INFO', `⏳ Flip suppressed — position ${holdTimeMin.toFixed(1)}min old (min 2min to reduce noise flips)`);
+        return false;
+      }
+
       // EV-driven flip evaluation with hysteresis (prevents whipsaw)
       const flipThreshold = this._getFlipThreshold();
       const currentEV = currentDirection === 'YES' ? newSignal.evYes : newSignal.evNo;
       const oppositeEV = newSignal.evAdj;
 
-      // Hysteresis: require opposite EV > current EV + 3% margin (not just > threshold)
-      const FLIP_HYSTERESIS = 3.0;
+      // Hysteresis: require 6% EV gain (up from 3%) — round-trip cost is ~1.4% so need real edge
+      // BTC 30s oscillation creates 3-4% EV swings; 6% threshold filters out noise flips
+      const FLIP_HYSTERESIS = 6.0;
       const evGain = oppositeEV - currentEV;
 
       this._log('INFO', `🔄 Flip evaluation: ${currentDirection} EV=${currentEV.toFixed(2)}%, ${newSignal.direction} EV=${oppositeEV.toFixed(2)}%, gain=${evGain.toFixed(2)}%, threshold=${flipThreshold.toFixed(2)}%`);
+
+      // BTC confirmation: only flip if BTC momentum supports the new direction
+      // emaEdge = btcDelta (30s window); prevents flipping against momentum
+      const btcDelta = newSignal.emaEdge || 0;
+      const btcSupportsFip = newSignal.direction === 'YES' ? btcDelta > 0 : btcDelta < 0;
+      if (!btcSupportsFip) {
+        this._log('INFO', `⛔ Flip rejected — BTC direction (${btcDelta.toFixed(3)}%) contradicts ${newSignal.direction}`);
+        return false;
+      }
 
       // Flip condition: opposite side has significantly better EV
       // Don't require currentEV < 0 — flip when edge clearly reversed
@@ -271,9 +289,9 @@ class BotInstance {
     this._cleanOldFlips();
     const recentFlipCount = this.recentFlips.length;
 
-    // Base threshold: 2% EV differential required
+    // Base threshold: 5% EV differential required (was 2% — BTC oscillation creates 3-4% noise swings)
     // Escalation: +1% per recent flip (last 10 minutes)
-    const baseThreshold = 2.0;
+    const baseThreshold = 5.0;
     const escalation = recentFlipCount * 1.0;
 
     return baseThreshold + escalation;
@@ -551,6 +569,11 @@ class BotInstance {
       // token_id stores the exact token bought, getLiveTokenPrice returns that token's price.
       // So the formula is always (exit - entry) * shares, regardless of direction.
       const pnl = (effectiveExit - entryPrice) * tradeSize / entryPrice;
+
+      if (!isFinite(pnl) || isNaN(pnl)) {
+        this._log('ERROR', `Invalid PnL=${pnl} (entry=${entryPrice}, exit=${effectiveExit}, size=${tradeSize}) — skipping close`);
+        return;
+      }
 
       const result = pnl >= 0 ? 'WIN' : 'LOSS';
       await pool.query(`

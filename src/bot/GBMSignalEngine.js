@@ -361,15 +361,36 @@ class GBMSignalEngine {
         const entryPrice = direction === 'YES' ? yesPrice : (1 - yesPrice);
         const tokenId = direction === 'YES' ? yesTokenId : (noTokenId || yesTokenId);
 
+        // Signal quality confidence — replaces pure microstructure score.
+        // Must reflect actual outcome predictors, not just order book health.
+        const momentumScore   = Math.min(Math.abs(btcDelta) / 0.10, 1.0);          // normalize to 0.10%
+        const evScore         = Math.min(Math.max(0, evAnalysis.bestEV) / 15.0, 1.0); // normalize to 15% EV
+        const convictionScore = Math.abs(modelProb - 0.5) * 2;                     // 0→1
+        const timeScore       = Math.min(remaining / 240, 1.0);                    // full score ≥4 min left
+        const microScore      = micro.confidence || 0;
+        const signalConfidence = parseFloat((
+          momentumScore   * 0.45 +
+          evScore         * 0.30 +
+          convictionScore * 0.15 +
+          timeScore       * 0.05 +
+          microScore      * 0.05
+        ).toFixed(3));
+
+        // Confidence gate — skip if signal quality is too low (noise, not edge)
+        if (signalConfidence < 0.20) {
+          console.log(`[GBMSignalEngine] SKIP — low signal quality: confidence=${signalConfidence.toFixed(3)}`);
+          continue;
+        }
+
         log.verdict = 'TRADE';
-        log.reason = `EV-driven signal: ${direction} @ EV ${evAnalysis.bestEV.toFixed(2)}%, micro=${micro.confidence.toFixed(3)}, modelProb=${modelProb.toFixed(3)}`;
+        log.reason = `EV-driven signal: ${direction} @ EV ${evAnalysis.bestEV.toFixed(2)}%, confidence=${signalConfidence.toFixed(3)}, modelProb=${modelProb.toFixed(3)}`;
 
         return {
           verdict: 'TRADE',
           market: market,
           marketId: marketId,
           direction: direction,        // 'YES' or 'NO'
-          confidence: micro.confidence,
+          confidence: signalConfidence,
           evRaw: direction === 'YES' ? evAnalysis.evYes + (costs.spread + costs.estimatedSlippage + costs.fees) * 100 : evAnalysis.evNo + (costs.spread + costs.estimatedSlippage + costs.fees) * 100,
           evAdj: evAnalysis.bestEV,
           evYes: evAnalysis.evYes,

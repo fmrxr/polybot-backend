@@ -2671,10 +2671,15 @@
       }
     }
 
-    // Store all live market prices for open trade cards
+    // Store all live market prices for open trade cards (including ask prices for fallback)
     (state.markets || []).forEach(m => {
-      if (m.id && m.yesPrice != null) {
-        _liveMarkets[m.id] = { yesPrice: m.yesPrice, noPrice: m.noPrice ?? (1 - m.yesPrice) };
+      if (m.id) {
+        _liveMarkets[m.id] = {
+          yesPrice: m.yesPrice ?? null,
+          noPrice:  m.noPrice  ?? (m.yesPrice != null ? 1 - m.yesPrice : null),
+          yesAsk:   m.yesAsk   ?? null,
+          noAsk:    m.noAsk    ?? null
+        };
       }
     });
     // Push live prices into any open trade cards currently rendered
@@ -2684,13 +2689,21 @@
       const entry = parseFloat(el.getAttribute('data-live-entry'));
       const size  = parseFloat(el.getAttribute('data-live-size'));
       const mkt0  = _liveMarkets[mid];
-      if (!mkt0) return;
-      const cur = dir === 'YES' ? mkt0.yesPrice : mkt0.noPrice;
-      if (cur == null || isNaN(entry) || isNaN(size)) return;
-      const pnl = (cur - entry) * size / entry;
-      const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
       const curEl = el.querySelector('.live-cur');
       const pnlEl = el.querySelector('.live-pnl');
+      if (!mkt0) return;
+      // Use mid price; fall back to ask price if mid not available
+      const cur = dir === 'YES'
+        ? (mkt0.yesPrice ?? mkt0.yesAsk)
+        : (mkt0.noPrice  ?? mkt0.noAsk);
+      if (cur == null || isNaN(entry) || isNaN(size)) {
+        // No price available — show dash instead of leaving "..." indefinitely
+        if (curEl) curEl.textContent = '—';
+        if (pnlEl) { pnlEl.textContent = '—'; pnlEl.style.color = 'var(--text-muted)'; }
+        return;
+      }
+      const pnl = (cur - entry) * size / entry;
+      const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
       if (curEl) curEl.textContent = cur.toFixed(3);
       if (pnlEl) { pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2); pnlEl.style.color = pnlColor; }
     });
