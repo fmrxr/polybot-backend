@@ -872,30 +872,38 @@
 <div id="trades" class="page">
   <div class="page-title"><span>▸</span> TRADE HISTORY</div>
 
-  <!-- Summary bar -->
+  <!-- P&L Statement bar -->
   <div id="tradeSummaryBar" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">
-    <div class="panel" style="margin:0;">
+    <!-- Revenue -->
+    <div class="panel" style="margin:0;border-color:rgba(0,232,122,0.3);">
       <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Total P&L</div>
-        <div style="font-size:22px;font-weight:700;" id="tsTotalPnl">—</div>
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Revenue (Wins)</div>
+        <div style="font-size:20px;font-weight:700;color:var(--green);" id="tsGrossWins">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsWinsCount">— trades</div>
       </div>
     </div>
-    <div class="panel" style="margin:0;">
+    <!-- Costs -->
+    <div class="panel" style="margin:0;border-color:rgba(255,77,77,0.3);">
       <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Win Rate</div>
-        <div style="font-size:22px;font-weight:700;" id="tsWinRate">—</div>
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Costs (Losses)</div>
+        <div style="font-size:20px;font-weight:700;color:var(--red);" id="tsGrossLosses">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsLossesCount">— trades</div>
       </div>
     </div>
+    <!-- Net P&L -->
     <div class="panel" style="margin:0;">
       <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Profit Factor</div>
-        <div style="font-size:22px;font-weight:700;" id="tsProfitFactor">—</div>
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Net P&L</div>
+        <div style="font-size:20px;font-weight:700;" id="tsTotalPnl">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsTotalTrades">— trades</div>
       </div>
     </div>
+    <!-- Win Rate -->
     <div class="panel" style="margin:0;">
       <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Expectancy</div>
-        <div style="font-size:22px;font-weight:700;" id="tsExpectancy">—</div>
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Win Rate</div>
+        <div style="font-size:20px;font-weight:700;" id="tsWinRate">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsExpectancy">— /trade</div>
       </div>
     </div>
   </div>
@@ -1789,24 +1797,34 @@
   function renderProMetrics(s) {
     if (!s) return;
     const fmt = (v, p='', su='') => v == null ? '—' : `${p}${v}${su}`;
-    // Summary bar
-    const totalPnl = parseFloat(s.total_pnl || 0);
-    const pnlEl = document.getElementById('tsTotalPnl');
+    const $ = id => document.getElementById(id);
+
+    // ── P&L Statement ──────────────────────────────────
+    const grossWins   = parseFloat(s.gross_wins   || 0);
+    const grossLosses = parseFloat(s.gross_losses || 0);
+    const totalPnl    = parseFloat(s.total_pnl    || 0);
+    const wins        = parseInt(s.wins    || 0);
+    const losses      = parseInt(s.losses  || 0);
+    const total       = parseInt(s.total_trades || 0);
+
+    if ($('tsGrossWins'))   { $('tsGrossWins').textContent   = '+$' + grossWins.toFixed(2); }
+    if ($('tsGrossLosses')) { $('tsGrossLosses').textContent = '-$' + grossLosses.toFixed(2); }
+    if ($('tsWinsCount'))   { $('tsWinsCount').textContent   = wins + ' winning trades'; }
+    if ($('tsLossesCount')) { $('tsLossesCount').textContent = losses + ' losing trades'; }
+    if ($('tsTotalTrades')) { $('tsTotalTrades').textContent = total + ' total trades'; }
+
+    const pnlEl = $('tsTotalPnl');
     if (pnlEl) {
       pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + '$' + Math.abs(totalPnl).toFixed(2);
       pnlEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
     }
     const wr = s.win_rate != null ? parseFloat(s.win_rate).toFixed(1) + '%' : '—';
-    const wrEl = document.getElementById('tsWinRate');
+    const wrEl = $('tsWinRate');
     if (wrEl) { wrEl.textContent = wr; wrEl.style.color = parseFloat(s.win_rate) >= 50 ? 'var(--green)' : 'var(--red)'; }
-    const pfEl = document.getElementById('tsProfitFactor');
-    if (pfEl) {
-      pfEl.textContent = s.profit_factor >= 99 ? '∞' : fmt(s.profit_factor);
-      pfEl.style.color = s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--yellow)' : 'var(--red)';
-    }
-    const exEl = document.getElementById('tsExpectancy');
+
+    const exEl = $('tsExpectancy');
     if (exEl) {
-      exEl.textContent = s.expectancy != null ? (s.expectancy >= 0 ? '+' : '') + '$' + parseFloat(s.expectancy).toFixed(2) : '—';
+      exEl.textContent = s.expectancy != null ? (s.expectancy >= 0 ? '+$' : '-$') + Math.abs(parseFloat(s.expectancy)).toFixed(2) + '/trade' : '—';
       exEl.style.color = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)';
     }
     if (s.total_trades === 0) return;

@@ -171,8 +171,12 @@ router.get('/stats', async (req, res) => {
       avg_win: parseFloat(avgWin.toFixed(2)),
       avg_loss: parseFloat(avgLoss.toFixed(2)),
       total_trades: trades.length,
+      wins: wins.length,
+      losses: losses.length,
       win_rate: parseFloat((winRate * 100).toFixed(1)),
-      total_pnl: parseFloat(pnls.reduce((s, p) => s + p, 0).toFixed(2))
+      total_pnl: parseFloat(pnls.reduce((s, p) => s + p, 0).toFixed(2)),
+      gross_wins: parseFloat(grossWins.toFixed(2)),
+      gross_losses: parseFloat(grossLosses.toFixed(2))
     });
   } catch(err) {
     console.error('Stats error:', err);
