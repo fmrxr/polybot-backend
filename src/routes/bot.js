@@ -284,9 +284,8 @@ router.get('/analytics', authMiddleware, async (req, res) => {
       const size  = parseFloat(t.trade_size);
       let livePnl = null;
       if (livePrice !== null && isFinite(entry) && isFinite(size) && entry > 0) {
-        livePnl = t.direction === 'YES'
-          ? parseFloat(((livePrice - entry) * size / entry).toFixed(2))
-          : parseFloat(((entry - livePrice) * size / entry).toFixed(2));
+        // token_id is the exact token bought (YES or NO token) — formula is always (current - entry) * shares
+        livePnl = parseFloat(((livePrice - entry) * size / entry).toFixed(2));
       }
       return { ...t, live_price: livePrice, live_pnl: livePnl };
     });

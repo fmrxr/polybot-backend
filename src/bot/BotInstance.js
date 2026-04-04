@@ -492,9 +492,9 @@ class BotInstance {
         this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% price=${livePrice.toFixed(3)}`);
 
         // EXIT CONDITION 1: Hard stop-loss — price moved sharply against us
-        const pnlPct = trade.direction === 'YES'
-          ? ((livePrice - entryPrice) / entryPrice) * 100
-          : ((entryPrice - livePrice) / entryPrice) * 100;
+        // Token price is always the token we bought (YES token for YES, NO token for NO).
+        // PnL direction is always (currentPrice - entryPrice) — same formula for both sides.
+        const pnlPct = ((livePrice - entryPrice) / entryPrice) * 100;
 
         if (pnlPct <= -20) {
           this._log('WARN', `🛑 Hard stop-loss: PnL ${pnlPct.toFixed(1)}% — closing`);
@@ -536,10 +536,10 @@ class BotInstance {
         return;
       }
 
-      // Binary market PnL: buy YES at p, resolves at 1 → profit = (1-p)/p per dollar
-      const pnl = trade.direction === 'YES'
-        ? (effectiveExit - entryPrice) * tradeSize / entryPrice
-        : (entryPrice - effectiveExit) * tradeSize / entryPrice;
+      // Binary market PnL: we always buy the token (YES or NO) at entryPrice.
+      // token_id stores the exact token bought, getLiveTokenPrice returns that token's price.
+      // So the formula is always (exit - entry) * shares, regardless of direction.
+      const pnl = (effectiveExit - entryPrice) * tradeSize / entryPrice;
 
       const result = pnl >= 0 ? 'WIN' : 'LOSS';
       await pool.query(`
