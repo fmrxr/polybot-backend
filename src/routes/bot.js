@@ -244,6 +244,151 @@ router.get('/stream', authMiddleware, (req, res) => {
   }
 });
 
+// ─── Paper Lab Analytics ────────────────────────────────────────────────────
+router.get('/analytics', authMiddleware, async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+
+    // All closed trades in window
+    const tradesRes = await pool.query(`
+      SELECT id, direction, entry_price, exit_price,
+             COALESCE(trade_size, size) AS trade_size,
+             pnl, result, close_reason, signal_confidence,
+             ev_adj, gate1_score, gate2_score, gate3_score,
+             created_at, closed_at
+      FROM trades
+      WHERE user_id = $1
+        AND status = 'closed'
+        AND created_at > NOW() - ($2 || ' days')::INTERVAL
+        AND COALESCE(trade_size, size) IS NOT NULL
+        AND COALESCE(trade_size, size) > 0
+      ORDER BY created_at ASC
+    `, [req.userId, days]);
+
+    const trades = tradesRes.rows;
+
+    // Open trades
+    const openRes = await pool.query(`
+      SELECT id, direction, entry_price, COALESCE(trade_size, size) AS trade_size,
+             signal_confidence, ev_adj, created_at, market_question
+      FROM trades WHERE user_id=$1 AND status='open'
+    `, [req.userId]);
+
+    if (!trades.length) {
+      return res.json({
+        summary: { total: 0, wins: 0, losses: 0, win_rate: 0, total_pnl: 0, avg_pnl: 0, best: 0, worst: 0, sharpe: 0, max_drawdown: 0, profit_factor: 0, expectancy: 0, avg_win: 0, avg_loss: 0 },
+        pnl_curve: [],
+        by_direction: [],
+        by_exit_reason: [],
+        by_ev_bucket: [],
+        by_hour: [],
+        open_trades: openRes.rows,
+        total_open: openRes.rows.length
+      });
+    }
+
+    const pnls = trades.map(t => parseFloat(t.pnl));
+    const wins = trades.filter(t => t.result === 'WIN');
+    const losses = trades.filter(t => t.result === 'LOSS');
+    const totalPnl = pnls.reduce((s, p) => s + p, 0);
+    const winRate = trades.length > 0 ? wins.length / trades.length : 0;
+    const avgWin = wins.length ? wins.reduce((s,t)=>s+parseFloat(t.pnl),0)/wins.length : 0;
+    const avgLoss = losses.length ? Math.abs(losses.reduce((s,t)=>s+parseFloat(t.pnl),0)/losses.length) : 0;
+
+    // Sharpe
+    const mean = totalPnl / pnls.length;
+    const variance = pnls.reduce((s,p)=>s+Math.pow(p-mean,2),0)/pnls.length;
+    const sharpe = variance > 0 ? (mean / Math.sqrt(variance)) * Math.sqrt(pnls.length) : 0;
+
+    // Max drawdown
+    let peak = 0, cum = 0, maxDD = 0;
+    for (const p of pnls) { cum += p; if (cum > peak) peak = cum; const dd = peak - cum; if (dd > maxDD) maxDD = dd; }
+
+    const grossWins = wins.reduce((s,t)=>s+parseFloat(t.pnl),0);
+    const grossLoss = Math.abs(losses.reduce((s,t)=>s+parseFloat(t.pnl),0));
+    const profitFactor = grossLoss > 0 ? Math.min(grossWins/grossLoss, 99) : grossWins > 0 ? 99 : 0;
+    const expectancy = winRate * avgWin - (1-winRate) * avgLoss;
+
+    // P&L curve
+    let runningPnl = 0;
+    const pnlCurve = trades.map(t => {
+      runningPnl += parseFloat(t.pnl);
+      return { ts: t.closed_at || t.created_at, pnl: parseFloat(t.pnl), cumPnl: parseFloat(runningPnl.toFixed(2)), result: t.result };
+    });
+
+    // By direction
+    const byDir = {};
+    for (const t of trades) {
+      if (!byDir[t.direction]) byDir[t.direction] = { trades:0, wins:0, pnl:0 };
+      byDir[t.direction].trades++;
+      if (t.result==='WIN') byDir[t.direction].wins++;
+      byDir[t.direction].pnl += parseFloat(t.pnl);
+    }
+
+    // By exit reason
+    const byReason = {};
+    for (const t of trades) {
+      const r = t.close_reason || 'resolved';
+      if (!byReason[r]) byReason[r] = { count:0, pnl:0, wins:0 };
+      byReason[r].count++;
+      byReason[r].pnl += parseFloat(t.pnl);
+      if (t.result==='WIN') byReason[r].wins++;
+    }
+
+    // By EV bucket
+    const evBuckets = { '<0%':[], '0-2%':[], '2-5%':[], '5-10%':[], '>10%':[] };
+    for (const t of trades) {
+      const ev = parseFloat(t.ev_adj || 0);
+      const p = parseFloat(t.pnl);
+      if (ev < 0) evBuckets['<0%'].push(p);
+      else if (ev < 2) evBuckets['0-2%'].push(p);
+      else if (ev < 5) evBuckets['2-5%'].push(p);
+      else if (ev < 10) evBuckets['5-10%'].push(p);
+      else evBuckets['>10%'].push(p);
+    }
+
+    // By hour of day
+    const byHour = {};
+    for (const t of trades) {
+      const h = new Date(t.created_at).getUTCHours();
+      if (!byHour[h]) byHour[h] = { trades:0, pnl:0, wins:0 };
+      byHour[h].trades++;
+      byHour[h].pnl += parseFloat(t.pnl);
+      if (t.result==='WIN') byHour[h].wins++;
+    }
+
+    res.json({
+      summary: {
+        total: trades.length,
+        wins: wins.length,
+        losses: losses.length,
+        win_rate: parseFloat((winRate*100).toFixed(1)),
+        total_pnl: parseFloat(totalPnl.toFixed(2)),
+        avg_pnl: parseFloat((totalPnl/trades.length).toFixed(2)),
+        best: parseFloat(Math.max(...pnls).toFixed(2)),
+        worst: parseFloat(Math.min(...pnls).toFixed(2)),
+        sharpe: parseFloat(sharpe.toFixed(3)),
+        max_drawdown: parseFloat(maxDD.toFixed(2)),
+        profit_factor: parseFloat(profitFactor.toFixed(2)),
+        expectancy: parseFloat(expectancy.toFixed(2)),
+        avg_win: parseFloat(avgWin.toFixed(2)),
+        avg_loss: parseFloat(avgLoss.toFixed(2))
+      },
+      pnl_curve: pnlCurve,
+      by_direction: Object.entries(byDir).map(([dir,v])=>({ dir, ...v, win_rate: v.trades>0?(v.wins/v.trades*100).toFixed(1):'0', pnl: v.pnl.toFixed(2) })),
+      by_exit_reason: Object.entries(byReason).map(([reason,v])=>({ reason, ...v, win_rate: v.count>0?(v.wins/v.count*100).toFixed(1):'0', pnl: v.pnl.toFixed(2) })).sort((a,b)=>b.count-a.count),
+      by_ev_bucket: Object.entries(evBuckets).map(([bucket,ps])=>({ bucket, count:ps.length, pnl: ps.reduce((s,p)=>s+p,0).toFixed(2), win_rate: ps.length>0?(ps.filter(p=>p>0).length/ps.length*100).toFixed(1):'0' })),
+      by_hour: Object.entries(byHour).map(([h,v])=>({ hour:parseInt(h), ...v, win_rate: v.trades>0?(v.wins/v.trades*100).toFixed(1):'0', pnl: v.pnl.toFixed(2) })).sort((a,b)=>a.hour-b.hour),
+      open_trades: openRes.rows,
+      total_open: openRes.rows.length,
+      days
+    });
+  } catch(err) {
+    console.error('[analytics]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Polling fallback: GET /live-state ─────────────────────────────────────
 // Returns last snapshot synchronously for clients that can't use SSE.
 router.get('/live-state', authMiddleware, (req, res) => {

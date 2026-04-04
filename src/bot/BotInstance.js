@@ -412,29 +412,49 @@ class BotInstance {
           continue;
         }
 
-        // Stale trade guard: 5-min markets resolve within 5 min of window end.
-        // If a trade has been open > 10 min with no price feed, the market is dead.
         const tradeAgeMin = (Date.now() - new Date(trade.created_at).getTime()) / 60000;
-        const STALE_TRADE_MIN = 10;
 
         const livePrice = await this.polymarket.getLiveTokenPrice(trade.token_id);
 
         if (!livePrice) {
           consecutivePriceFailures++;
-          this._log('WARN', `Price fetch failed for ${trade.token_id} (${consecutivePriceFailures}/${MAX_PRICE_FAILURES})`);
 
-          if (tradeAgeMin > STALE_TRADE_MIN) {
-            this._log('WARN', `🧹 Stale trade ${trade.id} — open ${tradeAgeMin.toFixed(0)}min with no price feed. Closing at entry.`);
-            await this._closePosition(trade, parseFloat(trade.entry_price), 'STALE_MARKET_RESOLVED');
+          // 5-min market expired: close > 6 min after entry (1 min buffer past expiry)
+          if (tradeAgeMin > 6) {
+            // Try to infer resolution from last known cached price
+            const cached = this._lastOrderBooks[trade.token_id];
+            const lastKnown = cached?.midPrice || null;
+            let resolvedAt = parseFloat(trade.entry_price); // fallback = entry (break even)
+
+            if (lastKnown !== null) {
+              // Near-resolution price → treat as full resolution
+              resolvedAt = lastKnown >= 0.90 ? 0.99 : lastKnown <= 0.10 ? 0.01 : lastKnown;
+            }
+
+            this._log('INFO', `⏱️ Market expired — trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min, resolvedAt=${resolvedAt.toFixed(3)}`);
+            await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
             consecutivePriceFailures = 0;
             continue;
           }
 
+          this._log('WARN', `Price fetch failed for token ${trade.token_id} (age=${tradeAgeMin.toFixed(1)}min)`);
           if (consecutivePriceFailures >= MAX_PRICE_FAILURES) {
-            this._log('CRITICAL', `🛑 Emergency close: ${MAX_PRICE_FAILURES} consecutive price failures`);
+            this._log('CRITICAL', `🛑 ${MAX_PRICE_FAILURES} consecutive price failures — emergency close`);
             await this._closePosition(trade, parseFloat(trade.entry_price), 'EMERGENCY_PRICE_FEED_DOWN');
             consecutivePriceFailures = 0;
           }
+          continue;
+        }
+
+        consecutivePriceFailures = 0;
+
+        // Near-resolution detection: token price approaching 0 or 1 = market settling
+        // Close immediately to lock in the gain/loss at near-final price
+        if (livePrice >= 0.92 || livePrice <= 0.08) {
+          const resolvedAt = livePrice >= 0.92 ? 0.99 : 0.01;
+          this._log('INFO', `🏁 Near-resolution detected: price=${livePrice.toFixed(3)} — closing trade #${trade.id} at ${resolvedAt}`);
+          await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
+          this.evEngine.clearMarket(trade.market_id);
           continue;
         }
 
@@ -502,25 +522,37 @@ class BotInstance {
   async _closePosition(trade, exitPrice, reason) {
     try {
       const entryPrice = parseFloat(trade.entry_price);
-      const tradeSize = parseFloat(trade.trade_size);
-      const effectiveExit = exitPrice || entryPrice;
+      // trade_size is the authoritative column; fall back to legacy 'size' column
+      const tradeSize = parseFloat(trade.trade_size ?? trade.size);
+      const effectiveExit = parseFloat(exitPrice) || entryPrice;
 
+      // Guard: if any value is NaN the PnL calc produces garbage — mark as broken close
+      if (!isFinite(entryPrice) || !isFinite(tradeSize) || tradeSize <= 0 || !isFinite(effectiveExit)) {
+        this._log('WARN', `Trade ${trade.id} has invalid data (entry=${entryPrice}, size=${tradeSize}, exit=${effectiveExit}) — closing as BREAK_EVEN`);
+        await pool.query(
+          `UPDATE trades SET status='closed', exit_price=$1, pnl=0, close_reason=$2, result='LOSS', closed_at=NOW() WHERE id=$3`,
+          [entryPrice || 0, reason + '_DATA_ERROR', trade.id]
+        );
+        return;
+      }
+
+      // Binary market PnL: buy YES at p, resolves at 1 → profit = (1-p)/p per dollar
       const pnl = trade.direction === 'YES'
         ? (effectiveExit - entryPrice) * tradeSize / entryPrice
         : (entryPrice - effectiveExit) * tradeSize / entryPrice;
 
-      const result = pnl > 0 ? 'WIN' : 'LOSS';
+      const result = pnl >= 0 ? 'WIN' : 'LOSS';
       await pool.query(`
         UPDATE trades SET status = 'closed', exit_price = $1, pnl = $2, close_reason = $3, result = $4, closed_at = NOW()
         WHERE id = $5
       `, [effectiveExit, pnl, reason, result, trade.id]);
 
       if (this.settings.paper_trading) {
-        this.paperBalance += tradeSize + pnl;
+        this.paperBalance = Math.max(0, this.paperBalance + tradeSize + pnl);
         await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2', [this.paperBalance, this.userId]);
       }
 
-      this._log('INFO', `Position ${trade.id} closed: ${reason}, PnL: $${pnl.toFixed(2)} (${((pnl / tradeSize) * 100).toFixed(1)}%)`);
+      this._log('INFO', `✅ Closed #${trade.id} ${trade.direction} [${reason}] entry=${entryPrice.toFixed(3)} exit=${effectiveExit.toFixed(3)} size=$${tradeSize.toFixed(2)} PnL=$${pnl.toFixed(2)} (${((pnl/tradeSize)*100).toFixed(1)}%)`);
     } catch (err) {
       this._log('ERROR', `Close position failed: ${err.message}`);
     }

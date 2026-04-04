@@ -514,6 +514,7 @@
       <li><a onclick="showPage('dashboard')" class="nav-link active">Dashboard</a></li>
       <li><a onclick="showPage('signals')"   class="nav-link">Signals</a></li>
       <li><a onclick="showPage('trades')"    class="nav-link">Trades</a></li>
+      <li><a onclick="showPage('lab')"       class="nav-link">⚗ Lab</a></li>
       <li><a onclick="showPage('claude')"    class="nav-link">Claude AI</a></li>
       <li><a onclick="showPage('settings')"  class="nav-link">Settings</a></li>
     </ul>
@@ -1162,6 +1163,208 @@
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════ LAB PAGE ══ -->
+<div id="lab" class="page">
+  <div class="page-title"><span>⚗</span> PAPER LAB — Strategy Testing</div>
+
+  <!-- Controls row -->
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+    <select id="labDays" onchange="loadLab()" style="background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 10px;font-size:12px;">
+      <option value="1">Last 24h</option>
+      <option value="3">Last 3 days</option>
+      <option value="7" selected>Last 7 days</option>
+      <option value="30">Last 30 days</option>
+    </select>
+    <button class="secondary" onclick="loadLab()" style="font-size:11px;padding:6px 14px;">↻ Refresh</button>
+    <button class="secondary" onclick="resetPaperBalance()" style="font-size:11px;padding:6px 14px;color:var(--yellow);">Reset Paper Balance</button>
+    <span id="labLastUpdate" style="font-size:10px;color:var(--text-muted);margin-left:auto;"></span>
+  </div>
+
+  <!-- Summary KPI bar -->
+  <div id="labKpis" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:12px;">
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">TOTAL PnL</div>
+      <div id="lkTotalPnl" style="font-size:18px;font-weight:700;color:var(--green);">—</div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">WIN RATE</div>
+      <div id="lkWinRate" style="font-size:18px;font-weight:700;">—</div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">PROFIT FACTOR</div>
+      <div id="lkPF" style="font-size:18px;font-weight:700;">—</div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">EXPECTANCY</div>
+      <div id="lkExpectancy" style="font-size:18px;font-weight:700;">—</div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">SHARPE</div>
+      <div id="lkSharpe" style="font-size:18px;font-weight:700;">—</div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">MAX DRAWDOWN</div>
+      <div id="lkDD" style="font-size:18px;font-weight:700;color:var(--red);">—</div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">TRADES</div>
+      <div id="lkTrades" style="font-size:18px;font-weight:700;">—</div>
+      <div id="lkOpenBadge" style="font-size:10px;color:var(--yellow);"></div>
+    </div>
+  </div>
+
+  <!-- Two column layout: charts + params -->
+  <div style="display:grid;grid-template-columns:1fr 340px;gap:12px;margin-bottom:12px;">
+
+    <!-- Left: P&L curve -->
+    <div class="panel">
+      <div class="panel-header">Cumulative P&amp;L Curve</div>
+      <div class="panel-body" style="padding:12px;">
+        <canvas id="labPnlChart" height="140" style="width:100%;display:block;"></canvas>
+        <div id="labNoCurve" style="text-align:center;color:var(--text-muted);font-size:12px;padding:40px 0;">No closed trades yet</div>
+      </div>
+    </div>
+
+    <!-- Right: Strategy Parameters -->
+    <div class="panel">
+      <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Strategy Parameters</span>
+        <button onclick="saveLabSettings()" style="font-size:10px;padding:3px 10px;background:var(--amber);border:none;color:#000;cursor:pointer;font-weight:700;">APPLY</button>
+      </div>
+      <div class="panel-body" style="padding:10px 14px;display:flex;flex-direction:column;gap:10px;">
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
+            <span>EV Floor (Gate 2)</span><span id="lpG2Val" style="color:var(--amber);">1.5%</span>
+          </div>
+          <input type="range" id="lpG2" min="0.5" max="10" step="0.5" value="1.5"
+            oninput="document.getElementById('lpG2Val').textContent=this.value+'%'"
+            style="width:100%;accent-color:var(--amber);">
+          <div style="font-size:10px;color:var(--text-muted);">Lower = more trades, higher = fewer but cleaner</div>
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
+            <span>BTC Momentum Threshold</span><span id="lpMomVal" style="color:var(--cyan);">0.015%</span>
+          </div>
+          <input type="range" id="lpMom" min="0.005" max="0.10" step="0.005" value="0.015"
+            oninput="document.getElementById('lpMomVal').textContent=parseFloat(this.value).toFixed(3)+'%'"
+            style="width:100%;accent-color:var(--cyan);">
+          <div style="font-size:10px;color:var(--text-muted);">Min 30s BTC move to trigger directional signal</div>
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
+            <span>Kelly Cap</span><span id="lpKellyVal" style="color:var(--green);">10%</span>
+          </div>
+          <input type="range" id="lpKelly" min="1" max="25" step="1" value="10"
+            oninput="document.getElementById('lpKellyVal').textContent=this.value+'%'"
+            style="width:100%;accent-color:var(--green);">
+          <div style="font-size:10px;color:var(--text-muted);">Max % of balance per trade</div>
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
+            <span>Signal Interval</span><span id="lpIntervalVal" style="color:var(--text);">8s</span>
+          </div>
+          <input type="range" id="lpInterval" min="5" max="30" step="1" value="8"
+            oninput="document.getElementById('lpIntervalVal').textContent=this.value+'s'"
+            style="width:100%;accent-color:var(--text);">
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
+            <span>Max Trade Size (USD)</span><span id="lpMaxSizeVal" style="color:var(--text);">$100</span>
+          </div>
+          <input type="range" id="lpMaxSize" min="10" max="500" step="10" value="100"
+            oninput="document.getElementById('lpMaxSizeVal').textContent='$'+this.value"
+            style="width:100%;accent-color:var(--text);">
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;font-size:11px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="lpGate3" checked> Gate 3 (BTC direction)
+          </label>
+        </div>
+
+        <div style="font-size:10px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px;">
+          Hitting APPLY saves settings and restarts the bot
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom row: breakdowns -->
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;">
+
+    <!-- By Direction -->
+    <div class="panel">
+      <div class="panel-header">By Direction</div>
+      <div class="panel-body" id="labByDir" style="padding:10px;font-size:12px;">
+        <div style="color:var(--text-muted);text-align:center;padding:16px;">No data</div>
+      </div>
+    </div>
+
+    <!-- By Exit Reason -->
+    <div class="panel">
+      <div class="panel-header">By Exit Reason</div>
+      <div class="panel-body" id="labByReason" style="padding:10px;font-size:12px;">
+        <div style="color:var(--text-muted);text-align:center;padding:16px;">No data</div>
+      </div>
+    </div>
+
+    <!-- By EV Bucket -->
+    <div class="panel">
+      <div class="panel-header">By EV at Entry</div>
+      <div class="panel-body" id="labByEV" style="padding:10px;font-size:12px;">
+        <div style="color:var(--text-muted);text-align:center;padding:16px;">No data</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Win/Loss by hour -->
+  <div class="panel" style="margin-bottom:12px;">
+    <div class="panel-header">Performance by Hour (UTC)</div>
+    <div class="panel-body" style="padding:12px;">
+      <canvas id="labHourChart" height="80" style="width:100%;display:block;"></canvas>
+      <div id="labNoHour" style="text-align:center;color:var(--text-muted);font-size:12px;padding:20px 0;display:none;">No data</div>
+    </div>
+  </div>
+
+  <!-- Open trades -->
+  <div class="panel" style="margin-bottom:12px;">
+    <div class="panel-header">Open Positions</div>
+    <div class="panel-body" id="labOpenTrades" style="padding:10px;font-size:12px;">
+      <div style="color:var(--text-muted);text-align:center;padding:16px;">No open positions</div>
+    </div>
+  </div>
+
+  <!-- Recent closed trades table -->
+  <div class="panel">
+    <div class="panel-header">Recent Closed Trades</div>
+    <div class="panel-body" style="padding:0;overflow:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border);">
+            <th style="padding:8px 10px;text-align:left;color:var(--text-muted);font-weight:500;">#</th>
+            <th style="padding:8px 10px;text-align:left;color:var(--text-muted);font-weight:500;">Time</th>
+            <th style="padding:8px 10px;text-align:left;color:var(--text-muted);font-weight:500;">Dir</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--text-muted);font-weight:500;">Entry</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--text-muted);font-weight:500;">Exit</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--text-muted);font-weight:500;">Size</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--text-muted);font-weight:500;">PnL</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--text-muted);font-weight:500;">EV</th>
+            <th style="padding:8px 10px;text-align:left;color:var(--text-muted);font-weight:500;">Exit Reason</th>
+          </tr>
+        </thead>
+        <tbody id="labTradeTable"></tbody>
+      </table>
+      <div id="labNoTrades" style="text-align:center;color:var(--text-muted);font-size:12px;padding:20px;">No closed trades in selected period</div>
+    </div>
+  </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
 </div><!-- /container -->
 </main>
 
@@ -1287,6 +1490,7 @@
     if (pageId === 'claude') loadClaudeAnalysis();
     if (pageId === 'trades') { setTradeFilter('today'); loadTrades(); }
     if (pageId === 'signals') { loadGateStats(); loadSignals(); }
+    if (pageId === 'lab') loadLab();
   }
 
   function switchSettingsTab(tabId) {
@@ -1983,6 +2187,7 @@
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
     if (settings.gate2_ev_floor) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
     if (settings.gate3_enabled !== undefined) document.getElementById('gate3Enabled').checked = settings.gate3_enabled;
+    _syncLabParamsFromSettings(settings);
     if (settings.claude_model) document.getElementById('claudeModel').value = settings.claude_model;
     if (settings.claude_auto_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.claude_auto_analysis;
     if (settings.auto_claude_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.auto_claude_analysis;
@@ -2435,6 +2640,306 @@
     const last = vals[vals.length - 1];
     line.setAttribute('stroke', last >= 5 ? 'var(--green)' : last >= 2 ? 'var(--amber)' : 'var(--red)');
   }
+
+  // ─── Patch authMiddleware to also accept ?token= query param for SSE ─────
+  // (Applied server-side — see note in bot.js. This comment is just a reminder.)
+
+  // ══════════════════════════════════════════════ LAB ══════════════════════
+  let _labData = null;
+
+  async function loadLab() {
+    const token = localStorage.getItem('token');
+    const days  = document.getElementById('labDays')?.value || 7;
+    try {
+      const res  = await fetch(`${window.API_BASE||''}/api/bot/analytics?days=${days}`, { headers:{'Authorization':`Bearer ${token}`} });
+      if (!res.ok) return;
+      _labData = await res.json();
+      renderLab(_labData);
+      document.getElementById('labLastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch(err) { console.error('Lab load error:', err); }
+  }
+
+  function renderLab(d) {
+    if (!d) return;
+    const s = d.summary;
+    const $ = id => document.getElementById(id);
+
+    // KPIs
+    const pnlEl = $('lkTotalPnl');
+    if (pnlEl) {
+      pnlEl.textContent = (s.total_pnl >= 0 ? '+' : '') + '$' + Math.abs(s.total_pnl).toFixed(2);
+      pnlEl.style.color = s.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    }
+    const wrEl = $('lkWinRate');
+    if (wrEl) { wrEl.textContent = s.win_rate + '%'; wrEl.style.color = s.win_rate >= 50 ? 'var(--green)' : 'var(--red)'; }
+    const pfEl = $('lkPF');
+    if (pfEl) { pfEl.textContent = s.profit_factor >= 99 ? '∞' : s.profit_factor.toFixed(2); pfEl.style.color = s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--amber)' : 'var(--red)'; }
+    const exEl = $('lkExpectancy');
+    if (exEl) { exEl.textContent = (s.expectancy >= 0 ? '+$' : '-$') + Math.abs(s.expectancy).toFixed(2); exEl.style.color = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)'; }
+    const shEl = $('lkSharpe');
+    if (shEl) { shEl.textContent = s.sharpe.toFixed(2); shEl.style.color = s.sharpe >= 1 ? 'var(--green)' : s.sharpe >= 0 ? 'var(--amber)' : 'var(--red)'; }
+    const ddEl = $('lkDD');
+    if (ddEl) ddEl.textContent = '-$' + s.max_drawdown.toFixed(2);
+    const trEl = $('lkTrades');
+    if (trEl) trEl.textContent = s.total + ' (' + s.wins + 'W / ' + s.losses + 'L)';
+    const obEl = $('lkOpenBadge');
+    if (obEl && d.total_open > 0) obEl.textContent = '⬤ ' + d.total_open + ' open';
+
+    // P&L curve (canvas)
+    _drawPnlCurve(d.pnl_curve);
+
+    // By direction
+    const dirEl = $('labByDir');
+    if (dirEl) {
+      if (!d.by_direction.length) { dirEl.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No data</div>'; }
+      else {
+        dirEl.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted);font-size:10px;border-bottom:1px solid var(--border);"><th style="padding:5px;text-align:left;">Dir</th><th style="padding:5px;text-align:right;">Trades</th><th style="padding:5px;text-align:right;">Win%</th><th style="padding:5px;text-align:right;">PnL</th></tr>' +
+          d.by_direction.map(r => {
+            const pnlN = parseFloat(r.pnl);
+            const col = pnlN >= 0 ? 'var(--green)' : 'var(--red)';
+            const dc = r.dir === 'YES' ? 'var(--green)' : 'var(--red)';
+            return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+              <td style="padding:6px 5px;color:${dc};font-weight:700;">${r.dir}</td>
+              <td style="padding:6px 5px;text-align:right;">${r.trades}</td>
+              <td style="padding:6px 5px;text-align:right;">${r.win_rate}%</td>
+              <td style="padding:6px 5px;text-align:right;color:${col};">${pnlN>=0?'+':''}$${Math.abs(pnlN).toFixed(2)}</td>
+            </tr>`;
+          }).join('') + '</table>';
+      }
+    }
+
+    // By exit reason
+    const reaEl = $('labByReason');
+    if (reaEl) {
+      if (!d.by_exit_reason.length) { reaEl.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No data</div>'; }
+      else {
+        reaEl.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted);font-size:10px;border-bottom:1px solid var(--border);"><th style="padding:5px;text-align:left;">Reason</th><th style="padding:5px;text-align:right;">N</th><th style="padding:5px;text-align:right;">Win%</th><th style="padding:5px;text-align:right;">PnL</th></tr>' +
+          d.by_exit_reason.map(r => {
+            const pnlN = parseFloat(r.pnl);
+            return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+              <td style="padding:5px;font-size:10px;color:var(--text-muted);">${(r.reason||'').replace(/_/g,' ')}</td>
+              <td style="padding:5px;text-align:right;">${r.count}</td>
+              <td style="padding:5px;text-align:right;">${r.win_rate}%</td>
+              <td style="padding:5px;text-align:right;color:${pnlN>=0?'var(--green)':'var(--red)'};">${pnlN>=0?'+':''}$${Math.abs(pnlN).toFixed(2)}</td>
+            </tr>`;
+          }).join('') + '</table>';
+      }
+    }
+
+    // By EV bucket
+    const evEl = $('labByEV');
+    if (evEl) {
+      if (!d.by_ev_bucket.length || d.by_ev_bucket.every(b=>b.count===0)) {
+        evEl.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No data</div>';
+      } else {
+        evEl.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted);font-size:10px;border-bottom:1px solid var(--border);"><th style="padding:5px;text-align:left;">EV Range</th><th style="padding:5px;text-align:right;">N</th><th style="padding:5px;text-align:right;">Win%</th><th style="padding:5px;text-align:right;">PnL</th></tr>' +
+          d.by_ev_bucket.filter(b=>b.count>0).map(b => {
+            const p = parseFloat(b.pnl);
+            return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+              <td style="padding:5px;color:var(--cyan);">${b.bucket}</td>
+              <td style="padding:5px;text-align:right;">${b.count}</td>
+              <td style="padding:5px;text-align:right;">${b.win_rate}%</td>
+              <td style="padding:5px;text-align:right;color:${p>=0?'var(--green)':'var(--red)'};">${p>=0?'+':''}$${Math.abs(p).toFixed(2)}</td>
+            </tr>`;
+          }).join('') + '</table>';
+      }
+    }
+
+    // By hour chart
+    _drawHourChart(d.by_hour);
+
+    // Open trades
+    const openEl = $('labOpenTrades');
+    if (openEl) {
+      if (!d.open_trades.length) { openEl.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">No open positions</div>'; }
+      else {
+        openEl.innerHTML = d.open_trades.map(t => {
+          const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
+          const dc = t.direction === 'YES' ? 'var(--green)' : 'var(--red)';
+          return `<div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">
+            <span style="color:${dc};font-weight:700;min-width:30px;">${t.direction}</span>
+            <span style="color:var(--text-muted);font-size:10px;flex:1;">${(t.market_question||'').slice(0,60)}</span>
+            <span style="color:var(--amber);">$${parseFloat(t.trade_size||0).toFixed(2)}</span>
+            <span style="color:var(--text-muted);font-size:10px;">entry ${parseFloat(t.entry_price||0).toFixed(3)}</span>
+            <span style="color:var(--text-muted);font-size:10px;">${age}m ago</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Trade table
+    const tbody = $('labTradeTable');
+    const noTr  = $('labNoTrades');
+    if (tbody) {
+      // Fetch full closed trades from /api/trades for the table
+      _loadLabTradeTable();
+    }
+  }
+
+  async function _loadLabTradeTable() {
+    const token = localStorage.getItem('token');
+    const days  = document.getElementById('labDays')?.value || 7;
+    try {
+      const res = await fetch(`${window.API_BASE||''}/api/trades?limit=50`, { headers:{'Authorization':`Bearer ${token}`} });
+      if (!res.ok) return;
+      const data = await res.json();
+      const rows = (data.trades || []).filter(t => t.status === 'closed' && t.pnl !== null);
+      const tbody = document.getElementById('labTradeTable');
+      const noTr  = document.getElementById('labNoTrades');
+      if (!rows.length) { if (tbody) tbody.innerHTML = ''; if (noTr) noTr.style.display=''; return; }
+      if (noTr) noTr.style.display = 'none';
+      if (!tbody) return;
+      tbody.innerHTML = rows.slice(0,30).map(t => {
+        const pnl = parseFloat(t.pnl);
+        const pnlColor = pnl > 0 ? 'var(--green)' : 'var(--red)';
+        const dc = t.direction === 'YES' ? 'var(--green)' : 'var(--red)';
+        const ev = t.ev_adj != null ? parseFloat(t.ev_adj) : null;
+        const evStr = ev !== null ? (ev > 1 ? ev.toFixed(1) : (ev*100).toFixed(1)) + '%' : '—';
+        const dt = new Date(t.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+        const size = parseFloat(t.trade_size || t.size || 0);
+        return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+          <td style="padding:6px 10px;color:var(--text-muted);">${t.id}</td>
+          <td style="padding:6px 10px;color:var(--text-muted);">${dt}</td>
+          <td style="padding:6px 10px;color:${dc};font-weight:700;">${t.direction}</td>
+          <td style="padding:6px 10px;text-align:right;">${parseFloat(t.entry_price||0).toFixed(3)}</td>
+          <td style="padding:6px 10px;text-align:right;">${t.exit_price ? parseFloat(t.exit_price).toFixed(3) : '—'}</td>
+          <td style="padding:6px 10px;text-align:right;">$${size.toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;color:${pnlColor};font-weight:700;">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;color:var(--cyan);">${evStr}</td>
+          <td style="padding:6px 10px;color:var(--text-muted);font-size:10px;">${(t.close_reason||'').replace(/_/g,' ')}</td>
+        </tr>`;
+      }).join('');
+    } catch(err) { console.error('Lab trade table error:', err); }
+  }
+
+  function _drawPnlCurve(curve) {
+    const canvas = document.getElementById('labPnlChart');
+    const noEl   = document.getElementById('labNoCurve');
+    if (!canvas) return;
+    if (!curve || curve.length < 2) { canvas.style.display='none'; if (noEl) noEl.style.display=''; return; }
+    canvas.style.display = ''; if (noEl) noEl.style.display='none';
+
+    const ctx = canvas.getContext('2d');
+    canvas.width  = canvas.offsetWidth || 600;
+    canvas.height = 140;
+    const W = canvas.width, H = canvas.height;
+    const vals = curve.map(c => c.cumPnl);
+    const minV = Math.min(...vals, 0);
+    const maxV = Math.max(...vals, 0.01);
+    const range = maxV - minV || 1;
+    const pad = 32;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Zero line
+    const zeroY = H - pad - ((0 - minV) / range) * (H - pad*1.5);
+    ctx.beginPath(); ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1;
+    ctx.moveTo(pad, zeroY); ctx.lineTo(W - 4, zeroY); ctx.stroke();
+
+    // Gradient fill
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    const lastVal = vals[vals.length-1];
+    const baseColor = lastVal >= 0 ? '0,232,122' : '255,77,77';
+    grad.addColorStop(0, `rgba(${baseColor},0.3)`);
+    grad.addColorStop(1, `rgba(${baseColor},0.02)`);
+
+    ctx.beginPath();
+    curve.forEach((c, i) => {
+      const x = pad + (i / (curve.length - 1)) * (W - pad - 4);
+      const y = H - pad - ((c.cumPnl - minV) / range) * (H - pad*1.5);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.lineTo(W - 4, H - pad); ctx.lineTo(pad, H - pad);
+    ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+
+    // Line
+    ctx.beginPath(); ctx.strokeStyle = lastVal >= 0 ? '#00e87a' : '#ff4d4d'; ctx.lineWidth = 2;
+    curve.forEach((c, i) => {
+      const x = pad + (i / (curve.length - 1)) * (W - pad - 4);
+      const y = H - pad - ((c.cumPnl - minV) / range) * (H - pad*1.5);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle = 'rgba(180,180,180,0.7)'; ctx.font = '10px monospace';
+    ctx.fillText('$' + maxV.toFixed(1), 2, 14);
+    ctx.fillText('$' + minV.toFixed(1), 2, H - pad + 12);
+    ctx.fillText('$' + lastVal.toFixed(2), W - 60, 14);
+  }
+
+  function _drawHourChart(byHour) {
+    const canvas = document.getElementById('labHourChart');
+    if (!canvas || !byHour || !byHour.length) return;
+    canvas.width  = canvas.offsetWidth || 600;
+    canvas.height = 80;
+    const W = canvas.width, H = canvas.height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const maxTrades = Math.max(...byHour.map(h => h.trades), 1);
+    const barW = (W - 20) / 24;
+
+    for (let h = 0; h < 24; h++) {
+      const data = byHour.find(b => b.hour === h);
+      if (!data || data.trades === 0) continue;
+      const barH = (data.trades / maxTrades) * (H - 20);
+      const x = 10 + h * barW;
+      const wr = parseFloat(data.win_rate);
+      ctx.fillStyle = wr >= 50 ? 'rgba(0,232,122,0.6)' : 'rgba(255,77,77,0.6)';
+      ctx.fillRect(x + 1, H - 16 - barH, barW - 2, barH);
+    }
+    // Hour labels every 4h
+    ctx.fillStyle = 'rgba(150,150,150,0.7)'; ctx.font = '9px monospace';
+    for (let h = 0; h < 24; h += 4) {
+      ctx.fillText(h + 'h', 10 + h * barW, H - 2);
+    }
+  }
+
+  async function saveLabSettings() {
+    const token = localStorage.getItem('token');
+    const g2    = parseFloat(document.getElementById('lpG2').value);
+    const mom   = parseFloat(document.getElementById('lpMom').value);
+    const kelly = parseFloat(document.getElementById('lpKelly').value) / 100;
+    const snipe = parseInt(document.getElementById('lpInterval').value);
+    const maxSz = parseFloat(document.getElementById('lpMaxSize').value);
+    const g3    = document.getElementById('lpGate3').checked;
+
+    try {
+      const res = await fetch(`${window.API_BASE||''}/api/user/settings`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gate2_ev_floor: g2,
+          min_edge: mom,
+          kelly_cap: kelly,
+          snipe_timer_seconds: snipe,
+          max_trade_size: maxSz,
+          gate3_enabled: g3
+        })
+      });
+      if (res.ok) {
+        showAlert('Settings saved — restart bot for changes to take effect', 'success');
+      } else { showAlert('Failed to save', 'error'); }
+    } catch(err) { showAlert('Error: ' + err.message, 'error'); }
+  }
+
+  function _syncLabParamsFromSettings(s) {
+    if (!s) return;
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    const setLabel = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+
+    if (s.gate2_ev_floor != null) { set('lpG2', s.gate2_ev_floor); setLabel('lpG2Val', s.gate2_ev_floor + '%'); }
+    if (s.min_edge != null)       { set('lpMom', s.min_edge); setLabel('lpMomVal', parseFloat(s.min_edge).toFixed(3) + '%'); }
+    if (s.kelly_cap != null)      { set('lpKelly', parseFloat(s.kelly_cap)*100); setLabel('lpKellyVal', Math.round(parseFloat(s.kelly_cap)*100) + '%'); }
+    if (s.snipe_timer_seconds != null) { set('lpInterval', s.snipe_timer_seconds); setLabel('lpIntervalVal', s.snipe_timer_seconds + 's'); }
+    if (s.max_trade_size != null) { set('lpMaxSize', s.max_trade_size); setLabel('lpMaxSizeVal', '$' + s.max_trade_size); }
+    if (s.gate3_enabled != null)  { const el = document.getElementById('lpGate3'); if (el) el.checked = s.gate3_enabled !== false; }
+  }
+  // ═══════════════════════════════════════════════════════════════════════
 
   // ─── Patch authMiddleware to also accept ?token= query param for SSE ─────
   // (Applied server-side — see note in bot.js. This comment is just a reminder.)
