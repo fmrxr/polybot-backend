@@ -217,6 +217,9 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),
         ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
         ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4);
+
+      -- Drop NOT NULL on legacy 'size' column — main bot uses 'trade_size', old column breaks inserts
+      ALTER TABLE trades ALTER COLUMN size DROP NOT NULL;
     `);
 
     // Close any legacy open trades that pre-date the token_id column

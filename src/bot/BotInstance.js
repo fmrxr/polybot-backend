@@ -202,8 +202,9 @@ class BotInstance {
 
       this._log('INFO', `🔄 Flip evaluation: ${currentDirection} EV=${currentEV.toFixed(2)}%, ${newSignal.direction} EV=${oppositeEV.toFixed(2)}%, gain=${evGain.toFixed(2)}%, threshold=${flipThreshold.toFixed(2)}%`);
 
-      // Flip condition: current EV negative AND gain exceeds BOTH threshold AND hysteresis margin
-      if (currentEV < 0 && evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
+      // Flip condition: opposite side has significantly better EV
+      // Don't require currentEV < 0 — flip when edge clearly reversed
+      if (evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
         this._log('INFO', `✅ EV-driven flip: ${currentDirection} → ${newSignal.direction} (EV gain: +${evGain.toFixed(2)}%)`);
 
         // Close existing position
@@ -328,6 +329,12 @@ class BotInstance {
       return;
     }
 
+    // Final safety guard — should never happen after earlier checks, but prevents DB crash
+    if (!isFinite(tradeSize) || tradeSize <= 0) {
+      this._log('ERROR', `Invalid tradeSize=${tradeSize} — aborting trade`);
+      return;
+    }
+
     this._log('INFO', `📊 Signal: ${direction} on "${market.question}"`);
     this._log('INFO', `   Entry: ${entryPrice.toFixed(4)}, Size: $${tradeSize.toFixed(2)}, Kelly: ${(kellyFraction * 100).toFixed(1)}%, EV_adj: ${evAdj.toFixed(2)}%, Model: ${mProb.toFixed(3)}`);
 
@@ -339,8 +346,8 @@ class BotInstance {
       await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2', [this.paperBalance, this.userId]);
 
       await pool.query(`
-        INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', 'signal', $8, $9, $10, $11, $12)
+        INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'open', 'signal', $8, $9, $10, $11, $12)
       `, [
         this.userId, marketId, market.question, tokenId, direction,
         entryPrice, tradeSize, confidence, evAdj,
@@ -360,8 +367,8 @@ class BotInstance {
         const actualFillPrice = order?.averagePrice || entryPrice;
 
         await pool.query(`
-          INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', 'signal', $8, $9, $10, $11, $12)
+          INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'open', 'signal', $8, $9, $10, $11, $12)
         `, [
           this.userId, marketId, market.question, tokenId, direction,
           actualFillPrice, tradeSize, confidence, evAdj,
@@ -459,37 +466,33 @@ class BotInstance {
           { spread: 0.01, estimatedSlippage: 0.005, fees: 0.002 }
         );
 
-        // Record EV for trend tracking
+        // Record EV for trend tracking + flip evaluation
         this.evEngine.recordEV(marketId, currentEV, trade.direction);
 
-        // EXIT CONDITION 1: EV decayed to < 50% of peak
-        if (this.evEngine.shouldExitOnEVDecay(marketId, currentEV, 0.5)) {
-          const peakEV = this.evEngine.evPeaks[marketId]?.ev || 0;
-          this._log('INFO', `🎯 EV-based exit: current EV ${currentEV.toFixed(2)}% < 50% of peak ${peakEV.toFixed(2)}%`);
-          await this._closePosition(trade, livePrice, 'EV_DECAY_EXIT');
-          this.evEngine.clearMarket(marketId);
-          continue;
-        }
+        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% price=${livePrice.toFixed(3)}`);
 
-        // EXIT CONDITION 2: Hard stop-loss (safety net, not primary)
+        // EXIT CONDITION 1: Hard stop-loss — price moved sharply against us
         const pnlPct = trade.direction === 'YES'
           ? ((livePrice - entryPrice) / entryPrice) * 100
           : ((entryPrice - livePrice) / entryPrice) * 100;
 
-        if (pnlPct <= -15) { // 15% hard stop as safety net
-          this._log('WARN', `🛑 Hard stop-loss: PnL ${pnlPct.toFixed(1)}%`);
+        if (pnlPct <= -20) {
+          this._log('WARN', `🛑 Hard stop-loss: PnL ${pnlPct.toFixed(1)}% — closing`);
           await this._closePosition(trade, livePrice, 'HARD_STOP_LOSS');
           this.evEngine.clearMarket(marketId);
           continue;
         }
 
-        // EXIT CONDITION 3: Position EV is deeply negative (no flip available)
-        if (currentEV < -5) {
-          this._log('WARN', `📉 Negative EV exit: ${currentEV.toFixed(2)}% — edge is gone`);
+        // EXIT CONDITION 2: Edge fully gone — EV deeply negative AND no flip candidate
+        // We hold through mild negative EV (market noise) but exit if structurally wrong
+        if (currentEV < -8) {
+          this._log('WARN', `📉 Edge gone: EV=${currentEV.toFixed(2)}% — closing`);
           await this._closePosition(trade, livePrice, 'NEGATIVE_EV_EXIT');
           this.evEngine.clearMarket(marketId);
           continue;
         }
+
+        // Otherwise: HOLD to resolution — let the binary market expire naturally.
       }
     } catch (err) {
       this._log('ERROR', `Position management error: ${err.message}`);
