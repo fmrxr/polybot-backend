@@ -1516,13 +1516,15 @@
       await loadClaudeAnalysis();
 
       setInterval(async () => { await loadBotStatus(); await loadSignals(); await loadDashboard(); }, 10000);
-      setInterval(loadDashboard, 30000);
       setInterval(loadGateStats, 30000);
-      // Auto-refresh trades every 20s — picks up newly closed trades and updates open count
+      // Auto-refresh trades every 10s when trades tab is active
       setInterval(() => {
-        const tradesPage = document.getElementById('trades');
-        if (tradesPage?.classList.contains('active')) loadTrades();
-      }, 20000);
+        if (document.getElementById('trades')?.classList.contains('active')) loadTrades();
+      }, 10000);
+      // Auto-refresh lab every 30s when lab tab is active
+      setInterval(() => {
+        if (document.getElementById('lab')?.classList.contains('active')) loadLab();
+      }, 30000);
 
       // Start real-time SSE stream for live market viewer
       initLiveStream();
@@ -1543,6 +1545,8 @@
     if (pageId === 'trades') { setTradeFilter('today'); loadTrades(); }
     if (pageId === 'signals') { loadGateStats(); loadSignals(); }
     if (pageId === 'lab') loadLab();
+    if (pageId === 'settings') loadSettingsFromAPI();
+    if (pageId === 'dashboard') loadDashboard();
   }
 
   function switchSettingsTab(tabId) {
@@ -1559,7 +1563,7 @@
         method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
-      if (res.ok) { showAlert('Bot started successfully', 'success'); await loadBotStatus(); }
+      if (res.ok) { showAlert('Bot started successfully', 'success'); await loadBotStatus(); await loadDashboard(); await loadTrades(); }
       else showAlert(data.error || 'Failed to start bot', 'error');
     } catch (err) { showAlert('Error starting bot', 'error'); }
   }
@@ -1570,7 +1574,7 @@
       const res = await fetch((window.API_BASE||'')+'/api/bot/stop', {
         method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) { showAlert('Bot stopped', 'success'); await loadBotStatus(); }
+      if (res.ok) { showAlert('Bot stopped', 'success'); await loadBotStatus(); await loadDashboard(); await loadTrades(); }
       else showAlert('Failed to stop bot', 'error');
     } catch (err) { showAlert('Error stopping bot', 'error'); }
   }
@@ -2268,6 +2272,16 @@
 
   function closeModal(id) { document.getElementById(id)?.classList.remove('active'); }
 
+  async function loadSettingsFromAPI() {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) { const s = await res.json(); loadSettingsIntoForms(s); }
+    } catch (_) {}
+  }
+
   function loadSettingsIntoForms(settings) {
     if (settings.kelly_cap) document.getElementById('kellyCap').value = settings.kelly_cap;
     if (settings.max_trade_size) document.getElementById('maxTradeSize').value = settings.max_trade_size;
@@ -2397,7 +2411,7 @@
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
       });
-      if (res.ok) showAlert('Strategy settings saved', 'success');
+      if (res.ok) { showAlert('Strategy settings saved', 'success'); await loadDashboard(); }
       else showAlert('Failed to save settings', 'error');
     } catch (err) { showAlert('Error saving settings', 'error'); }
   }
@@ -2415,7 +2429,7 @@
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
       });
-      if (res.ok) showAlert('Risk settings saved', 'success');
+      if (res.ok) { showAlert('Risk settings saved', 'success'); await loadDashboard(); }
       else showAlert('Failed to save settings', 'error');
     } catch (err) { showAlert('Error saving settings', 'error'); }
   }
@@ -2467,7 +2481,7 @@
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
       });
-      if (res.ok) showAlert('Advanced settings saved', 'success');
+      if (res.ok) { showAlert('Advanced settings saved', 'success'); await loadDashboard(); }
       else showAlert('Failed to save settings', 'error');
     } catch (err) { showAlert('Error saving settings', 'error'); }
   }
@@ -2549,6 +2563,7 @@
         showAlert('Paper balance reset to $10,000', 'success');
         const el = document.getElementById('paperBalanceDisplay');
         if (el) el.value = '$10,000.00';
+        await loadDashboard();
       } else { showAlert('Failed to reset balance', 'error'); }
     } catch (err) { showAlert('Error resetting balance', 'error'); }
   }
