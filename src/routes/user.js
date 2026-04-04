@@ -17,16 +17,26 @@ const POLYGON_RPCS = [
 async function getPolygonUsdcBalance(walletAddress) {
   const { ethers } = require('ethers');
   const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
-  const USDC_E = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e on Polygon
+  // Check both USDC.e (bridged) and native USDC — Polymarket uses both
+  const TOKENS = [
+    { addr: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', decimals: 6, name: 'USDC' },
+    { addr: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', decimals: 6, name: 'USDC.e' },
+  ];
   for (const rpc of POLYGON_RPCS) {
     try {
       const provider = new ethers.JsonRpcProvider(rpc);
-      const usdc = new ethers.Contract(USDC_E, ERC20_ABI, provider);
-      const raw = await Promise.race([
-        usdc.balanceOf(walletAddress),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
-      ]);
-      return parseFloat(ethers.formatUnits(raw, 6));
+      let total = 0;
+      for (const token of TOKENS) {
+        try {
+          const contract = new ethers.Contract(token.addr, ERC20_ABI, provider);
+          const raw = await Promise.race([
+            contract.balanceOf(walletAddress),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
+          ]);
+          total += parseFloat(ethers.formatUnits(raw, token.decimals));
+        } catch (_) {}
+      }
+      if (total >= 0) return parseFloat(total.toFixed(4));
     } catch (e) {
       console.warn(`[Balance] RPC ${rpc} failed: ${e.message}`);
     }

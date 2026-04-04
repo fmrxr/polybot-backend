@@ -267,12 +267,29 @@ router.get('/analytics', authMiddleware, async (req, res) => {
 
     const trades = tradesRes.rows;
 
-    // Open trades
+    // Open trades — include token_id so frontend/bot can fetch live price
     const openRes = await pool.query(`
       SELECT id, direction, entry_price, COALESCE(trade_size, size) AS trade_size,
-             signal_confidence, ev_adj, created_at, market_question
+             signal_confidence, ev_adj, created_at, market_question, token_id, market_id
       FROM trades WHERE user_id=$1 AND status='open'
+      ORDER BY created_at DESC
     `, [req.userId]);
+
+    // Attach live prices from the running bot's order book cache
+    const botManager = req.app.locals.botManager;
+    const bot = botManager?.getBot(req.userId);
+    const openTrades = openRes.rows.map(t => {
+      const livePrice = bot?._lastOrderBooks?.[t.token_id]?.midPrice ?? null;
+      const entry = parseFloat(t.entry_price);
+      const size  = parseFloat(t.trade_size);
+      let livePnl = null;
+      if (livePrice !== null && isFinite(entry) && isFinite(size) && entry > 0) {
+        livePnl = t.direction === 'YES'
+          ? parseFloat(((livePrice - entry) * size / entry).toFixed(2))
+          : parseFloat(((entry - livePrice) * size / entry).toFixed(2));
+      }
+      return { ...t, live_price: livePrice, live_pnl: livePnl };
+    });
 
     if (!trades.length) {
       return res.json({
@@ -282,8 +299,8 @@ router.get('/analytics', authMiddleware, async (req, res) => {
         by_exit_reason: [],
         by_ev_bucket: [],
         by_hour: [],
-        open_trades: openRes.rows,
-        total_open: openRes.rows.length
+        open_trades: openTrades,
+        total_open: openTrades.length
       });
     }
 
@@ -379,8 +396,8 @@ router.get('/analytics', authMiddleware, async (req, res) => {
       by_exit_reason: Object.entries(byReason).map(([reason,v])=>({ reason, ...v, win_rate: v.count>0?(v.wins/v.count*100).toFixed(1):'0', pnl: v.pnl.toFixed(2) })).sort((a,b)=>b.count-a.count),
       by_ev_bucket: Object.entries(evBuckets).map(([bucket,ps])=>({ bucket, count:ps.length, pnl: ps.reduce((s,p)=>s+p,0).toFixed(2), win_rate: ps.length>0?(ps.filter(p=>p>0).length/ps.length*100).toFixed(1):'0' })),
       by_hour: Object.entries(byHour).map(([h,v])=>({ hour:parseInt(h), ...v, win_rate: v.trades>0?(v.wins/v.trades*100).toFixed(1):'0', pnl: v.pnl.toFixed(2) })).sort((a,b)=>a.hour-b.hour),
-      open_trades: openRes.rows,
-      total_open: openRes.rows.length,
+      open_trades: openTrades,
+      total_open: openTrades.length,
       days
     });
   } catch(err) {

@@ -753,6 +753,11 @@ class BotInstance {
   async _fetchActiveOrderBooks() {
     if (!this.isRunning || !this.polymarket) return;
     try {
+      // Refresh markets list every 30s so token prices stay current after market rotation
+      const cacheAge = this.polymarket.lastMarketFetch ? Date.now() - this.polymarket.lastMarketFetch : Infinity;
+      if (cacheAge > 25000) {
+        await this.polymarket.fetchActiveBTCMarkets();
+      }
       const markets = this.polymarket.marketsCache || [];
       for (const m of markets) {
         let clobIds = m.clobTokenIds || [];

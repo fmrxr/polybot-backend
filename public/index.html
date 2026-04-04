@@ -2759,12 +2759,18 @@
         openEl.innerHTML = d.open_trades.map(t => {
           const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
           const dc = t.direction === 'YES' ? 'var(--green)' : 'var(--red)';
-          return `<div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">
-            <span style="color:${dc};font-weight:700;min-width:30px;">${t.direction}</span>
-            <span style="color:var(--text-muted);font-size:10px;flex:1;">${(t.market_question||'').slice(0,60)}</span>
-            <span style="color:var(--amber);">$${parseFloat(t.trade_size||0).toFixed(2)}</span>
-            <span style="color:var(--text-muted);font-size:10px;">entry ${parseFloat(t.entry_price||0).toFixed(3)}</span>
-            <span style="color:var(--text-muted);font-size:10px;">${age}m ago</span>
+          const entry = parseFloat(t.entry_price || 0);
+          const live  = t.live_price != null ? parseFloat(t.live_price) : null;
+          const pnl   = t.live_pnl  != null ? parseFloat(t.live_pnl)  : null;
+          const pnlStr  = pnl !== null ? `<span style="color:${pnl>=0?'var(--green)':'var(--red)'};font-weight:700;">${pnl>=0?'+':''}$${pnl.toFixed(2)}</span>` : '<span style="color:var(--text-muted);">PnL —</span>';
+          const liveStr = live !== null ? `<span style="color:var(--cyan);font-size:10px;">live ${live.toFixed(3)}</span>` : '';
+          return `<div style="display:grid;grid-template-columns:40px 1fr auto auto auto auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+            <span style="color:${dc};font-weight:700;">${t.direction}</span>
+            <span style="color:var(--text-muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(t.market_question||'').slice(0,55)}</span>
+            <span style="color:var(--amber);font-size:11px;">$${parseFloat(t.trade_size||0).toFixed(2)}</span>
+            <span style="color:var(--text-muted);font-size:10px;">entry ${entry.toFixed(3)}</span>
+            ${liveStr}
+            ${pnlStr}
           </div>`;
         }).join('');
       }
@@ -2822,8 +2828,10 @@
     if (!curve || curve.length < 2) { canvas.style.display='none'; if (noEl) noEl.style.display=''; return; }
     canvas.style.display = ''; if (noEl) noEl.style.display='none';
 
+    // Defer 1 frame so the canvas has layout dimensions after becoming visible
+    requestAnimationFrame(() => {
     const ctx = canvas.getContext('2d');
-    canvas.width  = canvas.offsetWidth || 600;
+    canvas.width  = canvas.parentElement?.clientWidth || canvas.offsetWidth || 600;
     canvas.height = 140;
     const W = canvas.width, H = canvas.height;
     const vals = curve.map(c => c.cumPnl);
@@ -2869,12 +2877,14 @@
     ctx.fillText('$' + maxV.toFixed(1), 2, 14);
     ctx.fillText('$' + minV.toFixed(1), 2, H - pad + 12);
     ctx.fillText('$' + lastVal.toFixed(2), W - 60, 14);
+    }); // end requestAnimationFrame
   }
 
   function _drawHourChart(byHour) {
     const canvas = document.getElementById('labHourChart');
     if (!canvas || !byHour || !byHour.length) return;
-    canvas.width  = canvas.offsetWidth || 600;
+    requestAnimationFrame(() => {
+    canvas.width  = canvas.parentElement?.clientWidth || canvas.offsetWidth || 600;
     canvas.height = 80;
     const W = canvas.width, H = canvas.height;
     const ctx = canvas.getContext('2d');
@@ -2897,6 +2907,7 @@
     for (let h = 0; h < 24; h += 4) {
       ctx.fillText(h + 'h', 10 + h * barW, H - 2);
     }
+    }); // end requestAnimationFrame
   }
 
   async function saveLabSettings() {
