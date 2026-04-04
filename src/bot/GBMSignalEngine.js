@@ -88,26 +88,53 @@ class GBMSignalEngine {
 
         // ==========================================
         // STEP 1: GET REAL MARKET DATA
+        // Price discovery — 3-source waterfall:
+        //   1. YES token CLOB order book (most direct)
+        //   2. NO token CLOB order book  (token order may be inverted in API)
+        //   3. Gamma API tokens[i].price (actual market price from last trade)
+        // bid=0.01/ask=0.99 = boundary/resting liquidity only — not a real price.
         // ==========================================
-        const orderBook = await this.polymarket.getOrderBook(yesTokenId);
 
-        // DIAGNOSTIC: log actual order book prices to prove live data is being fetched
-        console.log(`[OrderBook] ${market.question?.slice(0,40)} | bid=${orderBook?.bestBid} ask=${orderBook?.bestAsk} mid=${orderBook?.midPrice} depth=${orderBook?.totalDepth?.toFixed(0)}`);
+        const t0 = market.tokens?.[0]; const t1 = market.tokens?.[1];
+        console.log(`[Tokens] [0] outcome="${t0?.outcome}" id=${yesTokenId?.slice(0,12)}... price=${t0?.price} | [1] outcome="${t1?.outcome}" id=${noTokenId?.slice(0,12)}... price=${t1?.price}`);
 
-        if (!orderBook || orderBook.bestBid === null || orderBook.bestAsk === null) {
-          console.warn(`[GBMSignalEngine] No valid order book for token ${yesTokenId} — bid/ask null, skipping`);
+        const yesBook = await this.polymarket.getOrderBook(yesTokenId);
+        const yesSpread = yesBook?.spread ?? (yesBook ? yesBook.bestAsk - yesBook.bestBid : 1);
+        console.log(`[OrderBook:YES] bid=${yesBook?.bestBid} ask=${yesBook?.bestAsk} mid=${yesBook?.midPrice} spread=${(yesSpread*100).toFixed(0)}% depth=${yesBook?.totalDepth?.toFixed(0)}`);
+
+        let orderBook = yesBook;
+        let yesPrice = (yesBook?.midPrice != null && yesSpread <= 0.10) ? yesBook.midPrice : null;
+
+        // Try NO token book if YES is boundary-only (bid=0.01/ask=0.99)
+        if (yesPrice == null && noTokenId) {
+          const noBook = await this.polymarket.getOrderBook(noTokenId);
+          const noSpread = noBook?.spread ?? (noBook ? noBook.bestAsk - noBook.bestBid : 1);
+          console.log(`[OrderBook:NO]  bid=${noBook?.bestBid} ask=${noBook?.bestAsk} mid=${noBook?.midPrice} spread=${(noSpread*100).toFixed(0)}% depth=${noBook?.totalDepth?.toFixed(0)}`);
+          if (noBook?.midPrice != null && noSpread <= 0.10) {
+            yesPrice = 1 - noBook.midPrice; // YES price derived from NO mid
+            orderBook = noBook;
+            console.log(`[GBMSignalEngine] YES book boundary-only — using NO book: noMid=${noBook.midPrice.toFixed(3)} yesPrice=${yesPrice.toFixed(3)}`);
+          }
+        }
+
+        // Fall back to Gamma API token price if both CLOB books have no real spread
+        if (yesPrice == null) {
+          const gammaYes = parseFloat(market.tokens?.[0]?.price);
+          const gammaNot = parseFloat(market.tokens?.[1]?.price);
+          const gammaPrice = (gammaYes > 0.05 && gammaYes < 0.95) ? gammaYes
+            : (gammaNot > 0.05 && gammaNot < 0.95) ? 1 - gammaNot : null;
+          if (gammaPrice != null) {
+            yesPrice = gammaPrice;
+            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — using Gamma price: yesPrice=${yesPrice.toFixed(3)}`);
+          }
+        }
+
+        if (yesPrice == null || !orderBook) {
+          console.log(`[GBMSignalEngine] SKIP — no real price from any source (CLOB both boundary, Gamma also 0.5)`);
           continue;
         }
 
-        // Skip markets with no real price discovery — bid=0.01/ask=0.99 is boundary liquidity, not a real price
-        const bookSpread = orderBook.spread ?? (orderBook.bestAsk - orderBook.bestBid);
-        if (bookSpread > 0.10) {
-          console.log(`[GBMSignalEngine] SKIP — spread ${(bookSpread * 100).toFixed(0)}% too wide (no real price discovery)`);
-          continue;
-        }
-
-        const yesPrice = orderBook.midPrice;
-        const spread = orderBook.spread || 0;
+        const spread = orderBook.spread || (yesBook?.spread) || 0;
 
         // ==========================================
         // PRE-FILTER A: Signal Freshness
