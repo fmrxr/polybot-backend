@@ -871,10 +871,41 @@
 <div id="trades" class="page">
   <div class="page-title"><span>▸</span> TRADE HISTORY</div>
 
-  <!-- Pro Metrics (hidden until trades exist) -->
-  <div id="proMetricsCard" style="display:none;" class="panel">
-    <div class="panel-header"><span class="panel-title">Performance Metrics</span></div>
-    <div class="panel-body">
+  <!-- Summary bar -->
+  <div id="tradeSummaryBar" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Total P&L</div>
+        <div style="font-size:22px;font-weight:700;" id="tsTotalPnl">—</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Win Rate</div>
+        <div style="font-size:22px;font-weight:700;" id="tsWinRate">—</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Profit Factor</div>
+        <div style="font-size:22px;font-weight:700;" id="tsProfitFactor">—</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Expectancy</div>
+        <div style="font-size:22px;font-weight:700;" id="tsExpectancy">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Performance metrics (full row) -->
+  <div id="proMetricsCard" style="display:none;" class="panel" style="margin-bottom:12px;">
+    <div class="panel-header" style="cursor:pointer;" onclick="toggleMetricsExpand()">
+      <span class="panel-title">Advanced Metrics</span>
+      <span id="metricsChevron" style="font-size:11px;color:var(--text-muted);">▼</span>
+    </div>
+    <div id="metricsBody" class="panel-body">
       <div class="pro-metrics-grid">
         <div class="pro-metric"><div class="pro-metric-label">Sharpe Ratio</div><div class="pro-metric-val" id="metricSharpe">—</div></div>
         <div class="pro-metric"><div class="pro-metric-label">Max Drawdown</div><div class="pro-metric-val" id="metricDrawdown" style="color:var(--red);">—</div></div>
@@ -888,17 +919,23 @@
     </div>
   </div>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Time</th><th>Dir</th><th>Entry</th><th>Size</th>
-        <th>EV_adj</th><th>Lag</th><th>Slippage</th><th>Result</th><th>P&L</th><th>Exit</th>
-      </tr></thead>
-      <tbody id="tradesTable">
-        <tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px;">No trades yet</td></tr>
-      </tbody>
-    </table>
+  <!-- Filters + search -->
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+    <div style="display:flex;gap:4px;">
+      <button id="filterAll"  class="tab active" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('all')">All</button>
+      <button id="filterOpen" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('open')">Open</button>
+      <button id="filterWin"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('win')">Wins</button>
+      <button id="filterLoss" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('loss')">Losses</button>
+      <button id="filterYes"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('yes')">YES</button>
+      <button id="filterNo"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('no')">NO</button>
+    </div>
+    <input id="tradeSearch" type="text" placeholder="Search market…" oninput="renderTrades(window._lastTradeData)"
+      style="flex:1;min-width:120px;padding:5px 10px;font-size:12px;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;">
+    <span id="tradeCount" style="font-size:11px;color:var(--text-muted);white-space:nowrap;"></span>
   </div>
+
+  <!-- Trade cards -->
+  <div id="tradesCards"></div>
   <div class="pagination" id="tradesPagination"></div>
 </div>
 
@@ -1545,12 +1582,33 @@
   }
 
   function renderProMetrics(s) {
-    if (!s || s.total_trades === 0) return;
-    document.getElementById('proMetricsCard').style.display = 'block';
+    if (!s) return;
     const fmt = (v, p='', su='') => v == null ? '—' : `${p}${v}${su}`;
+    // Summary bar
+    const totalPnl = parseFloat(s.total_pnl || 0);
+    const pnlEl = document.getElementById('tsTotalPnl');
+    if (pnlEl) {
+      pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + '$' + Math.abs(totalPnl).toFixed(2);
+      pnlEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    }
+    const wr = s.win_rate != null ? parseFloat(s.win_rate).toFixed(1) + '%' : '—';
+    const wrEl = document.getElementById('tsWinRate');
+    if (wrEl) { wrEl.textContent = wr; wrEl.style.color = parseFloat(s.win_rate) >= 50 ? 'var(--green)' : 'var(--red)'; }
+    const pfEl = document.getElementById('tsProfitFactor');
+    if (pfEl) {
+      pfEl.textContent = s.profit_factor >= 99 ? '∞' : fmt(s.profit_factor);
+      pfEl.style.color = s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--yellow)' : 'var(--red)';
+    }
+    const exEl = document.getElementById('tsExpectancy');
+    if (exEl) {
+      exEl.textContent = s.expectancy != null ? (s.expectancy >= 0 ? '+' : '') + '$' + parseFloat(s.expectancy).toFixed(2) : '—';
+      exEl.style.color = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)';
+    }
+    if (s.total_trades === 0) return;
+    document.getElementById('proMetricsCard').style.display = 'block';
     const sharpeColor = s.sharpe >= 1 ? 'var(--green)' : s.sharpe >= 0 ? 'var(--yellow)' : 'var(--red)';
-    const pfColor = s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--yellow)' : 'var(--red)';
-    const expColor = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)';
+    const pfColor     = s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--yellow)' : 'var(--red)';
+    const expColor    = s.expectancy >= 0 ? 'var(--green)' : 'var(--red)';
     document.getElementById('metricSharpe').textContent = fmt(s.sharpe);
     document.getElementById('metricSharpe').style.color = sharpeColor;
     document.getElementById('metricDrawdown').textContent = fmt(s.max_drawdown, '-$');
@@ -1732,76 +1790,169 @@
   }
 
   function renderTrades(data) {
-    const tbody = document.getElementById('tradesTable');
-    if (trades.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px;">No trades yet</td></tr>';
+    window._lastTradeData = data;
+    const container = document.getElementById('tradesCards');
+    const search = (document.getElementById('tradeSearch')?.value || '').toLowerCase();
+    const filter = window._tradeFilter || 'all';
+
+    let filtered = trades.filter(t => {
+      const q = t.market_question || '';
+      if (search && !q.toLowerCase().includes(search)) return false;
+      const pnl = parseFloat(t.pnl) || 0;
+      const result = t.result || (t.status === 'closed' ? (pnl > 0 ? 'WIN' : 'LOSS') : 'OPEN');
+      const dir = (t.direction || '').toUpperCase();
+      if (filter === 'open')  return t.status === 'open';
+      if (filter === 'win')   return result === 'WIN';
+      if (filter === 'loss')  return result === 'LOSS';
+      if (filter === 'yes')   return dir === 'YES' || dir === 'UP';
+      if (filter === 'no')    return dir === 'NO'  || dir === 'DOWN';
+      return true;
+    });
+
+    const countEl = document.getElementById('tradeCount');
+    if (countEl) countEl.textContent = `${filtered.length} trade${filtered.length !== 1 ? 's' : ''}`;
+
+    if (filtered.length === 0) {
+      container.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:48px 0;font-size:14px;">No trades match this filter</div>`;
       document.getElementById('tradesPagination').innerHTML = '';
       return;
     }
+
+    // Pagination
+    const totalPages = Math.ceil(filtered.length / tradesPerPage);
+    const pageStart  = (currentPage - 1) * tradesPerPage;
+    const paginated  = filtered.slice(pageStart, pageStart + tradesPerPage);
+
     let html = '';
-    trades.forEach((trade, idx) => {
-      const time = new Date(trade.created_at).toLocaleTimeString();
-      const dir  = trade.direction === 'YES' || trade.direction === 'UP'
-        ? '<span style="color:var(--green)">▲ YES</span>'
-        : trade.direction === 'NO' || trade.direction === 'DOWN'
-        ? '<span style="color:var(--red)">▼ NO</span>'
-        : trade.direction;
-      const pnl  = parseFloat(trade.pnl) || 0;
+    paginated.forEach((trade, idx) => {
+      const globalIdx = trades.indexOf(trade);
+      const pnl = parseFloat(trade.pnl) || 0;
       const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
-      const evRaw = trade.ev_adj ?? trade.ev_at_entry ?? null;
-      const evAdj = evRaw != null ? (parseFloat(evRaw)>1?parseFloat(evRaw).toFixed(1):(parseFloat(evRaw)*100).toFixed(1))+'%' : '—';
-      const lag   = trade.lag_age_sec != null ? parseInt(trade.lag_age_sec)+'s' : '—';
-      const slip  = trade.slippage != null && parseFloat(trade.slippage) > 0 ? (parseFloat(trade.slippage)*100).toFixed(2)+'%' : '—';
-      const result = trade.result || (trade.status==='closed'?(pnl>0?'WIN':'LOSS'):'OPEN');
-      const rColor = result==='WIN'?'var(--green)':result==='LOSS'?'var(--red)':'var(--text-muted)';
-      const exitReason = (trade.close_reason||trade.exit_reason||trade.status||'open').replace(/_/g,' ');
-      const size = parseFloat(trade.trade_size||trade.size||0);
-      html += `<tr onclick="showTradeDetail(${idx})" style="cursor:pointer;">
-        <td>${time}</td><td>${dir}</td>
-        <td>$${parseFloat(trade.entry_price).toFixed(3)}</td>
-        <td>$${size.toFixed(2)}</td>
-        <td style="color:var(--cyan)">${evAdj}</td>
-        <td style="color:var(--text-muted)">${lag}</td>
-        <td style="color:var(--yellow)">${slip}</td>
-        <td style="color:${rColor};font-weight:700">${result}</td>
-        <td style="color:${pnlColor};font-weight:700">$${pnl.toFixed(2)}</td>
-        <td style="color:var(--text-muted);font-size:11px">${exitReason}</td>
-      </tr>`;
+      const pnlSign  = pnl > 0 ? '+' : '';
+      const result   = trade.result || (trade.status === 'closed' ? (pnl > 0 ? 'WIN' : 'LOSS') : 'OPEN');
+      const rColor   = result === 'WIN' ? 'var(--green)' : result === 'LOSS' ? 'var(--red)' : 'var(--yellow)';
+      const dir      = (trade.direction || '').toUpperCase();
+      const isYes    = dir === 'YES' || dir === 'UP';
+      const dirColor = isYes ? 'var(--green)' : 'var(--red)';
+      const dirLabel = isYes ? '▲ YES' : '▼ NO';
+      const entry    = parseFloat(trade.entry_price || 0);
+      const exitP    = parseFloat(trade.exit_price  || 0);
+      const size     = parseFloat(trade.trade_size  || 0);
+      const evRaw    = trade.ev_adj != null ? parseFloat(trade.ev_adj) : null;
+      const evStr    = evRaw != null ? (evRaw > 1 ? evRaw.toFixed(1) : (evRaw * 100).toFixed(1)) + '%' : '—';
+      const conf     = trade.signal_confidence != null ? (parseFloat(trade.signal_confidence) * 100).toFixed(0) + '%' : '—';
+      const exitR    = (trade.close_reason || trade.exit_reason || (trade.status === 'open' ? 'open' : '—')).replace(/_/g, ' ');
+      const dt       = new Date(trade.created_at);
+      const timeStr  = dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      const dateStr  = dt.toLocaleDateString([], {month:'short',day:'numeric'});
+      const closedStr = trade.closed_at ? new Date(trade.closed_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
+      const q        = trade.market_question || trade.market_id || 'Unknown market';
+      const qShort   = q.length > 55 ? q.slice(0, 55) + '…' : q;
+      const tradeType = (trade.trade_type || 'signal');
+      const typeColor = tradeType === 'copy' ? 'var(--yellow)' : 'var(--cyan)';
+
+      html += `
+      <div class="panel" style="margin-bottom:8px;cursor:pointer;" onclick="toggleTradeExpand(${globalIdx}, this)">
+        <div class="panel-body" style="padding:12px 14px;">
+
+          <!-- Top row: market + badge -->
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:10px;">
+            <div style="font-size:12px;color:var(--text);font-weight:500;line-height:1.4;">${qShort}</div>
+            <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
+              <span style="font-size:10px;padding:2px 7px;border-radius:3px;border:1px solid ${typeColor};color:${typeColor};letter-spacing:.5px;">${tradeType.toUpperCase()}</span>
+              <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:3px;background:${result==='WIN'?'rgba(0,255,136,.1)':result==='LOSS'?'rgba(255,77,77,.1)':'rgba(255,200,0,.08)'};color:${rColor};">${result}</span>
+            </div>
+          </div>
+
+          <!-- Main stats row -->
+          <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:end;">
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Direction</div>
+              <div style="font-size:14px;font-weight:700;color:${dirColor};">${dirLabel}</div>
+            </div>
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Size</div>
+              <div style="font-size:14px;font-weight:600;">$${size.toFixed(2)}</div>
+            </div>
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Entry</div>
+              <div style="font-size:14px;font-weight:600;">${entry.toFixed(3)}</div>
+            </div>
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Exit</div>
+              <div style="font-size:14px;font-weight:600;color:var(--text-muted);">${exitP > 0 ? exitP.toFixed(3) : '—'}</div>
+            </div>
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">EV adj</div>
+              <div style="font-size:14px;font-weight:600;color:var(--cyan);">${evStr}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">P&amp;L</div>
+              <div style="font-size:18px;font-weight:700;color:${pnlColor};">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div>
+            </div>
+          </div>
+
+          <!-- Sub-row: time + exit reason -->
+          <div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+            <span style="font-size:11px;color:var(--text-muted);">${dateStr} ${timeStr}${closedStr ? ' → ' + closedStr : ''}</span>
+            <span style="font-size:11px;color:var(--text-muted);">Exit: <span style="color:var(--text);">${exitR}</span></span>
+          </div>
+
+          <!-- Expanded detail (hidden by default) -->
+          <div class="trade-expand" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px;">
+              <div><span style="color:var(--text-muted)">Confidence</span><br><strong>${conf}</strong></div>
+              <div><span style="color:var(--text-muted)">Gate 1</span><br><strong>${trade.gate1_score != null ? parseFloat(trade.gate1_score).toFixed(3) : '—'}</strong></div>
+              <div><span style="color:var(--text-muted)">Lag age</span><br><strong>${trade.lag_age_sec != null ? trade.lag_age_sec + 's' : '—'}</strong></div>
+              <div><span style="color:var(--text-muted)">Slippage</span><br><strong>${trade.slippage != null && parseFloat(trade.slippage) > 0 ? (parseFloat(trade.slippage) * 100).toFixed(3) + '%' : '—'}</strong></div>
+              <div><span style="color:var(--text-muted)">Trade ID</span><br><strong style="font-family:monospace;font-size:11px;">#${trade.id}</strong></div>
+              <div><span style="color:var(--text-muted)">Market ID</span><br><strong style="font-family:monospace;font-size:10px;word-break:break-all;">${(trade.market_id||'—').slice(0,16)}…</strong></div>
+              <div><span style="color:var(--text-muted)">Type</span><br><strong>${tradeType}</strong></div>
+              <div><span style="color:var(--text-muted)">Status</span><br><strong>${trade.status || '—'}</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
     });
-    tbody.innerHTML = html;
-    const totalPages = Math.ceil((data.total||trades.length)/tradesPerPage);
+
+    container.innerHTML = html;
+
     let paginationHtml = '';
     for (let i = 1; i <= totalPages; i++) {
-      paginationHtml += `<button class="${i===currentPage?'active':''}" onclick="goToPage(${i})">${i}</button>`;
+      paginationHtml += `<button class="${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
     }
     document.getElementById('tradesPagination').innerHTML = paginationHtml;
   }
 
+  function toggleTradeExpand(idx, cardEl) {
+    const expandEl = cardEl.querySelector('.trade-expand');
+    if (!expandEl) return;
+    const isOpen = expandEl.style.display !== 'none';
+    expandEl.style.display = isOpen ? 'none' : 'block';
+  }
+
+  function setTradeFilter(f) {
+    window._tradeFilter = f;
+    currentPage = 1;
+    ['all','open','win','loss','yes','no'].forEach(k => {
+      const btn = document.getElementById('filter' + k.charAt(0).toUpperCase() + k.slice(1));
+      if (btn) btn.classList.toggle('active', k === f);
+    });
+    renderTrades(window._lastTradeData || {});
+  }
+
+  function toggleMetricsExpand() {
+    const body = document.getElementById('metricsBody');
+    const chev = document.getElementById('metricsChevron');
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    if (chev) chev.textContent = hidden ? '▼' : '▶';
+  }
+
   function showTradeDetail(index) {
-    const trade = trades[index];
-    const modal   = document.getElementById('tradeDetailModal');
-    const content = document.getElementById('tradeDetailContent');
-    const pnl = parseFloat(trade.pnl||0);
-    const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
-    const result = trade.result || (trade.status==='closed'?(pnl>0?'WIN':'LOSS'):'OPEN');
-    content.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px;border-bottom:1px solid var(--border);">
-        <div><div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:4px;">ENTRY PRICE</div><div style="font-size:20px;font-weight:700;">$${parseFloat(trade.entry_price).toFixed(3)}</div></div>
-        <div><div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:4px;">SIZE</div><div style="font-size:20px;font-weight:700;">$${parseFloat(trade.trade_size||trade.size||0).toFixed(2)}</div></div>
-        <div><div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:4px;">DIRECTION</div><div style="font-size:20px;font-weight:700;color:${trade.direction==='YES'||trade.direction==='UP'?'var(--green)':'var(--red)'};">${trade.direction}</div></div>
-        <div><div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:4px;">P&L</div><div style="font-size:20px;font-weight:700;color:${pnlColor};">$${pnl.toFixed(2)}</div></div>
-      </div>
-      <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;">
-        <div><span style="color:var(--text-muted)">EV adj:</span> <strong>${(()=>{const v=trade.ev_adj??trade.ev_at_entry;return v!=null?(parseFloat(v)>1?parseFloat(v).toFixed(1):(parseFloat(v)*100).toFixed(2))+'%':'—'})()}</strong></div>
-        <div><span style="color:var(--text-muted)">Gate 1:</span> <strong>${trade.gate1_score!=null?parseFloat(trade.gate1_score).toFixed(3):'—'}</strong></div>
-        <div><span style="color:var(--text-muted)">Lag age:</span> <strong>${trade.lag_age_sec!=null?trade.lag_age_sec+'s':'—'}</strong></div>
-        <div><span style="color:var(--text-muted)">Slippage:</span> <strong>${trade.slippage!=null?(parseFloat(trade.slippage)*100).toFixed(3)+'%':'—'}</strong></div>
-        <div><span style="color:var(--text-muted)">Exit reason:</span> <strong>${(trade.close_reason||trade.exit_reason||'—').replace(/_/g,' ')}</strong></div>
-        <div><span style="color:var(--text-muted)">Result:</span> <strong style="color:${result==='WIN'?'var(--green)':result==='LOSS'?'var(--red)':'var(--text-muted)'}">${result}</strong></div>
-        <div><span style="color:var(--text-muted)">Filled at:</span> <strong>$${parseFloat(trade.entry_price).toFixed(3)}</strong></div>
-        <div><span style="color:var(--text-muted)">Time:</span> <strong>${new Date(trade.created_at).toLocaleString()}</strong></div>
-      </div>`;
-    modal.classList.add('active');
+    // Legacy — now using inline expand, kept for any external call compatibility
+    toggleTradeExpand(index, document.querySelectorAll('#tradesCards .panel')[index]);
   }
 
   function closeModal(id) { document.getElementById(id)?.classList.remove('active'); }
