@@ -52,7 +52,8 @@ class GBMSignalEngine {
 
     try {
       // --- Get current BTC data ---
-      const btcPrice = this.binance.getPrice();
+      // Use last known price so a brief WebSocket drop doesn't block signal evaluation
+      const btcPrice = this.binance.getLastKnownPrice();
       const chainlinkPrice = this.chainlink.getPrice();
 
       if (!btcPrice) {
@@ -173,8 +174,8 @@ class GBMSignalEngine {
 
         const totalEdge = btcEdge + microEdge;
 
-        const bullish = btcDelta > 0.02;  // require ≥0.02% 30s move for a directional call (~$13 on $66k BTC)
-        const bearish = btcDelta < -0.02;
+        const bullish = btcDelta > 0.015;  // require ≥0.015% 30s move (~$13 on $90k BTC)
+        const bearish = btcDelta < -0.015;
 
         let modelProb;
         if (bullish) {
@@ -209,15 +210,7 @@ class GBMSignalEngine {
           fees: 0.002
         };
 
-        // Fill probability: thin books mean lower chance of getting filled at mid
-        // P(fill) = min(1, totalDepth / 500) — 500 USDC depth = high confidence
-        const fillProb = Math.min(1.0, (orderBook.totalDepth || 0) / 500);
-
-        // Evaluate BOTH sides — pick the better one, then scale by fill probability
-        const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
-        const evReal = evAnalysis.bestEV * fillProb; // EV_real = EV_adj * P(fill)
-
-        // Window timing: adjust threshold based on time within the 5-min window
+        // Window timing — compute before depth/EV checks so we can skip late windows
         const marketEndSec = market.end_date_iso
           ? new Date(market.end_date_iso).getTime() / 1000
           : (market.resolution_time || market.end_time || 0);
@@ -228,15 +221,39 @@ class GBMSignalEngine {
         const elapsed = nowSec - marketStartSec;
         const remaining = marketEndSec - nowSec;
 
-        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
+        // LATE WINDOW SKIP: last 60s = garbage liquidity + price already baked in
+        if (remaining < 60) {
+          log.reason = `Window expiring in ${Math.round(remaining)}s — skipping`;
+          continue;
+        }
+
+        // DEPTH FLOOR: avoid dead order books (< 100 USDC total depth)
+        const totalDepth = orderBook.totalDepth || 0;
+        if (totalDepth < 100) {
+          log.reason = `Thin book: depth=${totalDepth.toFixed(0)} USDC < 100 min`;
+          continue;
+        }
+
+        // Fill probability for Kelly sizing (does NOT gate the trade — only sizes it)
+        const fillProb = Math.min(1.0, totalDepth / 500);
+
+        // Evaluate BOTH sides — check EV directly against floor (no fillProb penalty)
+        const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
+        const evReal = evAnalysis.bestEV;
+
+        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 1.5;
 
         // Early window (< 60s in): largest mispricings, lower threshold
         if (elapsed < 60) evFloor *= 0.7;
-        // Late window (< 90s to expiry): decay risk, higher threshold
-        else if (remaining < 90) evFloor *= 1.5;
 
-        // If lag detected: treat as high-priority execution (don't raise floor further)
+        // Lag detected: high-priority execution, ease floor slightly
         if (hasLag && elapsed < 60) evFloor *= 0.8;
+
+        // Separate fill quality gate: don't enter if book is too thin to fill reliably
+        if (fillProb < 0.25) {
+          log.reason = `Low fill probability: ${(fillProb*100).toFixed(0)}% (depth=${totalDepth.toFixed(0)})`;
+          continue;
+        }
 
         log.gates.gate2 = {
           evYes: evAnalysis.evYes,
@@ -253,7 +270,7 @@ class GBMSignalEngine {
           passed: evReal >= evFloor
         };
 
-        console.log(`[GBMSignalEngine] Gate2: btcDelta=${btcDelta.toFixed(3)}% modelProb=${modelProb.toFixed(3)} yesPrice=${yesPrice.toFixed(3)} EV=${evAnalysis.bestEV.toFixed(2)}% fillProb=${fillProb.toFixed(2)} evReal=${evReal.toFixed(2)}% floor=${evFloor.toFixed(2)}% elapsed=${Math.round(elapsed)}s`);
+        console.log(`[GBMSignalEngine] Gate2: btcDelta=${btcDelta.toFixed(3)}% modelProb=${modelProb.toFixed(3)} yesPrice=${yesPrice.toFixed(3)} EV=${evAnalysis.bestEV.toFixed(2)}% fillProb=${(fillProb*100).toFixed(0)}% floor=${evFloor.toFixed(2)}% depth=${totalDepth.toFixed(0)} remaining=${Math.round(remaining)}s`);
 
         if (evReal < evFloor) {
           log.gates.gate2.passed = false;
@@ -291,8 +308,7 @@ class GBMSignalEngine {
         if (this.settings.gate3_enabled !== false) {
           // btcDelta > 0 = BTC rising (bullish), < 0 = falling (bearish)
           const isBullish = btcDelta > 0;
-          // Minimum strength: same 0.02% threshold used to declare directional signal at Gate2
-          const minDelta = parseFloat(this.settings.min_edge) || 0.02;
+          const minDelta = parseFloat(this.settings.min_edge) || 0.015;
 
           log.gates.gate3 = {
             btcDelta,
@@ -346,6 +362,7 @@ class GBMSignalEngine {
           emaEdge: emaEdge,
           modelProb: modelProb,
           entryPrice: entryPrice,
+          fillProb: fillProb,
           tokenId: tokenId,
           orderBook: orderBook,
           microstructure: micro,

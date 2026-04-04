@@ -84,7 +84,7 @@ class BotInstance {
       this.isRunning = true;
 
       // Main loop — NOT high-frequency, appropriate for prediction market strategy
-      const intervalMs = (this.settings.snipe_timer_seconds || 10) * 1000;
+      const intervalMs = (this.settings.snipe_timer_seconds || 8) * 1000;
       this.loopInterval = setInterval(() => this._mainLoop(), intervalMs);
 
       // Real-time streaming loop — 200ms interval, non-blocking, for SSE clients
@@ -140,11 +140,11 @@ class BotInstance {
 
     try {
       // --- Risk checks ---
-      const canTrade = await this._checkDrawdownCircuitBreaker();
-      if (!canTrade) return;
-
-      const dailyLimitHit = await this._checkDailyLossLimit();
-      if (dailyLimitHit) return;
+      // Drawdown + daily loss cooldowns disabled for testing
+      // const canTrade = await this._checkDrawdownCircuitBreaker();
+      // if (!canTrade) return;
+      // const dailyLimitHit = await this._checkDailyLossLimit();
+      // if (dailyLimitHit) return;
 
       // --- Manage open positions (EV-based exits + flips) ---
       await this._manageOpenPositions();
@@ -285,7 +285,13 @@ class BotInstance {
   // ==========================================
 
   async _executeTrade(signal) {
-    const { direction, entryPrice, tokenId, market, confidence, evAdj, modelProb, marketId } = signal;
+    const { direction, entryPrice, tokenId, market, confidence, evAdj, modelProb, marketId, fillProb } = signal;
+
+    // Guard: entryPrice must be a valid token probability (0–1 exclusive)
+    if (!entryPrice || isNaN(entryPrice) || entryPrice <= 0 || entryPrice >= 1) {
+      this._log('WARN', `Invalid entryPrice=${entryPrice}. Skipping trade.`);
+      return;
+    }
 
     // --- Kelly Criterion with MODEL probability ---
     // modelProb is always P(YES). For NO trades, flip it to get P(NO token resolves).
@@ -300,13 +306,20 @@ class BotInstance {
     const kellyCap = parseFloat(this.settings.kelly_cap) || 0.10;
     kellyFraction = Math.min(kellyFraction, kellyCap);
 
+    // Scale down by fill probability (thin books = smaller position)
+    kellyFraction *= (fillProb || 1.0);
+
     if (kellyFraction <= 0) {
       this._log('WARN', `Kelly fraction is 0 (modelProb=${mProb.toFixed(3)}, entry=${entryPrice.toFixed(3)}). No edge.`);
       return;
     }
 
-    // Calculate trade size
+    // Calculate trade size — guard against NaN balance
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
+    if (!balance || isNaN(balance) || balance <= 0) {
+      this._log('WARN', `Invalid balance=${balance}. Skipping trade.`);
+      return;
+    }
     const tradeSize = Math.max(1, parseFloat((balance * kellyFraction).toFixed(2)));
 
     // --- Paper balance check ---
@@ -385,9 +398,10 @@ class BotInstance {
       const MAX_PRICE_FAILURES = 5;
 
       for (const trade of result.rows) {
-        // Skip legacy trades that pre-date the token_id column — can't fetch price without it
+        // Close legacy trades that pre-date the token_id column — can't manage them
         if (!trade.token_id) {
-          this._log('WARN', `Skipping trade ${trade.id} — no token_id (pre-migration row)`);
+          this._log('WARN', `Closing legacy trade ${trade.id} — no token_id`);
+          await this._closePosition(trade, parseFloat(trade.entry_price), 'LEGACY_NO_TOKEN_ID');
           continue;
         }
 
@@ -424,7 +438,7 @@ class BotInstance {
 
         // --- EV-based exit ---
         // Recompute model probability using same logic as signal engine
-        const btcPrice = this.binance.getPrice();
+        const btcPrice = this.binance.getLastKnownPrice();
         if (!btcPrice) continue;
 
         const btcDelta = this.binance.getWindowDeltaScore(30);

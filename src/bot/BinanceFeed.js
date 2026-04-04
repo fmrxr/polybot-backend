@@ -48,6 +48,7 @@ class BinanceFeed {
         try {
           const parsed = JSON.parse(data);
           this.price = parseFloat(parsed.c);
+          if (this.price) this._lastValidPrice = this.price; // persist across reconnects
           this.bestBid = parseFloat(parsed.b);
           this.bestAsk = parseFloat(parsed.a);
           this.bidQty = parseFloat(parsed.B);
@@ -108,6 +109,11 @@ class BinanceFeed {
 
   getPrice() {
     return this.price;
+  }
+
+  // Returns last known price even if WebSocket is momentarily down
+  getLastKnownPrice() {
+    return this.price || this._lastValidPrice || null;
   }
 
   getOrderBookImbalance() {

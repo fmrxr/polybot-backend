@@ -54,19 +54,15 @@ class RiskManager {
       };
     }
 
-    // Check cooldown
-    if (this.coolingDown && Date.now() < this.cooldownUntil) {
-      const remainingSec = Math.ceil((this.cooldownUntil - Date.now()) / 1000);
-      return {
-        allowed: false,
-        reason: `Cooling down after bad streak. ${remainingSec}s remaining`
-      };
-    }
-
-    if (this.coolingDown && Date.now() >= this.cooldownUntil) {
-      this.coolingDown = false;
-      this.cooldownUntil = null;
-    }
+    // Cooldown after bad streak — disabled for testing
+    // if (this.coolingDown && Date.now() < this.cooldownUntil) {
+    //   const remainingSec = Math.ceil((this.cooldownUntil - Date.now()) / 1000);
+    //   return { allowed: false, reason: `Cooling down after bad streak. ${remainingSec}s remaining` };
+    // }
+    // if (this.coolingDown && Date.now() >= this.cooldownUntil) {
+    //   this.coolingDown = false;
+    //   this.cooldownUntil = null;
+    // }
 
     return { allowed: true, reason: 'OK to trade' };
   }

@@ -103,7 +103,7 @@ router.get('/stats', async (req, res) => {
   try {
     // Fetch all resolved trades ordered by time
     const result = await pool.query(`
-      SELECT pnl, result, created_at, size
+      SELECT pnl, result, created_at, trade_size AS size
       FROM trades
       WHERE user_id = $1 AND result IS NOT NULL AND pnl IS NOT NULL
       ORDER BY created_at ASC
@@ -171,7 +171,8 @@ router.get('/stats', async (req, res) => {
       avg_win: parseFloat(avgWin.toFixed(2)),
       avg_loss: parseFloat(avgLoss.toFixed(2)),
       total_trades: trades.length,
-      win_rate: parseFloat((winRate * 100).toFixed(1))
+      win_rate: parseFloat((winRate * 100).toFixed(1)),
+      total_pnl: parseFloat(pnls.reduce((s, p) => s + p, 0).toFixed(2))
     });
   } catch(err) {
     console.error('Stats error:', err);
@@ -183,7 +184,7 @@ router.get('/stats', async (req, res) => {
 router.get('/audit', async (req, res) => {
   try {
     const suspicious = await pool.query(`
-      SELECT id, created_at, direction, entry_price, size, pnl, result, model_prob, market_prob, order_status
+      SELECT id, created_at, direction, entry_price, trade_size AS size, pnl, result, signal_confidence, ev_adj
       FROM trades WHERE user_id = $1 AND ABS(COALESCE(pnl,0)) > 10
       ORDER BY ABS(pnl) DESC LIMIT 50
     `, [req.userId]);
