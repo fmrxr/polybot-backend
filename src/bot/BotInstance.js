@@ -6,6 +6,7 @@ const ChainlinkFeed = require('./ChainlinkFeed');
 const PolymarketFeed = require('./PolymarketFeed');
 const EVEngine = require('./EVEngine');
 const { decrypt } = require('../services/encryption');
+const axios = require('axios');
 
 class BotInstance {
   constructor(userId, settings) {
@@ -421,15 +422,10 @@ class BotInstance {
 
           // 5-min market expired: close > 6 min after entry (1 min buffer past expiry)
           if (tradeAgeMin > 6) {
-            // Try to infer resolution from last known cached price
-            const cached = this._lastOrderBooks[trade.token_id];
-            const lastKnown = cached?.midPrice || null;
-            let resolvedAt = parseFloat(trade.entry_price); // fallback = entry (break even)
-
-            if (lastKnown !== null) {
-              // Near-resolution price → treat as full resolution
-              resolvedAt = lastKnown >= 0.90 ? 0.99 : lastKnown <= 0.10 ? 0.01 : lastKnown;
-            }
+            // Query Gamma API for definitive market outcome — order books go empty at resolution
+            // so the cached midPrice (still 0.50 from market start) is unreliable
+            const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id)
+              ?? parseFloat(trade.entry_price); // break-even if API unavailable
 
             this._log('INFO', `⏱️ Market expired — trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min, resolvedAt=${resolvedAt.toFixed(3)}`);
             await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
@@ -449,13 +445,26 @@ class BotInstance {
         consecutivePriceFailures = 0;
 
         // Near-resolution detection: token price approaching 0 or 1 = market settling
-        // Close immediately to lock in the gain/loss at near-final price
+        // BTC 5-min markets rarely reach 0.92 before expiry — also close at 4.5 min
+        // to catch trades where the book stays active but we want to lock in gains
         if (livePrice >= 0.92 || livePrice <= 0.08) {
           const resolvedAt = livePrice >= 0.92 ? 0.99 : 0.01;
           this._log('INFO', `🏁 Near-resolution detected: price=${livePrice.toFixed(3)} — closing trade #${trade.id} at ${resolvedAt}`);
           await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
           this.evEngine.clearMarket(trade.market_id);
           continue;
+        }
+
+        // Time-based close at 4.5 min: market is about to expire — get resolution from Gamma API now
+        // while the market may still appear live (before CLOB books drain)
+        if (tradeAgeMin >= 4.5) {
+          const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id);
+          if (resolvedAt !== null) {
+            this._log('INFO', `⏳ Pre-expiry close: trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min resolvedAt=${resolvedAt.toFixed(3)}`);
+            await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
+            this.evEngine.clearMarket(trade.market_id);
+            continue;
+          }
         }
 
         consecutivePriceFailures = 0;
@@ -555,6 +564,43 @@ class BotInstance {
       this._log('INFO', `✅ Closed #${trade.id} ${trade.direction} [${reason}] entry=${entryPrice.toFixed(3)} exit=${effectiveExit.toFixed(3)} size=$${tradeSize.toFixed(2)} PnL=$${pnl.toFixed(2)} (${((pnl/tradeSize)*100).toFixed(1)}%)`);
     } catch (err) {
       this._log('ERROR', `Close position failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Query Gamma API for the definitive market resolution price for a token.
+   * Returns 0.99 (token won) or 0.01 (token lost), or null if market not yet resolved.
+   * Polymarket CLOB books drain to empty at resolution — can't rely on cached order book prices.
+   */
+  async _getResolutionPrice(marketId, tokenId) {
+    try {
+      const r = await axios.get(`https://gamma-api.polymarket.com/markets/${marketId}`, { timeout: 5000 });
+      const m = r.data;
+      if (!m || (!m.closed && !m.resolved)) return null;
+
+      // outcomePrices: '["1","0"]' = YES won, '["0","1"]' = NO won
+      let outcomePrices = m.outcomePrices;
+      if (typeof outcomePrices === 'string') {
+        try { outcomePrices = JSON.parse(outcomePrices); } catch (_) { return null; }
+      }
+      if (!Array.isArray(outcomePrices) || outcomePrices.length < 2) return null;
+
+      // clobTokenIds[0] = YES token, [1] = NO token
+      let clobIds = m.clobTokenIds;
+      if (typeof clobIds === 'string') {
+        try { clobIds = JSON.parse(clobIds); } catch (_) { return null; }
+      }
+
+      const yesWon = parseFloat(outcomePrices[0]) >= 0.5;
+      const isYesToken = clobIds?.[0] === tokenId;
+      const isNoToken  = clobIds?.[1] === tokenId;
+
+      if (isYesToken) return yesWon ? 0.99 : 0.01;
+      if (isNoToken)  return yesWon ? 0.01 : 0.99;
+      return null; // tokenId not found in this market
+    } catch (err) {
+      this._log('WARN', `Gamma resolution lookup failed for ${marketId}: ${err.message}`);
+      return null;
     }
   }
 
