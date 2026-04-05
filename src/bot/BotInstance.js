@@ -350,10 +350,9 @@ class BotInstance {
     let lastTradePrice = await this.polymarket.getLastTradePrice(tokenId);
     if (!lastTradePrice) {
       // Gamma fallback: new 5-min windows return 404 until the first trade clears.
-      // signal.yesPrice is already sourced from Gamma outcomePrices[0/1].
-      const gammaPrice = direction === 'YES'
-        ? signal.yesPrice
-        : (signal.yesPrice != null ? parseFloat((1 - signal.yesPrice).toFixed(4)) : null);
+      // signal.entryPrice = direction==='YES' ? yesPrice : (1-yesPrice) — already
+      // computed from Gamma outcomePrices by GBMSignalEngine when CLOB is boundary-only.
+      const gammaPrice = signal.entryPrice;
       if (gammaPrice && gammaPrice > 0.02 && gammaPrice < 0.98) {
         this._log('INFO', `[INFO] lastTradePrice 404 — using Gamma price ${gammaPrice.toFixed(4)} for ${tokenId?.slice(0,12)}...`);
         lastTradePrice = gammaPrice;
