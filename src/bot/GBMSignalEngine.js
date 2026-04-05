@@ -280,10 +280,12 @@ class GBMSignalEngine {
         const btcDelta = this.binance.getWindowDeltaScore(60); // % change over 60s (wider window catches moves that quieted in last 30s)
 
         // Skip flat-BTC windows — no directional signal means EV ≈ -cost only.
-        // Exception: if Gamma price is already meaningfully off 0.5 (|yesPrice - 0.5| > 0.02),
-        // the market has priced a move we may still have edge on if time remains.
-        const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.02;
+        // Exception: if Gamma price is already meaningfully off 0.5 (|yesPrice - 0.5| > 0.01),
+        // the market has priced a directional move we may still have edge on.
+        // Threshold lowered 0.02 → 0.01: yesPrice=0.485 is 1.5% off fair value — real edge.
+        const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.01;
         if (Math.abs(btcDelta) < 0.02 && !gammaPriceSignificant) {
+          log.gates.btcFlat = { btcDelta, yesPrice, passed: false };
           continue;
         }
 
@@ -300,13 +302,22 @@ class GBMSignalEngine {
         const bullish = btcDelta > 0.015;  // require ≥0.015% 30s move (~$13 on $90k BTC)
         const bearish = btcDelta < -0.015;
 
+        // When BTC is flat but Gamma has already priced a directional move (yesPrice ≠ 0.5),
+        // treat the Gamma displacement as the directional signal.
+        // yesPrice=0.485 → market expects NO outcome → bearish signal even with flat BTC.
+        // yesPrice=0.515 → market expects YES outcome → bullish signal.
+        // This preserves EV when BTC momentarily pauses after already having moved.
+        const gammaDisplacement = yesPrice - 0.5; // + = market priced YES, - = priced NO
+        const gammaBullish = !bullish && !bearish && gammaDisplacement > 0.01;
+        const gammaBearish = !bullish && !bearish && gammaDisplacement < -0.01;
+
         let modelProb;
-        if (bullish) {
+        if (bullish || gammaBullish) {
           modelProb = Math.min(0.99, Math.max(0.01, yesPrice + totalEdge));
-        } else if (bearish) {
+        } else if (bearish || gammaBearish) {
           modelProb = Math.max(0.01, Math.min(0.99, yesPrice - totalEdge));
         } else {
-          modelProb = yesPrice; // flat BTC → no edge → EV ≈ 0 → filtered by Gate 2
+          modelProb = yesPrice; // flat BTC + flat Gamma → no edge → EV ≈ 0 → filtered by Gate 2
         }
 
         // ==========================================
