@@ -3127,10 +3127,15 @@
           yesEl.style.color = yesAsk > 0.52 ? 'var(--green)' : yesAsk < 0.48 ? 'var(--red)' : 'var(--text-muted)';
         } else { yesEl.textContent = '—'; }
       }
-      // NO price — show ask price
+      // NO price — show ask price. Near resolution the NO book collapses to boundary
+      // (bid=0.01/ask=0.99) so fall back to 1-yesAsk which is more meaningful.
       const noEl = el('lvNoPrice');
       if (noEl) {
-        const noAsk = mkt.noAsk ?? mkt.noPrice ?? (mkt.yesAsk != null ? (1 - mkt.yesAsk).toFixed(3) : null);
+        const rawNoAsk = mkt.noAsk ?? mkt.noPrice;
+        // If noAsk == 0.99 while yesAsk is also near 0.99, both books are boundary — use complement
+        const noAsk = (rawNoAsk != null && Math.abs(rawNoAsk - (mkt.yesAsk ?? 0.5)) < 0.05)
+          ? (mkt.yesAsk != null ? 1 - mkt.yesAsk : rawNoAsk)
+          : (rawNoAsk ?? (mkt.yesAsk != null ? 1 - mkt.yesAsk : null));
         if (noAsk != null) {
           noEl.textContent = parseFloat(noAsk).toFixed(3);
           noEl.style.color = parseFloat(noAsk) > 0.52 ? 'var(--green)' : parseFloat(noAsk) < 0.48 ? 'var(--red)' : 'var(--text-muted)';

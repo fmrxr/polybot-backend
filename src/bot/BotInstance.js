@@ -1115,6 +1115,14 @@ class BotInstance {
         else if (gates.gate3 && !gates.gate3.passed)     gateFailed = 3;
       }
 
+      // For SKIP signals, top-level evAdj/spread/lagAge are null — read from gate data instead.
+      // gate2.evReal is logged whenever Gate 2 ran (even if it failed).
+      // gate2.spread is the order book spread at evaluation time.
+      // freshness.lagAge is the BTC tick age when Gate A ran.
+      const evAdjLogged  = signal.evAdj ?? gates.gate2?.evReal ?? null;
+      const spreadLogged = signal.orderBook?.spread ?? gates.gate2?.spread ?? null;
+      const lagLogged    = gates.freshness?.lagAge ?? null;
+
       await pool.query(`
         INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
@@ -1127,14 +1135,14 @@ class BotInstance {
         signal.direction || null,
         signal.confidence || null,
         signal.evRaw || null,
-        signal.evAdj || null,
+        evAdjLogged,
         signal.emaEdge || null,
         gates.gate1?.passed || false,
         gates.gate2?.passed || false,
         gates.gate3?.passed || false,
         gateFailed,
-        gates.freshness?.lagAge || null,
-        signal.orderBook?.spread || null
+        lagLogged,
+        spreadLogged
       ]);
     } catch (err) {
       // Don't crash on signal logging failure
