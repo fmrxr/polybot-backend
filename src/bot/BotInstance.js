@@ -307,36 +307,83 @@ class BotInstance {
   // ==========================================
 
   async _executeTrade(signal) {
-    const { direction, entryPrice, tokenId, market, confidence, evAdj, modelProb, marketId, fillProb } = signal;
+    const { direction, tokenId, market, confidence, evAdj, modelProb, marketId, fillProb } = signal;
 
-    // Guard: entryPrice must be a valid token probability (0–1 exclusive)
-    if (!entryPrice || isNaN(entryPrice) || entryPrice <= 0 || entryPrice >= 1) {
-      this._log('WARN', `Invalid entryPrice=${entryPrice}. Skipping trade.`);
+    // ── 1. Token ID safety check ──────────────────────────────────────────────
+    // Gamma markets sometimes return tokens[] with no `outcome` field; the IDs
+    // come from clobTokenIds. If tokenId is still missing/undefined, abort.
+    if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
+      this._log('WARN', `[SKIP] No valid tokenId for ${direction} trade — token IDs missing from market data. marketId=${marketId}`);
       return;
     }
 
-    // --- Kelly Criterion with MODEL probability ---
-    // modelProb is always P(YES). For NO trades, flip it to get P(NO token resolves).
-    // entryPrice is the token mid (0–1), so b = payout per dollar risked.
+    // ── 2. Fetch REAL order book for execution pricing ────────────────────────
+    // We NEVER use the signal's entryPrice (Gamma mid ~0.505) for execution.
+    // Real fills cost the ASK price. Using mid creates fake edge.
+    const book = await this.polymarket.getOrderBook(tokenId);
+    if (!book) {
+      this._log('WARN', `[SKIP] Cannot fetch order book for token ${tokenId?.slice(0,12)}... — no execution price available`);
+      return;
+    }
+
+    // ── 3. Spread filter — skip boundary-only or illiquid books ──────────────
+    // bid=0.01 ask=0.99 (spread=98%) = no real liquidity; any fill would be at
+    // an extreme price. 15% is generous but filters out boundary-only books.
+    const MAX_EXECUTION_SPREAD = 0.15;
+    const spread = book.spread ?? (book.bestAsk != null && book.bestBid != null ? book.bestAsk - book.bestBid : null);
+    if (spread == null || spread > MAX_EXECUTION_SPREAD) {
+      this._log('WARN', `[SKIP] Spread too wide: ${spread != null ? (spread * 100).toFixed(1) + '%' : 'null'} > ${MAX_EXECUTION_SPREAD * 100}% — bid=${book.bestBid} ask=${book.bestAsk}. No realistic fill possible.`);
+      return;
+    }
+
+    // ── 4. Real execution price — use ASK price (cost to enter) ──────────────
+    // For both YES and NO tokens: buying a token costs the ASK.
+    // Signal's entryPrice (Gamma mid) is only for EV/Kelly signal evaluation,
+    // NOT for execution. Real cost = ask price.
+    if (book.bestAsk == null) {
+      this._log('WARN', `[SKIP] No ask price in order book for token ${tokenId?.slice(0,12)}...`);
+      return;
+    }
+    const bookAskPrice = book.bestAsk;
+
+    // Guard: ask must be a valid probability (0–1 exclusive)
+    if (bookAskPrice <= 0 || bookAskPrice >= 1) {
+      this._log('WARN', `[SKIP] Invalid ask price=${bookAskPrice} for token ${tokenId?.slice(0,12)}...`);
+      return;
+    }
+
+    this._log('INFO', `[EXEC] Order book: bid=${book.bestBid?.toFixed(4)} ask=${bookAskPrice.toFixed(4)} spread=${(spread * 100).toFixed(1)}% — using real ASK for entry`);
+
+    // ── 5. Entry price: real ASK + paper slippage simulation ─────────────────
+    // Paper trading simulates realistic fills: add 25% of spread as slippage.
+    // (Real market orders often fill slightly above best ask due to partial fills.)
+    // Live trading uses the ask directly — the actual fill is determined by the CLOB.
+    let entryPrice = bookAskPrice;
+    if (this.settings.paper_trading) {
+      const slip = spread * 0.25;
+      entryPrice = Math.min(0.99, bookAskPrice + slip);
+      this._log('INFO', `[PAPER] Slippage simulation: ask=${bookAskPrice.toFixed(4)} + ${(slip * 100).toFixed(3)}% slip → entry=${entryPrice.toFixed(4)}`);
+    }
+
+    // ── 6. Kelly Criterion at REAL execution price ────────────────────────────
+    // modelProb is P(YES) from GBM signal. For NO trades, flip to P(NO resolves).
+    // b = payout ratio at real ask price (not mid-price).
     const mProb = direction === 'NO'
       ? Math.min(0.99, Math.max(0.01, 1 - (modelProb || entryPrice)))
       : Math.min(0.99, Math.max(0.01, modelProb || entryPrice));
     const b = (1 / entryPrice) - 1;
     let kellyFraction = b > 0 ? Math.max(0, (mProb * b - (1 - mProb)) / b) : 0;
 
-    // Apply Kelly cap
     const kellyCap = parseFloat(this.settings.kelly_cap) || 0.10;
     kellyFraction = Math.min(kellyFraction, kellyCap);
-
-    // Scale down by fill probability (thin books = smaller position)
     kellyFraction *= (fillProb || 1.0);
 
     if (kellyFraction <= 0) {
-      this._log('WARN', `Kelly fraction is 0 (modelProb=${mProb.toFixed(3)}, entry=${entryPrice.toFixed(3)}). No edge.`);
+      this._log('WARN', `[SKIP] Kelly=0 at real ask=${entryPrice.toFixed(4)} — signal had edge at mid=${signal.entryPrice?.toFixed(4)} but not at real execution price. No trade.`);
       return;
     }
 
-    // Calculate trade size — guard against NaN balance
+    // ── 7. Position sizing ────────────────────────────────────────────────────
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
     if (!balance || isNaN(balance) || balance <= 0) {
       this._log('WARN', `Invalid balance=${balance}. Skipping trade.`);
@@ -344,14 +391,11 @@ class BotInstance {
     }
     const tradeSize = Math.max(1, parseFloat((balance * kellyFraction).toFixed(2)));
 
-    // --- Paper balance check ---
     if (this.settings.paper_trading && this.paperBalance < tradeSize) {
       this._log('WARN', `Insufficient paper balance: $${this.paperBalance.toFixed(2)} < $${tradeSize.toFixed(2)}`);
       return;
     }
-
-    // Final safety guard — must be a positive finite number before any DB insert
-    if (!tradeSize || !isFinite(tradeSize) || isNaN(tradeSize) || tradeSize <= 0) {
+    if (!isFinite(tradeSize) || isNaN(tradeSize) || tradeSize <= 0) {
       this._log('ERROR', `Invalid tradeSize=${tradeSize} — aborting trade`);
       return;
     }
@@ -359,10 +403,9 @@ class BotInstance {
     this._log('INFO', `📊 Signal: ${direction} on "${market.question}"`);
     this._log('INFO', `   Entry: ${entryPrice.toFixed(4)}, Size: $${tradeSize.toFixed(2)}, Kelly: ${(kellyFraction * 100).toFixed(1)}%, EV_adj: ${evAdj.toFixed(2)}%, Model: ${mProb.toFixed(3)}`);
 
-    // --- Execute ---
-    const expectedPrice = entryPrice;
-
+    // ── 8. Execute — paper vs live ────────────────────────────────────────────
     if (this.settings.paper_trading) {
+      // Paper: debit balance, record at simulated fill price (ask + slippage)
       this.paperBalance -= tradeSize;
       await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2', [this.paperBalance, this.userId]);
 
@@ -377,15 +420,16 @@ class BotInstance {
         signal.log?.gates?.gate3?.emaEdge || 0
       ]);
 
-      // Track slippage (paper = no slippage, but record for consistency)
-      this._recordSlippage(expectedPrice, entryPrice);
-
-      this._log('INFO', `📝 Paper trade recorded. Balance: $${this.paperBalance.toFixed(2)}`);
+      this._recordSlippage(bookAskPrice, entryPrice);
+      this._log('INFO', `📝 Paper trade recorded at ${entryPrice.toFixed(4)} (real ask=${bookAskPrice.toFixed(4)}, spread=${(spread * 100).toFixed(1)}%). Balance: $${this.paperBalance.toFixed(2)}`);
 
     } else {
+      // Live: place real order on Polymarket CLOB
+      // placeOrder handles: tokenID field name, token size conversion ($/price), createAndPostOrder
       try {
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, entryPrice);
-        const actualFillPrice = order?.averagePrice || entryPrice;
+        // Prefer actual fill price from response; fall back to limit price
+        const actualFillPrice = order?.price || order?.averagePrice || entryPrice;
 
         await pool.query(`
           INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
@@ -398,10 +442,8 @@ class BotInstance {
           signal.log?.gates?.gate3?.emaEdge || 0
         ]);
 
-        // Track slippage
-        this._recordSlippage(expectedPrice, actualFillPrice);
-
-        this._log('INFO', `🔥 LIVE trade executed. Slippage: ${((actualFillPrice - expectedPrice) * 100).toFixed(3)}%`);
+        this._recordSlippage(bookAskPrice, actualFillPrice);
+        this._log('INFO', `🔥 LIVE trade executed. Ask=${bookAskPrice.toFixed(4)} Fill=${actualFillPrice.toFixed(4)} Slip=${((actualFillPrice - bookAskPrice) * 100).toFixed(3)}%`);
       } catch (err) {
         this._log('ERROR', `Live trade failed: ${err.message}`);
         return;

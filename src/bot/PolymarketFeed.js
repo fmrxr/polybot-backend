@@ -1,9 +1,13 @@
 // ClobClient is ESM-only — must be loaded with dynamic import()
 let _ClobClient = null;
+let _Side = null;
+let _OrderType = null;
 async function getClobClient() {
   if (!_ClobClient) {
     const mod = await import('@polymarket/clob-client');
     _ClobClient = mod.ClobClient;
+    _Side = mod.Side;           // Side.BUY = 0, Side.SELL = 1
+    _OrderType = mod.OrderType; // OrderType.GTC, OrderType.FOK, etc.
   }
   return _ClobClient;
 }
@@ -25,14 +29,18 @@ class PolymarketFeed {
     try {
       const ClobClient = await getClobClient();
       if (this.privateKey && this.walletAddress) {
+        // SDK v5.8.1 constructor: (host, chainId, signer, creds, signatureType, funderAddress, ...)
+        // v4 had (host, chainId, privateKey, undefined, walletAddress) — walletAddress was 5th.
+        // v5 moved walletAddress to 6th (funderAddress); 5th is now signatureType (0=EOA).
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
           137,
-          this.privateKey,
-          undefined,
-          this.walletAddress
+          this.privateKey,   // signer (private key)
+          undefined,         // creds (API key — not used with EOA signing)
+          0,                 // signatureType: 0 = EOA (ECDSA EIP-712)
+          this.walletAddress // funderAddress (wallet that funds the orders)
         );
-        console.log('[PolymarketFeed] CLOB client initialized (authenticated)');
+        console.log('[PolymarketFeed] CLOB client initialized (authenticated EOA)');
       } else {
         this.clobClient = new ClobClient('https://clob.polymarket.com', 137);
         console.log('[PolymarketFeed] CLOB client initialized (read-only)');
@@ -348,7 +356,7 @@ class PolymarketFeed {
   static async fetchBalance(privateKey, walletAddress) {
     try {
       const ClobClient = await getClobClient();
-      const client = new ClobClient('https://clob.polymarket.com', 137, privateKey, undefined, walletAddress);
+      const client = new ClobClient('https://clob.polymarket.com', 137, privateKey, undefined, 0, walletAddress);
       const result = await client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
       const usdc = parseFloat(result?.balance ?? result?.usdc_balance ?? result ?? '0');
       return { usdc, wallet: walletAddress };
@@ -358,13 +366,49 @@ class PolymarketFeed {
     }
   }
 
-  /** Place a market/limit order on Polymarket CLOB */
-  async placeOrder(tokenId, side, size, price) {
+  /**
+   * Place a limit order on Polymarket CLOB.
+   * @param {string} tokenId   - Conditional token ID (YES or NO token)
+   * @param {string} side      - 'BUY' or 'SELL'
+   * @param {number} dollarSize - Dollar amount to spend (e.g. $1.00)
+   * @param {number} price     - Limit price in token probability scale (0–1)
+   *
+   * SDK v5.8.1 notes:
+   *   - Method renamed: createAndPlaceOrder → createAndPostOrder
+   *   - Field renamed:  tokenId           → tokenID (capital ID)
+   *   - size is in TOKENS not dollars: tokenSize = dollarSize / price
+   *     e.g. $1 at price 0.50 → 2 tokens; at price 0.99 → ~1.01 tokens
+   */
+  async placeOrder(tokenId, side, dollarSize, price) {
     if (!this.clobClient) throw new Error('CLOB client not initialized for trading');
+
+    // Ensure SDK enums are loaded
+    await getClobClient();
+    const Side = _Side;
+    const OrderType = _OrderType;
+
+    // Convert dollar amount to token quantity (what the CLOB expects for limit orders)
+    const tokenSize = parseFloat((dollarSize / price).toFixed(2));
+    if (!isFinite(tokenSize) || tokenSize <= 0) {
+      throw new Error(`Invalid token size: dollarSize=${dollarSize} price=${price} → tokenSize=${tokenSize}`);
+    }
+
+    // Map string side to SDK enum (Side.BUY=0, Side.SELL=1)
+    const sideEnum = side === 'SELL' ? Side.SELL : Side.BUY;
+
+    console.log(`[PolymarketFeed] Placing order: ${side} ${tokenSize} tokens @ ${price} (~$${dollarSize}) for token ${tokenId?.slice(0,12)}...`);
+
     try {
-      const order = await this.clobClient.createAndPlaceOrder({ tokenId, side, size, price });
-      console.log(`[PolymarketFeed] Order placed: ${side} ${size} @ ${price} for token ${tokenId}`);
-      return order;
+      // createAndPostOrder replaces old createAndPlaceOrder
+      // Uses GTC (Good Till Cancelled) by default
+      const resp = await this.clobClient.createAndPostOrder(
+        { tokenID: tokenId, side: sideEnum, price, size: tokenSize },
+        undefined,         // options
+        OrderType.GTC,     // order type
+        false              // deferExec
+      );
+      console.log(`[PolymarketFeed] Order placed successfully: orderId=${resp?.orderID ?? resp?.order_id ?? JSON.stringify(resp)?.slice(0,80)}`);
+      return resp;
     } catch (err) {
       console.error(`[PolymarketFeed] placeOrder failed:`, err.message);
       throw err;

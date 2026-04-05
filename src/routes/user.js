@@ -246,6 +246,18 @@ router.post('/reset-paper-balance', async (req, res) => {
       'UPDATE bot_settings SET paper_balance = 10000, paper_balance_initialized = true WHERE user_id = $1',
       [req.userId]
     );
+
+    // Also sync the live bot instance in memory — DB update alone doesn't affect
+    // the running bot's this.paperBalance which was set at construction time
+    const botManager = req.app.locals.botManager;
+    if (botManager) {
+      const bot = botManager.getBot(req.userId);
+      if (bot) {
+        bot.paperBalance = 10000;
+        console.log(`[User] Paper balance reset in-memory for bot ${req.userId}`);
+      }
+    }
+
     res.json({ success: true, message: 'Paper balance reset to $10,000' });
   } catch (err) {
     console.error('Reset paper balance error:', err);
