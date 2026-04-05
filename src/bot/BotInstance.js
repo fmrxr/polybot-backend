@@ -486,8 +486,11 @@ class BotInstance {
 
   // Paper fill simulation — stochastic model based on distance + time
   async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
-    const currentPrice = await this.polymarket.getLastTradePrice(pending.tokenId);
-    if (!currentPrice) return; // can't check — wait for next tick
+    let currentPrice = await this.polymarket.getLastTradePrice(pending.tokenId);
+    // CLOB returns 404 for new market windows with no trades yet.
+    // Fall back to the Gamma reference price stored at order placement.
+    if (!currentPrice) currentPrice = pending.referencePrice;
+    if (!currentPrice) return; // truly no price available
 
     pending.lastCheckedPrice = currentPrice;
 
