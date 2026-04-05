@@ -666,6 +666,8 @@ class BotInstance {
 
             this._log('INFO', `⏱️ Market expired — trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min, resolvedAt=${resolvedAt.toFixed(3)}`);
             await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
+            this.evEngine.clearMarket(trade.market_id);
+            this.signalEngine.clearMarket(trade.market_id);
             consecutivePriceFailures = 0;
             continue;
           }
@@ -689,6 +691,7 @@ class BotInstance {
           this._log('INFO', `🏁 Near-resolution detected: price=${livePrice.toFixed(3)} — closing trade #${trade.id} at ${resolvedAt}`);
           await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
           this.evEngine.clearMarket(trade.market_id);
+          this.signalEngine.clearMarket(trade.market_id);
           continue;
         }
 
@@ -700,6 +703,7 @@ class BotInstance {
             this._log('INFO', `⏳ Pre-expiry close: trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min resolvedAt=${resolvedAt.toFixed(3)}`);
             await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
             this.evEngine.clearMarket(trade.market_id);
+            this.signalEngine.clearMarket(trade.market_id);
             continue;
           }
         }

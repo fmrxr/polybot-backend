@@ -95,8 +95,13 @@ class GBMSignalEngine {
         // bid=0.01/ask=0.99 = boundary/resting liquidity only — not a real price.
         // ==========================================
 
-        const t0 = market.tokens?.[0]; const t1 = market.tokens?.[1];
-        console.log(`[Tokens] [0] outcome="${t0?.outcome}" id=${yesTokenId?.slice(0,12)}... price=${t0?.price} | [1] outcome="${t1?.outcome}" id=${noTokenId?.slice(0,12)}... price=${t1?.price}`);
+        // Bug 1 fix: Gamma tokens[] objects don't carry .outcome or .price fields.
+        // Use outcomePrices[] array for diagnostic prices, default outcomes to YES/NO.
+        let op0 = market.outcomePrices;
+        if (typeof op0 === 'string') { try { op0 = JSON.parse(op0); } catch(_) { op0 = null; } }
+        const t0Price = op0 ? parseFloat(op0[0]) : undefined;
+        const t1Price = op0 ? parseFloat(op0[1]) : undefined;
+        console.log(`[Tokens] [0] outcome="YES" id=${yesTokenId?.slice(0,12)}... price=${t0Price} | [1] outcome="NO" id=${noTokenId?.slice(0,12)}... price=${t1Price}`);
 
         const yesBook = await this.polymarket.getOrderBook(yesTokenId);
         const yesSpread = yesBook?.spread ?? (yesBook ? yesBook.bestAsk - yesBook.bestBid : 1);
@@ -165,17 +170,20 @@ class GBMSignalEngine {
         // ==========================================
         const chaseThreshold = (this.settings.chase_threshold || 8) / 100; // Convert to decimal
 
-        if (this.lastSignalPrices[marketId]) {
-          const prevPrice = this.lastSignalPrices[marketId].price;
+        // Bug 2 fix: always update reference price BEFORE the chase check.
+        // Old code only updated on pass, so a first-tick skip froze the reference price
+        // and caused priceMove to stay identical every tick (permanent freeze).
+        const prevSignal = this.lastSignalPrices[marketId];
+        this.lastSignalPrices[marketId] = { price: yesPrice, timestamp: Date.now() };
+
+        if (prevSignal) {
+          const prevPrice = prevSignal.price;
           const priceMove = Math.abs(yesPrice - prevPrice);
           if (priceMove > chaseThreshold) {
             log.gates.chase = { priceMove, threshold: chaseThreshold, passed: false };
             continue;
           }
         }
-
-        // Record current price for future chase detection
-        this.lastSignalPrices[marketId] = { price: yesPrice, timestamp: Date.now() };
 
         // ==========================================
         // STEP 2: MODEL PROBABILITY
@@ -333,9 +341,11 @@ class GBMSignalEngine {
 
         // ==========================================
         // EV TREND FILTER: velocity + acceleration
+        // Bug 4 fix: recordEV() must come AFTER the decay/velocity checks.
+        // Old code recorded the current tick first, so isEVDecaying() compared
+        // current tick against itself — a single observation always appears flat
+        // or decaying, blocking valid signals on the first pass.
         // ==========================================
-        this.evEngine.recordEV(marketId, evReal, evAnalysis.bestDirection);
-
         if (this.evEngine.isEVDecaying(marketId)) {
           log.gates.evTrend = { status: 'DECAYING', passed: false };
           continue;
@@ -347,6 +357,9 @@ class GBMSignalEngine {
           log.gates.evTrend = { status: 'FALLING', velocity: evVelocity, passed: false };
           continue;
         }
+
+        // Record EV now that checks passed — informs the NEXT tick's trend check
+        this.evEngine.recordEV(marketId, evReal, evAnalysis.bestDirection);
 
         // ==========================================
         // GATE 3: BTC MOMENTUM DIRECTION CONFIRMATION (optional)
@@ -459,6 +472,16 @@ class GBMSignalEngine {
       log.reason = `Evaluation error: ${err.message}`;
       return { verdict: 'ERROR', log };
     }
+  }
+
+  /**
+   * Bug 3: Clear per-market state when a market resolves/expires.
+   * Prevents lastSignalPrices and EVEngine history from leaking into
+   * the next window that reuses the same marketId.
+   */
+  clearMarket(marketId) {
+    delete this.lastSignalPrices[marketId];
+    this.evEngine.clearMarket(marketId);
   }
 
   /**
