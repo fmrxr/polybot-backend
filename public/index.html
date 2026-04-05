@@ -625,7 +625,7 @@
         <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin:10px 0 6px;">SIGNAL SOURCE</div>
         <div style="font-size:11px;color:var(--text-hi);line-height:1.6;">
           Binance BTC/USDT WebSocket — price momentum + order book imbalance<br>
-          BTC Δ threshold: <span id="sdBtcThresh" style="color:var(--cyan);">0.02%</span> / 30s window
+          BTC Δ threshold: <span id="sdBtcThresh" style="color:var(--cyan);">—</span> / 30s window
         </div>
 
         <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin:10px 0 6px;">SIZING</div>
@@ -654,7 +654,7 @@
           <div style="width:100%;height:1px;background:var(--border);"></div>
           <div style="display:flex;align-items:center;gap:8px;font-size:11px;">
             <span style="color:var(--amber);font-weight:600;min-width:60px;">Gate 3</span>
-            <span style="color:var(--text-muted);">EMA trend confirmation · min edge <span id="sdGate3E" style="color:var(--text-hi);">—</span>%
+            <span style="color:var(--text-muted);">BTC momentum direction · min Δ <span id="sdGate3E" style="color:var(--text-hi);">—</span>%
               <span id="sdGate3Disabled" style="color:var(--text-muted);display:none;"> (disabled)</span>
             </span>
           </div>
@@ -694,7 +694,7 @@
           <div class="gate-stat"><span class="gate-stat-label">Fails (G2/2.5)</span><span class="gate-stat-value" id="dbSfGate2">—</span></div>
         </div>
         <div class="gate-card" style="border:none;">
-          <div class="gate-title gate3">Gate 3: EMA</div>
+          <div class="gate-title gate3">Gate 3: BTC Mom</div>
           <div class="gate-stat"><span class="gate-stat-label">Trades executed</span><span class="gate-stat-value" id="dbTradeCount">—</span></div>
           <div class="gate-stat"><span class="gate-stat-label">Trade rate</span><span class="gate-stat-value" id="dbTradeRate">—</span></div>
           <div class="gate-stat"><span class="gate-stat-label">Fails (G3)</span><span class="gate-stat-value" id="dbSfGate3">—</span></div>
@@ -799,7 +799,7 @@
   <div class="gates-grid" style="grid-template-columns:repeat(4,1fr);">
     <div class="gate-card" style="border-top:2px solid var(--purple);">
       <div class="gate-title" style="color:var(--purple)">Pre-Filters A/B/C</div>
-      <div class="gate-stat"><span class="gate-stat-label">A: Lag stale (&gt;20s)</span><span class="gate-stat-value" id="sfLagCount">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">A: Lag stale (&gt;<span id="sdStaleLag">20</span>s)</span><span class="gate-stat-value" id="sfLagCount">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">B: Chase (&gt;8%)</span><span class="gate-stat-value" id="sfChaseCount">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">C: EV decaying</span><span class="gate-stat-value" id="sfEvTrendCount">—</span></div>
       <div class="gate-stat" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span class="gate-stat-label">Avg Lag Age</span><span class="gate-stat-value" id="sfAvgLag">—</span></div>
@@ -819,7 +819,7 @@
       <div class="gate-stat"><span class="gate-stat-label">Fails (G2/2.5)</span><span class="gate-stat-value" id="sfGate2Count">—</span></div>
     </div>
     <div class="gate-card" style="border-top:2px solid var(--yellow);">
-      <div class="gate-title gate3">Gate 3: EMA Confirm</div>
+      <div class="gate-title gate3">Gate 3: BTC Momentum</div>
       <div class="gate-stat"><span class="gate-stat-label">EMA pass rate</span><span class="gate-stat-value" id="gate3Rate">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">Fails (G3)</span><span class="gate-stat-value" id="sfGate3Count">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">Trades executed</span><span class="gate-stat-value" id="smTrades2">—</span></div>
@@ -1555,6 +1555,7 @@
       await loadSignals();
       await loadTrades();
       await loadClaudeAnalysis();
+      loadSettingsFromAPI(); // populate strategy description panel on startup
 
       setInterval(async () => { await loadBotStatus(); await loadSignals(); await loadDashboard(); }, 10000);
       setInterval(loadGateStats, 30000);
@@ -2378,7 +2379,11 @@
     if (settings.claude_auto_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.claude_auto_analysis;
     if (settings.auto_claude_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.auto_claude_analysis;
     const autoSt = settings.claude_auto_analysis ?? settings.auto_claude_analysis;
-    if (autoSt !== undefined) document.getElementById('autoStatus').textContent = autoSt ? 'ON' : 'OFF';
+    if (autoSt !== undefined) {
+      document.getElementById('autoStatus').textContent = autoSt ? 'ON' : 'OFF';
+      const autoEl = document.getElementById('claudeAutoStatus');
+      if (autoEl) autoEl.textContent = 'Auto: ' + (autoSt ? 'ON' : 'OFF');
+    }
     // Populate strategy description panel
     const el = id => document.getElementById(id);
     if (el('sdKellyCap') && settings.kelly_cap)    el('sdKellyCap').textContent = (parseFloat(settings.kelly_cap)*100).toFixed(0) + '%';
@@ -2386,7 +2391,9 @@
     if (el('sdMaxLoss')  && settings.max_daily_loss) el('sdMaxLoss').textContent  = parseFloat(settings.max_daily_loss).toFixed(0);
     if (el('sdGate1T')   && settings.gate1_threshold) el('sdGate1T').textContent  = parseFloat(settings.gate1_threshold).toFixed(2);
     if (el('sdGate2F')   && settings.gate2_ev_floor)  el('sdGate2F').textContent  = parseFloat(settings.gate2_ev_floor).toFixed(1);
-    if (el('sdGate3E')   && settings.min_edge)        el('sdGate3E').textContent  = (parseFloat(settings.min_edge)*100).toFixed(2);
+    if (el('sdGate3E')   && settings.min_edge)        el('sdGate3E').textContent  = (parseFloat(settings.min_edge)*100).toFixed(3);
+    if (el('sdBtcThresh') && settings.min_edge)       el('sdBtcThresh').textContent = (parseFloat(settings.min_edge)*100).toFixed(3) + '%';
+    if (el('sdStaleLag')  && settings.stale_lag_seconds) el('sdStaleLag').textContent = settings.stale_lag_seconds + 's';
     if (el('sdGate3Disabled')) el('sdGate3Disabled').style.display = settings.gate3_enabled === false ? 'inline' : 'none';
     const claudeKeySpan = document.getElementById('claudeStatus');
     if (settings.has_claude_api_key) {

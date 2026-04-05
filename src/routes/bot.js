@@ -276,20 +276,26 @@ router.get('/analytics', authMiddleware, async (req, res) => {
       ORDER BY created_at DESC
     `, [req.userId]);
 
-    // Attach live prices from the running bot's order book cache
+    // Attach live prices for open trades using lastTradePrice (real fills, not boundary order book mid).
+    // _lastOrderBooks midPrice is always 0.5 for boundary-only 5-min BTC markets — unusable for P&L.
+    // getLastTradePrice fetches the actual last-traded price from CLOB, which reflects real fills.
     const botManager = req.app.locals.botManager;
     const bot = botManager?.getBot(req.userId);
-    const openTrades = openRes.rows.map(t => {
-      const livePrice = bot?._lastOrderBooks?.[t.token_id]?.midPrice ?? null;
+    const openTrades = await Promise.all(openRes.rows.map(async t => {
+      let livePrice = null;
+      if (t.token_id && bot?.polymarket) {
+        try {
+          livePrice = await bot.polymarket.getLastTradePrice(t.token_id);
+        } catch (_) {}
+      }
       const entry = parseFloat(t.entry_price);
       const size  = parseFloat(t.trade_size);
       let livePnl = null;
       if (livePrice !== null && isFinite(entry) && isFinite(size) && entry > 0) {
-        // token_id is the exact token bought (YES or NO token) — formula is always (current - entry) * shares
         livePnl = parseFloat(((livePrice - entry) * size / entry).toFixed(2));
       }
       return { ...t, live_price: livePrice, live_pnl: livePnl };
-    });
+    }));
 
     if (!trades.length) {
       return res.json({
