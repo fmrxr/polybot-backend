@@ -24,18 +24,26 @@ class GBMSignalEngine {
     this._priceCache = {}; // marketId -> { smoothedPrice, priceSource, timestamp }
   }
 
-  // Exponential smoothing to suppress Gamma spikes (alpha=0.25: ~25% weight on new tick)
-  _smoothPrice(marketId, rawPrice) {
+  // Exponential smoothing to suppress CLOB mid-price noise (alpha=0.25).
+  // Disabled in the last 60s — near resolution, price legitimately spikes hard
+  // toward 0 or 1 and smoothing would lag a real exit signal by several ticks.
+  _smoothPrice(marketId, rawPrice, remaining) {
+    if (remaining != null && remaining < 60) return rawPrice;
     const last = this._priceCache[marketId]?.smoothedPrice;
     if (!last) return rawPrice;
     return (1 - 0.25) * last + 0.25 * rawPrice;
   }
 
-  // Sanity filter: ignore ticks that jump >10% in one step (Gamma API artifact)
-  _sanityCheck(marketId, rawPrice) {
+  // Sanity filter: reject implausible single-tick spikes from CLOB mid-price only.
+  // Gamma outcomePrices are NOT filtered — they represent real market consensus and
+  // can legitimately jump 10-15%+ when news breaks. Filtering them would silently
+  // discard the most valuable price updates.
+  // Threshold is 25% (not 10%) — CLOB mid shouldn't move >25% in one tick.
+  _sanityCheck(marketId, rawPrice, priceSource) {
+    if (priceSource === 'gamma') return rawPrice;
     const last = this._priceCache[marketId]?.smoothedPrice;
     if (!last) return rawPrice;
-    return Math.abs(rawPrice - last) > 0.10 ? last : rawPrice;
+    return Math.abs(rawPrice - last) > 0.25 ? last : rawPrice;
   }
 
   updateEMA(price) {
@@ -169,21 +177,30 @@ class GBMSignalEngine {
           continue;
         }
 
-        // Sanity filter: if Gamma jumped >10% vs last known price, use last known price.
-        // Prevents a single bad Gamma tick from triggering a false stop-loss downstream.
-        const sanitizedPrice = this._sanityCheck(marketId, rawYesPrice);
+        // Rough seconds-remaining estimate for smoothing decisions.
+        // Full remaining calc happens later in the gate pipeline; this approximation
+        // is only used to decide whether to apply smoothing (last 60s = no smoothing).
+        const roughRemaining = market.end_date_iso
+          ? new Date(market.end_date_iso).getTime() / 1000 - Date.now() / 1000
+          : 300;
+
+        // Sanity filter: reject implausible single-tick spikes from CLOB mid only.
+        // Gamma prices are passed through unfiltered — a 15%+ jump in Gamma is real
+        // market consensus (news broke) and is exactly the signal we want to trade.
+        const sanitizedPrice = this._sanityCheck(marketId, rawYesPrice, priceSource);
         if (sanitizedPrice !== rawYesPrice) {
-          console.log(`[GBMSignalEngine] Sanity filter: rawPrice=${rawYesPrice.toFixed(3)} jumped >10% vs last=${this._priceCache[marketId]?.smoothedPrice?.toFixed(3)} — using last`);
+          console.log(`[GBMSignalEngine] Sanity filter (CLOB): rawPrice=${rawYesPrice.toFixed(3)} jumped >25% vs last=${this._priceCache[marketId]?.smoothedPrice?.toFixed(3)} — using last`);
         }
 
-        // Smooth price to suppress high-frequency Gamma noise.
-        // alpha=0.25: new tick gets 25% weight, prior smoothed gets 75%.
-        const yesPrice = this._smoothPrice(marketId, sanitizedPrice);
+        // Smooth price to suppress high-frequency CLOB mid noise.
+        // Smoothing is disabled in the last 60s so late-window resolution spikes
+        // (price → 0 or 1) propagate immediately without lag.
+        const yesPrice = this._smoothPrice(marketId, sanitizedPrice, roughRemaining);
 
         // Commit to cache — this is the authoritative price for this market this tick.
         // BotInstance reads signal.yesPrice; nothing else calls getLastTradePrice() or Gamma.
         this._priceCache[marketId] = { smoothedPrice: yesPrice, priceSource, timestamp: Date.now() };
-        console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} src=${priceSource}`);
+        console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
 
         const spread = orderBook.spread || (yesBook?.spread) || 0;
 

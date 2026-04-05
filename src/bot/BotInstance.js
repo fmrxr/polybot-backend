@@ -164,6 +164,15 @@ class BotInstance {
       const signal = await this.signalEngine.evaluate();
       await this._logSignal(signal);
 
+      // Staleness guard: if evaluate() threw (caught internally) and returned a stale
+      // signal, or if the timestamp is too old, skip position management this tick.
+      // Without this, a slow evaluate() could pass a 30s-old price to stop-loss logic.
+      const SIGNAL_MAX_AGE_MS = 10000;
+      if (!signal?.timestamp || Date.now() - signal.timestamp > SIGNAL_MAX_AGE_MS) {
+        this._log('WARN', `[_mainLoop] Signal stale (age=${signal?.timestamp ? Date.now() - signal.timestamp : 'no ts'}ms) — skipping position management`);
+        return;
+      }
+
       // --- Monitor pending orders (fill / cancel / adverse-selection) ---
       await this._monitorPendingOrders();
 
@@ -504,44 +513,46 @@ class BotInstance {
     }
   }
 
-  // Paper fill simulation — stochastic model based on distance + time
+  // Paper fill simulation — checks whether the market price has crossed our limit.
+  //
+  // Fill logic: a passive buy limit fills when the market offer comes down to our price.
+  // For YES: filled when signal.yesPrice <= limitPrice (market offered at our bid)
+  // For NO:  filled when signal.noPrice  <= limitPrice
+  //
+  // Using signal.yesPrice (from the current tick's evaluate() call) ensures the
+  // fill simulation reflects the same price that every other component sees.
   async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
-    // Use the signal price stored at order placement — no external price calls.
-    // getLastTradePrice() was returning 404 on new windows and falling back to
-    // Gamma, which could jump violently and trigger false adverse-selection cancels.
-    const currentPrice = pending.referencePrice;
+    const sig = pending.signal;
+    // Use the latest signal price if available; fall back to stored referencePrice
+    // (covers the case where the current tick's signal had no yesPrice / was SKIP).
+    const currentYesPrice = sig?.yesPrice ?? pending.referencePrice;
+    const currentNoPrice  = sig?.noPrice  ?? (pending.referencePrice ? 1 - pending.referencePrice : null);
+    const currentPrice = pending.direction === 'NO' ? currentNoPrice : currentYesPrice;
     if (!currentPrice) return;
 
     pending.lastCheckedPrice = currentPrice;
 
-    // Adverse selection: market moved 2+ ticks against our BUY limit.
-    // Example: limit=0.52, market dropped to 0.49 → we'd be buying above market.
-    // This reflects real-world scenario where informed sellers push price down.
+    // Adverse selection: market moved significantly against our limit.
     if (currentPrice < pending.limitPrice - ADVERSE_TICKS * TICK) {
-      this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} but market=${currentPrice.toFixed(3)} (-${((pending.limitPrice - currentPrice)/TICK).toFixed(0)} ticks) — cancelling`);
+      this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} (-${((pending.limitPrice - currentPrice)/TICK).toFixed(0)} ticks) — cancelling`);
       this._pendingOrders.delete(orderId);
       return;
     }
 
-    // Fill probability model:
-    //   dist=0 ticks → high base fill prob (0.75)
-    //   dist=1 tick  → moderate (0.50)
-    //   dist=2 ticks → low (0.20)
-    //   dist=3+ ticks → very low (0.05)
-    // Time factor adds up to +0.3 over 8 seconds (orders rest longer = more fill chances)
+    // Fill condition: market price came down to (or below) our limit — we get filled.
+    // Add a stochastic component: even when at our price, fill probability < 100%
+    // to simulate queue position and partial depth.
     const timeSincePlaced = Date.now() - pending.placedAt;
-    const dist = Math.abs(pending.limitPrice - currentPrice);
-    const distanceFactor = Math.max(0.05, 1 - dist / (3 * TICK));   // 0.05 at 3+ ticks
-    const timeFactor = Math.min(0.3, timeSincePlaced / 8000 * 0.3); // ramps to 0.3 over 8s
-    const atMarket = currentPrice >= pending.limitPrice - TICK ? 0.15 : 0; // bonus if at/near limit
-    const fillProb = Math.min(0.95, distanceFactor * 0.55 + timeFactor + atMarket);
+    const atOrBelowLimit = currentPrice <= pending.limitPrice;
+    const dist = Math.max(0, currentPrice - pending.limitPrice); // 0 when at/below limit
+    const distanceFactor = atOrBelowLimit ? 1.0 : Math.max(0.05, 1 - dist / (3 * TICK));
+    const timeFactor = Math.min(0.3, timeSincePlaced / 8000 * 0.3);
+    const fillProb = Math.min(0.95, distanceFactor * 0.65 + timeFactor);
 
-    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} dist=${(dist/TICK).toFixed(1)}ticks prob=${(fillProb*100).toFixed(0)}% age=${(timeSincePlaced/1000).toFixed(1)}s`);
+    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} atLimit=${atOrBelowLimit} prob=${(fillProb*100).toFixed(0)}% age=${(timeSincePlaced/1000).toFixed(1)}s`);
 
     if (Math.random() < fillProb) {
-      // Filled at our limit price (maker fill — we set the price)
-      // Slight improvement on lastTradePrice if market moved in our favour
-      const fillPrice = parseFloat(Math.min(pending.limitPrice, currentPrice + TICK).toFixed(2));
+      const fillPrice = parseFloat(Math.min(pending.limitPrice, currentPrice).toFixed(2));
       this._log('INFO', `✅ [PAPER] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} (market=${currentPrice.toFixed(3)})`);
       await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
       this._pendingOrders.delete(orderId);
@@ -654,11 +665,15 @@ class BotInstance {
         if (signal?.yesPrice != null) {
           livePrice = trade.direction === 'NO' ? signal.noPrice : signal.yesPrice;
 
-          // Desync guard: if our stored position price diverges > 5% from signal,
-          // force-resync so EV calcs and PnL are consistent with the market.
-          if (trade._cachedLivePrice != null &&
-              Math.abs(trade._cachedLivePrice - livePrice) > 0.05) {
-            this._log('WARN', `⚠️ Desync detected on trade #${trade.id}: cached=${trade._cachedLivePrice?.toFixed(3)} signal=${livePrice.toFixed(3)} — resyncing`);
+          // Desync guard: log if price jumped >10% relative to last observed value.
+          // Threshold is relative (not absolute) — on a 0.50 market, 5% absolute is
+          // only 0.025 which is within normal spread territory and would fire constantly.
+          // 10% relative means 0.50 → 0.55 which is a real unusual jump worth logging.
+          if (trade._cachedLivePrice != null) {
+            const relDivergence = Math.abs(trade._cachedLivePrice - livePrice) / trade._cachedLivePrice;
+            if (relDivergence > 0.10) {
+              this._log('WARN', `⚠️ Desync on trade #${trade.id}: prev=${trade._cachedLivePrice.toFixed(3)} signal=${livePrice.toFixed(3)} divergence=${(relDivergence*100).toFixed(1)}% src=${signal.priceSource}`);
+            }
           }
           trade._cachedLivePrice = livePrice;
         }
@@ -727,14 +742,23 @@ class BotInstance {
         this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% price=${livePrice.toFixed(3)} PnL=${pnlPct.toFixed(1)}% src=${signal.priceSource}`);
 
         // EXIT CONDITION 1: Time-gated stop-loss
-        // Binary markets naturally swing 10–20%. A hard -20% stop on a single tick
-        // from Gamma was closing correct trades as losses. Only stop-loss if market
-        // has < 30s remaining AND we are in loss — otherwise hold to resolution.
+        // pnlPct = (currentTokenPrice - entryPrice) / entryPrice * 100
+        // This is a relative price move on the token (0–1 scale), NOT % of bankroll.
+        // Example: entry=0.50, current=0.425 → pnlPct = -15%
+        //
+        // Binary markets naturally swing ±10–20% mid-window. Only stop-loss when:
+        //   (a) < 30s remaining — market is nearly resolved, no time to recover
+        //   (b) token price dropped > 15% relative — position is structurally wrong
+        //
+        // The previous -20% threshold was fine as a relative token threshold but
+        // with <30s gate it's already too late at -20%. -15% relative with <30s
+        // remaining is the appropriate cut: still generous enough to avoid noise
+        // closes, tight enough to salvage value before resolution.
         const marketEndSec = trade.market_id
           ? await this._getMarketRemaining(trade.market_id)
           : 300;
-        if (marketEndSec < 30 && pnlPct <= -20) {
-          this._log('WARN', `🛑 Time-gated stop-loss: PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing`);
+        if (marketEndSec < 30 && pnlPct <= -15) {
+          this._log('WARN', `🛑 Time-gated stop-loss: token PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing`);
           await this._closePosition(trade, livePrice, 'HARD_STOP_LOSS');
           this.evEngine.clearMarket(marketId);
           this.signalEngine.clearMarket(marketId);
