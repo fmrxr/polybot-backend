@@ -344,12 +344,23 @@ class BotInstance {
 
     // ── 3. Fetch lastTradePrice with freshness guarantee ─────────────────────
     // Fetched live — AbortSignal.timeout(4000) in getLastTradePrice ensures we
-    // never use a stale cached value. If fetch fails, skip the trade.
+    // never use a stale cached value. If 404 (new market window, no trades yet),
+    // fall back to Gamma outcomePrices which the signal engine already fetched.
     const priceFetchedAt = Date.now();
-    const lastTradePrice = await this.polymarket.getLastTradePrice(tokenId);
+    let lastTradePrice = await this.polymarket.getLastTradePrice(tokenId);
     if (!lastTradePrice) {
-      this._log('WARN', `[SKIP] No lastTradePrice for ${tokenId?.slice(0,12)}... — cannot determine fair value`);
-      return;
+      // Gamma fallback: new 5-min windows return 404 until the first trade clears.
+      // signal.yesPrice is already sourced from Gamma outcomePrices[0/1].
+      const gammaPrice = direction === 'YES'
+        ? signal.yesPrice
+        : (signal.yesPrice != null ? parseFloat((1 - signal.yesPrice).toFixed(4)) : null);
+      if (gammaPrice && gammaPrice > 0.02 && gammaPrice < 0.98) {
+        this._log('INFO', `[INFO] lastTradePrice 404 — using Gamma price ${gammaPrice.toFixed(4)} for ${tokenId?.slice(0,12)}...`);
+        lastTradePrice = gammaPrice;
+      } else {
+        this._log('WARN', `[SKIP] No price source for ${tokenId?.slice(0,12)}... — lastTrade=404, Gamma unavailable`);
+        return;
+      }
     }
 
     // ── 4. Stale price guard ──────────────────────────────────────────────────
