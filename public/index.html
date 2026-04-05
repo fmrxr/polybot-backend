@@ -799,7 +799,7 @@
   <div class="gates-grid" style="grid-template-columns:repeat(4,1fr);">
     <div class="gate-card" style="border-top:2px solid var(--purple);">
       <div class="gate-title" style="color:var(--purple)">Pre-Filters A/B/C</div>
-      <div class="gate-stat"><span class="gate-stat-label">A: Lag stale (&gt;<span id="sdStaleLag">20</span>s)</span><span class="gate-stat-value" id="sfLagCount">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">A: Lag stale (&gt;<span id="sdStaleLag">20s</span>)</span><span class="gate-stat-value" id="sfLagCount">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">B: Chase (&gt;8%)</span><span class="gate-stat-value" id="sfChaseCount">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">C: EV decaying</span><span class="gate-stat-value" id="sfEvTrendCount">—</span></div>
       <div class="gate-stat" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span class="gate-stat-label">Avg Lag Age</span><span class="gate-stat-value" id="sfAvgLag">—</span></div>
@@ -1146,11 +1146,6 @@
         <label>Max Daily Loss (USD)</label>
         <input type="number" id="maxDailyLoss" value="50" min="10" max="500" step="10">
       </div>
-      <div class="form-group">
-        <label>Daily Trade Limit</label>
-        <input type="number" id="dailyTradeLimit" value="10" min="5" max="50" step="1">
-        <div class="form-hint">Phase A: 5–10 trades/day optimal</div>
-      </div>
       <div style="display:flex;gap:8px;margin-top:4px;">
         <button class="primary" onclick="saveRiskSettings()" style="flex:1;">Save Risk Settings</button>
         <button class="secondary" onclick="resetSettingsToDefaults('risk')" style="flex:0 0 auto;">Reset</button>
@@ -1295,9 +1290,9 @@
       <div id="lkOpenBadge" style="font-size:10px;color:var(--yellow);"></div>
     </div>
     <div class="panel" style="padding:10px;text-align:center;">
-      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">AVG SLIPPAGE</div>
-      <div id="lkSlippage" style="font-size:18px;font-weight:700;color:var(--cyan);">—</div>
-      <div style="font-size:10px;color:var(--text-muted);">ticks</div>
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">AVG PnL/TRADE</div>
+      <div id="lkAvgPnl" style="font-size:18px;font-weight:700;color:var(--cyan);">—</div>
+      <div style="font-size:10px;color:var(--text-muted);">per closed trade</div>
     </div>
   </div>
 
@@ -1899,7 +1894,7 @@
       { label:'C: EV decay',  count:s.skip_ev_trend||0, color:'#fb923c' },
       { label:'G1 Micro',     count:(s.skip_gate1||0)+(s.skip_gate1_5||0), color:'var(--cyan)' },
       { label:'G2 EV',        count:s.skip_gate2||0,  color:'var(--green)' },
-      { label:'G3 EMA',       count:s.skip_gate3||0,  color:'var(--red)' },
+      { label:'G3 BTC Mom',   count:s.skip_gate3||0,  color:'var(--red)' },
     ];
     let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
     bars.forEach(b => {
@@ -2393,8 +2388,12 @@
     if (el('sdGate2F')   && settings.gate2_ev_floor)  el('sdGate2F').textContent  = parseFloat(settings.gate2_ev_floor).toFixed(1);
     if (el('sdGate3E')   && settings.min_edge)        el('sdGate3E').textContent  = (parseFloat(settings.min_edge)*100).toFixed(3);
     if (el('sdBtcThresh') && settings.min_edge)       el('sdBtcThresh').textContent = (parseFloat(settings.min_edge)*100).toFixed(3) + '%';
-    if (el('sdStaleLag')  && settings.stale_lag_seconds) el('sdStaleLag').textContent = settings.stale_lag_seconds + 's';
+    if (el('sdStaleLag')  && settings.stale_lag_seconds) el('sdStaleLag').textContent = settings.stale_lag_seconds + 's'; // includes trailing 's'
     if (el('sdGate3Disabled')) el('sdGate3Disabled').style.display = settings.gate3_enabled === false ? 'inline' : 'none';
+    if (settings.require_whale_convergence !== undefined) {
+      const wc = el('requireWhaleConvergence');
+      if (wc) wc.checked = settings.require_whale_convergence;
+    }
     const claudeKeySpan = document.getElementById('claudeStatus');
     if (settings.has_claude_api_key) {
       if (claudeKeySpan) { claudeKeySpan.textContent = 'API Key saved ✓'; claudeKeySpan.style.color = 'var(--green)'; }
@@ -2524,8 +2523,7 @@
       risk: {
         kellyCap: 0.10,
         maxTradeSize: 20,
-        maxDailyLoss: 50,
-        dailyTradeLimit: 10
+        maxDailyLoss: 50
       }
     };
     const d = DEFAULTS[tab];
@@ -2540,7 +2538,6 @@
       document.getElementById('kellyCap').value = d.kellyCap; updateSliderValue('kellyCap');
       document.getElementById('maxTradeSize').value = d.maxTradeSize;
       document.getElementById('maxDailyLoss').value = d.maxDailyLoss;
-      document.getElementById('dailyTradeLimit').value = d.dailyTradeLimit;
     }
     showAlert('Reset to defaults — click Save to apply', 'info');
   }
@@ -2624,9 +2621,17 @@
     finally { btns.forEach(b => { b.disabled = false; b.textContent = 'Analyze Now'; }); }
   }
 
-  function toggleAutoAnalysis() {
+  async function toggleAutoAnalysis() {
     const enabled = document.getElementById('autoAnalysisToggle').checked;
     document.getElementById('autoStatus').textContent = enabled ? 'ON' : 'OFF';
+    const token = localStorage.getItem('token');
+    try {
+      await fetch((window.API_BASE||'')+'/api/user/settings', {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_claude_analysis: enabled })
+      });
+    } catch (_) {}
   }
 
   async function resetPaperBalance() {
@@ -2931,12 +2936,12 @@
     const obEl = $('lkOpenBadge');
     if (obEl && d.total_open > 0) obEl.textContent = '⬤ ' + d.total_open + ' open';
 
-    // Avg slippage (from bot status, in ticks)
-    const slipEl = $('lkSlippage');
-    if (slipEl && botStatus?.avgSlippage != null) {
-      const slipTicks = botStatus.avgSlippage / 0.01;
-      slipEl.textContent = slipTicks.toFixed(1);
-      slipEl.style.color = slipTicks <= 1 ? 'var(--green)' : slipTicks <= 2 ? 'var(--amber)' : 'var(--red)';
+    // Avg P&L per trade
+    const avgPnlEl = $('lkAvgPnl');
+    if (avgPnlEl && s.total > 0) {
+      const avg = s.avg_pnl ?? (s.total_pnl / s.total);
+      avgPnlEl.textContent = (avg >= 0 ? '+$' : '-$') + Math.abs(avg).toFixed(2);
+      avgPnlEl.style.color = avg >= 0 ? 'var(--green)' : 'var(--red)';
     }
 
     // P&L curve (canvas)
@@ -3175,13 +3180,13 @@
 
     try {
       const res = await fetch(`${window.API_BASE||''}/api/user/settings`, {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           gate2_ev_floor: g2,
           min_edge: mom,
           kelly_cap: kelly,
-          snipe_timer_seconds: snipe,
+          snipe_before_close_sec: snipe,
           max_trade_size: maxSz,
           gate3_enabled: g3
         })

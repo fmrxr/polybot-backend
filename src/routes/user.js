@@ -70,7 +70,8 @@ router.put('/settings', async (req, res) => {
     min_ev_threshold, min_prob_diff, direction_filter,
     market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
     claude_api_key, claude_model, auto_claude_analysis,
-    gate1_threshold, gate2_ev_floor, gate3_enabled
+    gate1_threshold, gate2_ev_floor, gate3_enabled,
+    order_timeout_sec, adverse_ticks
   } = req.body;
 
   try {
@@ -102,8 +103,9 @@ router.put('/settings', async (req, res) => {
     await pool.query(`
       INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
         min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
-        claude_api_key_encrypted, claude_model, claude_auto_analysis, gate1_threshold, gate2_ev_floor, gate3_enabled, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW())
+        claude_api_key_encrypted, claude_model, claude_auto_analysis, gate1_threshold, gate2_ev_floor, gate3_enabled,
+        order_timeout_sec, adverse_ticks, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
@@ -126,6 +128,8 @@ router.put('/settings', async (req, res) => {
         gate1_threshold = COALESCE($20, bot_settings.gate1_threshold),
         gate2_ev_floor = COALESCE($21, bot_settings.gate2_ev_floor),
         gate3_enabled = COALESCE($22, bot_settings.gate3_enabled),
+        order_timeout_sec = COALESCE($23, bot_settings.order_timeout_sec),
+        adverse_ticks = COALESCE($24, bot_settings.adverse_ticks),
         updated_at = NOW()
     `, [
       req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
@@ -138,7 +142,8 @@ router.put('/settings', async (req, res) => {
       encryptedClaudeKey, claude_model || null,
       auto_claude_analysis !== undefined ? auto_claude_analysis : null,
       gate1_threshold || null, gate2_ev_floor || null,
-      gate3_enabled !== undefined ? gate3_enabled : null
+      gate3_enabled !== undefined ? gate3_enabled : null,
+      order_timeout_sec || null, adverse_ticks || null
     ]);
 
     res.json({ success: true });

@@ -6,7 +6,12 @@
       "Bash(git push:*)",
       "Read(//c/Users/haifa/Downloads/**)",
       "Bash(grep -oE '`\\\\$\\\\{window\\\\.API_BASE[^`]+`' d:/polybot/polybot-backend/public/index.html)",
-      "Bash(grep -oE \"/api/[^?'\\\\`]+\")"
+      "Bash(grep -oE \"/api/[^?'\\\\`]+\")",
+      "Bash(node --check src/bot/BotInstance.js)",
+      "Bash(node --check src/routes/bot.js)",
+      "Bash(node --check src/routes/user.js)",
+      "Bash(node --check public/index.html)",
+      "Edit(/.claude/skills/frontend-auditor/**)"
     ]
   },
   "hooks": {
