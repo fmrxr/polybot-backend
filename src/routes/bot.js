@@ -42,18 +42,26 @@ router.get('/status', authMiddleware, async (req, res) => {
     const botManager = req.app.locals.botManager;
     const status = botManager.getBotStatus(req.userId);
 
-    // Get trade stats
+    // Resolve active session for this user (most recent, not yet ended)
+    const sessionRow = await pool.query(
+      `SELECT id, started_at, initial_balance FROM trading_sessions WHERE user_id=$1 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`,
+      [req.userId]
+    );
+    const activeSession = sessionRow.rows[0] || null;
+
+    // Get trade stats — scoped to active session if one exists, otherwise all-time
+    const sessionFilter = activeSession ? 'AND session_id = $3' : '';
+    const sessionParams = activeSession ? [req.userId, 'signal', activeSession.id] : [req.userId, 'signal'];
     const tradeStats = await pool.query(`
-      SELECT 
+      SELECT
         COUNT(*) FILTER (WHERE status = 'open') AS open_trades,
         COUNT(*) FILTER (WHERE status = 'closed') AS closed_trades,
         COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) AS total_pnl,
-        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND closed_at > NOW() - INTERVAL '24 hours'), 0) AS daily_pnl,
         COUNT(*) FILTER (WHERE status = 'closed' AND pnl > 0) AS wins,
         COUNT(*) FILTER (WHERE status = 'closed' AND pnl <= 0) AS losses
-      FROM trades 
-      WHERE user_id = $1 AND trade_type = $2
-    `, [req.userId, 'signal']);
+      FROM trades
+      WHERE user_id = $1 AND trade_type = $2 ${sessionFilter}
+    `, sessionParams);
 
     const stats = tradeStats.rows[0];
 
@@ -65,11 +73,15 @@ router.get('/status', authMiddleware, async (req, res) => {
       chainlinkPrice: status?.chainlinkPrice || null,
       peakBalance: status?.peakBalance || null,
       drawdownCooldownUntil: status?.drawdownCooldownUntil || null,
+      session: activeSession ? {
+        id: activeSession.id,
+        startedAt: activeSession.started_at,
+        initialBalance: parseFloat(activeSession.initial_balance) || null
+      } : null,
       trades: {
         open: parseInt(stats.open_trades),
         closed: parseInt(stats.closed_trades),
         totalPnl: parseFloat(stats.total_pnl),
-        dailyPnl: parseFloat(stats.daily_pnl),
         wins: parseInt(stats.wins),
         losses: parseInt(stats.losses),
         winRate: parseInt(stats.closed_trades) > 0

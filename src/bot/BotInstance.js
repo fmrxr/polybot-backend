@@ -89,6 +89,9 @@ class BotInstance {
 
       this.isRunning = true;
 
+      // Start a new trading session — closes lingering open trades, records initial balance
+      await this._startSession();
+
       // Main loop — NOT high-frequency, appropriate for prediction market strategy
       const intervalMs = (this.settings.snipe_timer_seconds || 8) * 1000;
       this.loopInterval = setInterval(() => this._mainLoop(), intervalMs);
@@ -112,6 +115,9 @@ class BotInstance {
   async stop(preserveActive = false) {
     this._log('INFO', 'Stopping bot...');
     this.isRunning = false;
+
+    // Save session summary before teardown
+    await this._endSession();
 
     if (this.loopInterval) {
       clearInterval(this.loopInterval);
@@ -598,10 +604,10 @@ class BotInstance {
     }
 
     await pool.query(`
-      INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'open', 'signal', $8, $9, $10, $11, $12)
+      INSERT INTO trades (user_id, session_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'open', 'signal', $9, $10, $11, $12, $13)
     `, [
-      this.userId, marketId, market?.question, tokenId, direction,
+      this.userId, this.sessionId || null, marketId, market?.question, tokenId, direction,
       fillPrice, fillDollars, confidence, evAdj,
       signal.log?.gates?.gate1?.confidence || 0,
       signal.log?.gates?.gate2?.bestEV || 0,
@@ -847,6 +853,78 @@ class BotInstance {
     } catch (err) {
       this._log('WARN', `Gamma resolution lookup failed for ${marketId}: ${err.message}`);
       return null;
+    }
+  }
+
+  // ==========================================
+  // TRADING SESSION LIFECYCLE
+  // ==========================================
+
+  async _startSession() {
+    try {
+      // 1. Close any lingering open trades from a previous session
+      const lingering = await pool.query(
+        "UPDATE trades SET status='closed', close_reason='SESSION_RESET', exit_price=entry_price, pnl=0, result='LOSS', closed_at=NOW() WHERE user_id=$1 AND status='open' RETURNING id",
+        [this.userId]
+      );
+      if (lingering.rowCount > 0) {
+        this._log('INFO', `🔄 Session reset: closed ${lingering.rowCount} lingering trade(s) from previous session`);
+      }
+
+      // 2. Clear in-memory state
+      this._pendingOrders.clear();
+
+      // 3. Determine initial balance
+      const isPaper = this.settings.paper_trading !== false;
+      let initialBalance = isPaper
+        ? (this.paperBalance || parseFloat(this.settings.paper_balance) || 1000)
+        : (await this._getLiveBalance() || 0);
+
+      // 4. Create session record
+      const result = await pool.query(
+        `INSERT INTO trading_sessions (user_id, paper_trading, initial_balance) VALUES ($1, $2, $3) RETURNING id`,
+        [this.userId, isPaper, initialBalance]
+      );
+      this.sessionId = result.rows[0].id;
+      this._log('INFO', `🟢 Session #${this.sessionId} started — ${isPaper ? 'PAPER' : 'LIVE'} — balance: $${initialBalance.toFixed(2)}`);
+    } catch (err) {
+      this._log('WARN', `Session start failed: ${err.message} — trades will have null session_id`);
+      this.sessionId = null;
+    }
+  }
+
+  async _endSession() {
+    if (!this.sessionId) return;
+    try {
+      const stats = await pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status='closed') AS total_trades,
+          COUNT(*) FILTER (WHERE status='closed' AND pnl > 0) AS wins,
+          COUNT(*) FILTER (WHERE status='closed' AND pnl <= 0) AS losses,
+          COALESCE(SUM(pnl) FILTER (WHERE status='closed'), 0) AS total_pnl
+        FROM trades WHERE user_id=$1 AND session_id=$2
+      `, [this.userId, this.sessionId]);
+
+      const s = stats.rows[0];
+      const total = parseInt(s.total_trades) || 0;
+      const wins = parseInt(s.wins) || 0;
+      const winRate = total > 0 ? parseFloat((wins / total * 100).toFixed(2)) : 0;
+
+      const isPaper = this.settings.paper_trading !== false;
+      const finalBalance = isPaper
+        ? this.paperBalance
+        : (await this._getLiveBalance().catch(() => null));
+
+      await pool.query(`
+        UPDATE trading_sessions
+        SET ended_at=NOW(), final_balance=$1, total_trades=$2, wins=$3, losses=$4, total_pnl=$5, win_rate=$6
+        WHERE id=$7
+      `, [finalBalance, total, wins, parseInt(s.losses) || 0, parseFloat(s.total_pnl), winRate, this.sessionId]);
+
+      this._log('INFO', `🔴 Session #${this.sessionId} ended — ${total} trades, PnL: $${parseFloat(s.total_pnl).toFixed(2)}, Win rate: ${winRate}%`);
+      this.sessionId = null;
+    } catch (err) {
+      this._log('WARN', `Session end save failed: ${err.message}`);
     }
   }
 

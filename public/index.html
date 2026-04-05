@@ -545,6 +545,15 @@
       <button class="danger"  id="stopBtn"  onclick="stopBot()">■ STOP BOT</button>
     </div>
   </div>
+  <!-- Session info bar -->
+  <div id="sessionBar" style="display:none;background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;padding:8px 14px;margin-bottom:8px;font-size:11px;align-items:center;gap:18px;flex-wrap:wrap;">
+    <span style="color:var(--text-muted);">SESSION</span>
+    <span style="color:var(--cyan);">#<span id="sessionIdLabel">—</span></span>
+    <span style="color:var(--text-muted);">Started: <span id="sessionStartLabel" style="color:var(--text-hi);">—</span></span>
+    <span style="color:var(--text-muted);">Duration: <span id="sessionDurationLabel" style="color:var(--text-hi);">—</span></span>
+    <span style="color:var(--text-muted);">Initial: $<span id="sessionInitBalLabel" style="color:var(--text-hi);">—</span></span>
+    <span style="margin-left:auto;cursor:pointer;color:var(--text-muted);text-decoration:underline;" onclick="showSessionHistory()">History ▾</span>
+  </div>
 
   <!-- Trade Performance P&L strip -->
   <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px;">
@@ -1694,6 +1703,23 @@
           : 'Bot is stopped';
       }
 
+      // Session info bar
+      const sessionBar = document.getElementById('sessionBar');
+      if (data.session && sessionBar) {
+        sessionBar.style.display = 'flex';
+        document.getElementById('sessionIdLabel').textContent = data.session.id;
+        const startedAt = new Date(data.session.startedAt);
+        document.getElementById('sessionStartLabel').textContent = startedAt.toLocaleTimeString();
+        const durationMs = Date.now() - startedAt.getTime();
+        const dMin = Math.floor(durationMs / 60000);
+        const dSec = Math.floor((durationMs % 60000) / 1000);
+        document.getElementById('sessionDurationLabel').textContent = `${dMin}m ${dSec}s`;
+        const initBal = data.session.initialBalance;
+        document.getElementById('sessionInitBalLabel').textContent = initBal != null ? parseFloat(initBal).toFixed(2) : '—';
+      } else if (sessionBar) {
+        sessionBar.style.display = 'none';
+      }
+
       // Pending orders panel
       const pendingPanel = document.getElementById('pendingOrdersPanel');
       const pendingList  = document.getElementById('pendingOrdersList');
@@ -2662,6 +2688,85 @@
   }
 
   function goToPage(page) { currentPage = page; loadTrades(); }
+
+  async function showSessionHistory() {
+    const token = localStorage.getItem('token');
+    let modal = document.getElementById('sessionHistoryModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'sessionHistoryModal';
+      modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;';
+      modal.innerHTML = `
+        <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;width:min(900px,95vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">
+          <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);">
+            <span style="font-family:'Syne',sans-serif;font-size:14px;font-weight:800;color:var(--text-hi);letter-spacing:2px;">SESSION HISTORY</span>
+            <button onclick="document.getElementById('sessionHistoryModal').remove()" style="margin-left:auto;background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;font-family:var(--font);">✕</button>
+          </div>
+          <div id="sessionHistoryBody" style="overflow-y:auto;padding:14px 18px;flex:1;">
+            <div style="color:var(--text-muted);text-align:center;padding:20px;">Loading…</div>
+          </div>
+        </div>`;
+      modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+      document.body.appendChild(modal);
+    } else {
+      modal.style.display = 'flex';
+    }
+
+    try {
+      const res = await fetch(`${window.API_BASE||''}/api/trades/sessions`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      const sessions = data.sessions || [];
+      const body = document.getElementById('sessionHistoryBody');
+      if (!sessions.length) {
+        body.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;">No sessions recorded yet.</div>';
+        return;
+      }
+      const rows = sessions.map(s => {
+        const started = new Date(s.started_at).toLocaleString();
+        const ended = s.ended_at ? new Date(s.ended_at).toLocaleString() : '<span style="color:var(--green);">ACTIVE</span>';
+        const dur = s.duration_sec != null ? `${Math.floor(s.duration_sec/60)}m ${Math.floor(s.duration_sec%60)}s` : '—';
+        const pnl = s.total_pnl != null ? parseFloat(s.total_pnl).toFixed(2) : '0.00';
+        const pnlColor = parseFloat(pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+        const wr = s.win_rate != null ? parseFloat(s.win_rate).toFixed(1) + '%' : '—';
+        const mode = s.paper_trading ? '<span style="color:var(--amber);">PAPER</span>' : '<span style="color:var(--cyan);">LIVE</span>';
+        return `<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px 6px;color:var(--text-muted);">#${s.id}</td>
+          <td style="padding:8px 6px;">${mode}</td>
+          <td style="padding:8px 6px;color:var(--text);">${started}</td>
+          <td style="padding:8px 6px;color:var(--text-muted);">${ended}</td>
+          <td style="padding:8px 6px;color:var(--text-muted);">${dur}</td>
+          <td style="padding:8px 6px;text-align:right;">${s.total_trades || 0}</td>
+          <td style="padding:8px 6px;text-align:right;color:var(--green);">${s.wins || 0}</td>
+          <td style="padding:8px 6px;text-align:right;color:var(--red);">${s.losses || 0}</td>
+          <td style="padding:8px 6px;text-align:right;">${wr}</td>
+          <td style="padding:8px 6px;text-align:right;color:${pnlColor};">$${pnl}</td>
+        </tr>`;
+      }).join('');
+      body.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border-hi);">
+              <th style="padding:6px;text-align:left;color:var(--text-muted);">#</th>
+              <th style="padding:6px;text-align:left;color:var(--text-muted);">MODE</th>
+              <th style="padding:6px;text-align:left;color:var(--text-muted);">STARTED</th>
+              <th style="padding:6px;text-align:left;color:var(--text-muted);">ENDED</th>
+              <th style="padding:6px;text-align:left;color:var(--text-muted);">DURATION</th>
+              <th style="padding:6px;text-align:right;color:var(--text-muted);">TRADES</th>
+              <th style="padding:6px;text-align:right;color:var(--text-muted);">WINS</th>
+              <th style="padding:6px;text-align:right;color:var(--text-muted);">LOSSES</th>
+              <th style="padding:6px;text-align:right;color:var(--text-muted);">W-RATE</th>
+              <th style="padding:6px;text-align:right;color:var(--text-muted);">P&L</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    } catch (err) {
+      document.getElementById('sessionHistoryBody').innerHTML =
+        '<div style="color:var(--red);padding:20px;">Failed to load session history.</div>';
+    }
+  }
 
   function showAlert(message, type) {
     const alert = document.createElement('div');

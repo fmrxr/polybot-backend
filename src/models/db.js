@@ -220,11 +220,32 @@ const initDB = async () => {
       ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),
         ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
-        ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4);
+        ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4),
+        ADD COLUMN IF NOT EXISTS session_id    INTEGER;
 
       ALTER TABLE copy_targets
         ADD COLUMN IF NOT EXISTS min_confirmations INTEGER DEFAULT 1;
 
+    `);
+
+    // trading_sessions — one row per bot start/stop cycle, scopes all trades/signals
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trading_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        ended_at TIMESTAMPTZ,
+        paper_trading BOOLEAN DEFAULT true,
+        initial_balance DECIMAL(20,2),
+        final_balance DECIMAL(20,2),
+        total_trades INTEGER DEFAULT 0,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        total_pnl DECIMAL(20,4) DEFAULT 0,
+        win_rate DECIMAL(5,2) DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON trading_sessions(user_id);
+      ALTER TABLE trades ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES trading_sessions(id);
     `);
 
     // whale_performance — tracks historical performance per copy target address

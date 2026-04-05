@@ -5,22 +5,39 @@ const { authMiddleware } = require('../middleware/auth');
 const router = express.Router();
 router.use(authMiddleware);
 
-// GET /api/trades - paginated trade history
+// GET /api/trades - paginated trade history, scoped to active session
 router.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const offset = (page - 1) * limit;
 
-    const result = await pool.query(`
-      SELECT * FROM trades WHERE user_id = $1
-      ORDER BY created_at DESC LIMIT $2 OFFSET $3
-    `, [req.userId, limit, offset]);
+    // Scope to active session if one exists
+    const sessionRow = await pool.query(
+      `SELECT id FROM trading_sessions WHERE user_id=$1 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`,
+      [req.userId]
+    );
+    const sessionId = sessionRow.rows[0]?.id || null;
+    const sessionFilter = sessionId ? 'AND session_id = $4' : '';
+    const params = sessionId
+      ? [req.userId, limit, offset, sessionId]
+      : [req.userId, limit, offset];
 
-    const count = await pool.query('SELECT COUNT(*) FROM trades WHERE user_id = $1', [req.userId]);
+    const result = await pool.query(`
+      SELECT * FROM trades WHERE user_id = $1 ${sessionFilter}
+      ORDER BY created_at DESC LIMIT $2 OFFSET $3
+    `, params);
+
+    const countParams = sessionId ? [req.userId, sessionId] : [req.userId];
+    const countFilter = sessionId ? 'AND session_id = $2' : '';
+    const count = await pool.query(
+      `SELECT COUNT(*) FROM trades WHERE user_id = $1 ${countFilter}`,
+      countParams
+    );
 
     res.json({
       trades: result.rows,
+      session_id: sessionId,
       total: parseInt(count.rows[0].count),
       page,
       pages: Math.ceil(count.rows[0].count / limit)
@@ -207,6 +224,26 @@ router.get('/audit', async (req, res) => {
     res.json({ suspicious_trades: suspicious.rows, totals: totals.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/trades/sessions - session history list
+router.get('/sessions', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        s.id, s.started_at, s.ended_at, s.paper_trading,
+        s.initial_balance, s.final_balance, s.total_trades,
+        s.wins, s.losses, s.total_pnl, s.win_rate,
+        EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) AS duration_sec
+      FROM trading_sessions s
+      WHERE s.user_id = $1
+      ORDER BY s.started_at DESC
+      LIMIT 50
+    `, [req.userId]);
+    res.json({ sessions: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
