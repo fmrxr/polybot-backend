@@ -17,6 +17,25 @@ class GBMSignalEngine {
 
     // Track signal timestamps for freshness
     this.lastSignalPrices = {}; // marketId -> { price, timestamp }
+
+    // Single-source-of-truth price cache: marketId -> smoothed yesPrice
+    // ALL price consumers (BotInstance, position manager) read from the returned signal.
+    // Nothing outside evaluate() recomputes or re-fetches price.
+    this._priceCache = {}; // marketId -> { smoothedPrice, priceSource, timestamp }
+  }
+
+  // Exponential smoothing to suppress Gamma spikes (alpha=0.25: ~25% weight on new tick)
+  _smoothPrice(marketId, rawPrice) {
+    const last = this._priceCache[marketId]?.smoothedPrice;
+    if (!last) return rawPrice;
+    return (1 - 0.25) * last + 0.25 * rawPrice;
+  }
+
+  // Sanity filter: ignore ticks that jump >10% in one step (Gamma API artifact)
+  _sanityCheck(marketId, rawPrice) {
+    const last = this._priceCache[marketId]?.smoothedPrice;
+    if (!last) return rawPrice;
+    return Math.abs(rawPrice - last) > 0.10 ? last : rawPrice;
   }
 
   updateEMA(price) {
@@ -58,7 +77,7 @@ class GBMSignalEngine {
 
       if (!btcPrice) {
         log.reason = 'No BTC price available from Binance';
-        return { verdict: 'SKIP', log };
+        return { verdict: 'SKIP', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
       }
 
       this.updateEMA(btcPrice);
@@ -67,7 +86,7 @@ class GBMSignalEngine {
       const markets = await this.polymarket.fetchActiveBTCMarkets();
       if (!markets || markets.length === 0) {
         log.reason = 'No active BTC markets found';
-        return { verdict: 'SKIP', log };
+        return { verdict: 'SKIP', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
       }
 
       // --- Evaluate each market ---
@@ -108,17 +127,19 @@ class GBMSignalEngine {
         console.log(`[OrderBook:YES] bid=${yesBook?.bestBid} ask=${yesBook?.bestAsk} mid=${yesBook?.midPrice} spread=${(yesSpread*100).toFixed(0)}% depth=${yesBook?.totalDepth?.toFixed(0)}`);
 
         let orderBook = yesBook;
-        let yesPrice = (yesBook?.midPrice != null && yesSpread <= 0.10) ? yesBook.midPrice : null;
+        let rawYesPrice = (yesBook?.midPrice != null && yesSpread <= 0.10) ? yesBook.midPrice : null;
+        let priceSource = rawYesPrice != null ? 'clob' : null;
 
         // Try NO token book if YES is boundary-only (bid=0.01/ask=0.99)
-        if (yesPrice == null && noTokenId) {
+        if (rawYesPrice == null && noTokenId) {
           const noBook = await this.polymarket.getOrderBook(noTokenId);
           const noSpread = noBook?.spread ?? (noBook ? noBook.bestAsk - noBook.bestBid : 1);
           console.log(`[OrderBook:NO]  bid=${noBook?.bestBid} ask=${noBook?.bestAsk} mid=${noBook?.midPrice} spread=${(noSpread*100).toFixed(0)}% depth=${noBook?.totalDepth?.toFixed(0)}`);
           if (noBook?.midPrice != null && noSpread <= 0.10) {
-            yesPrice = 1 - noBook.midPrice; // YES price derived from NO mid
+            rawYesPrice = 1 - noBook.midPrice; // YES price derived from NO mid
             orderBook = noBook;
-            console.log(`[GBMSignalEngine] YES book boundary-only — using NO book: noMid=${noBook.midPrice.toFixed(3)} yesPrice=${yesPrice.toFixed(3)}`);
+            priceSource = 'clob';
+            console.log(`[GBMSignalEngine] YES book boundary-only — using NO book: noMid=${noBook.midPrice.toFixed(3)} yesPrice=${rawYesPrice.toFixed(3)}`);
           }
         }
 
@@ -126,25 +147,43 @@ class GBMSignalEngine {
         // Gamma returns outcomePrices as JSON string: '["0.487","0.513"]'
         // outcomePrices[0] = YES/Up price, outcomePrices[1] = NO/Down price
         // This is the real market-implied probability, not CLOB boundary orders.
-        if (yesPrice == null) {
+        if (rawYesPrice == null) {
           let op = market.outcomePrices;
           if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
           console.log(`[Gamma] outcomePrices=${JSON.stringify(op)}`);
           const gammaYes = op ? parseFloat(op[0]) : NaN;
           const gammaNo  = op ? parseFloat(op[1]) : NaN;
           if (!isNaN(gammaYes) && gammaYes > 0.05 && gammaYes < 0.95) {
-            yesPrice = gammaYes;
-            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma outcomePrices: yesPrice=${yesPrice.toFixed(3)}`);
+            rawYesPrice = gammaYes;
+            priceSource = 'gamma';
+            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma outcomePrices: yesPrice=${rawYesPrice.toFixed(3)}`);
           } else if (!isNaN(gammaNo) && gammaNo > 0.05 && gammaNo < 0.95) {
-            yesPrice = 1 - gammaNo;
-            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma NO price: noPrice=${gammaNo.toFixed(3)} yesPrice=${yesPrice.toFixed(3)}`);
+            rawYesPrice = 1 - gammaNo;
+            priceSource = 'gamma';
+            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma NO price: noPrice=${gammaNo.toFixed(3)} yesPrice=${rawYesPrice.toFixed(3)}`);
           }
         }
 
-        if (yesPrice == null || !orderBook) {
+        if (rawYesPrice == null || !orderBook) {
           console.log(`[GBMSignalEngine] SKIP — no real price from any source (CLOB both boundary, Gamma also 0.5)`);
           continue;
         }
+
+        // Sanity filter: if Gamma jumped >10% vs last known price, use last known price.
+        // Prevents a single bad Gamma tick from triggering a false stop-loss downstream.
+        const sanitizedPrice = this._sanityCheck(marketId, rawYesPrice);
+        if (sanitizedPrice !== rawYesPrice) {
+          console.log(`[GBMSignalEngine] Sanity filter: rawPrice=${rawYesPrice.toFixed(3)} jumped >10% vs last=${this._priceCache[marketId]?.smoothedPrice?.toFixed(3)} — using last`);
+        }
+
+        // Smooth price to suppress high-frequency Gamma noise.
+        // alpha=0.25: new tick gets 25% weight, prior smoothed gets 75%.
+        const yesPrice = this._smoothPrice(marketId, sanitizedPrice);
+
+        // Commit to cache — this is the authoritative price for this market this tick.
+        // BotInstance reads signal.yesPrice; nothing else calls getLastTradePrice() or Gamma.
+        this._priceCache[marketId] = { smoothedPrice: yesPrice, priceSource, timestamp: Date.now() };
+        console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} src=${priceSource}`);
 
         const spread = orderBook.spread || (yesBook?.spread) || 0;
 
@@ -453,7 +492,12 @@ class GBMSignalEngine {
           orderBook: orderBook,
           microstructure: micro,
           costs: costs,
-          log: log
+          log: log,
+          // Single-source-of-truth price fields — BotInstance must use ONLY these
+          yesPrice: yesPrice,
+          noPrice: 1 - yesPrice,
+          priceSource: priceSource,
+          timestamp: Date.now()
         };
       }
 
@@ -464,13 +508,13 @@ class GBMSignalEngine {
       log.reason = 'No market passed all gates';
       log.skipDetail = failedAt;
       console.log(`[GBMSignalEngine] SKIP — ${failedAt}`, JSON.stringify(log.gates).slice(0, 200));
-      return { verdict: 'SKIP', log };
+      return { verdict: 'SKIP', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
 
     } catch (err) {
       console.error('[GBMSignalEngine] evaluate error:', err.message);
       log.verdict = 'ERROR';
       log.reason = `Evaluation error: ${err.message}`;
-      return { verdict: 'ERROR', log };
+      return { verdict: 'ERROR', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
     }
   }
 
@@ -481,6 +525,7 @@ class GBMSignalEngine {
    */
   clearMarket(marketId) {
     delete this.lastSignalPrices[marketId];
+    delete this._priceCache[marketId];
     this.evEngine.clearMarket(marketId);
   }
 

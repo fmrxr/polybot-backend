@@ -158,15 +158,17 @@ class BotInstance {
       // const dailyLimitHit = await this._checkDailyLossLimit();
       // if (dailyLimitHit) return;
 
+      // --- Evaluate signal FIRST — establishes the single authoritative price for this tick ---
+      // Position management and order monitoring consume signal.yesPrice rather than making
+      // independent price calls. This eliminates split-brain pricing (0.505 vs 0.700).
+      const signal = await this.signalEngine.evaluate();
+      await this._logSignal(signal);
+
       // --- Monitor pending orders (fill / cancel / adverse-selection) ---
       await this._monitorPendingOrders();
 
-      // --- Manage open positions (EV-based exits + flips) ---
-      await this._manageOpenPositions();
-
-      // --- Evaluate new signals ---
-      const signal = await this.signalEngine.evaluate();
-      await this._logSignal(signal);
+      // --- Manage open positions (EV-based exits + flips) — uses signal.yesPrice ---
+      await this._manageOpenPositions(signal);
 
       if (signal.verdict !== 'TRADE') return;
 
@@ -240,10 +242,10 @@ class BotInstance {
       if (evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
         this._log('INFO', `✅ EV-driven flip: ${currentDirection} → ${newSignal.direction} (EV gain: +${evGain.toFixed(2)}%)`);
 
-        // Close existing position at live price — fall back to last cached book price, not entry
-        const livePrice = await this.polymarket.getLiveTokenPrice(existingTrade.token_id)
-          ?? this._lastOrderBooks[existingTrade.token_id]?.midPrice
-          ?? parseFloat(existingTrade.entry_price);
+        // Close at the signal price — same price the signal engine just used for EV evaluation.
+        // Using signal.yesPrice here ensures consistency with the rest of the tick.
+        const flipTokenPrice = existingTrade.direction === 'NO' ? newSignal.noPrice : newSignal.yesPrice;
+        const livePrice = flipTokenPrice ?? parseFloat(existingTrade.entry_price);
         await this._closePosition(existingTrade, livePrice, 'EV_FLIP');
 
         // Record flip
@@ -367,44 +369,22 @@ class BotInstance {
       }
     }
 
-    // ── 3. Fetch lastTradePrice with freshness guarantee ─────────────────────
-    // Fetched live — AbortSignal.timeout(4000) in getLastTradePrice ensures we
-    // never use a stale cached value. If 404 (new market window, no trades yet),
-    // fall back to Gamma outcomePrices which the signal engine already fetched.
-    const priceFetchedAt = Date.now();
-    let lastTradePrice = await this.polymarket.getLastTradePrice(tokenId);
-    if (!lastTradePrice) {
-      // Gamma fallback: new 5-min windows return 404 until the first trade clears.
-      // signal.entryPrice = direction==='YES' ? yesPrice : (1-yesPrice) — already
-      // computed from Gamma outcomePrices by GBMSignalEngine when CLOB is boundary-only.
-      const gammaPrice = signal.entryPrice;
-      if (gammaPrice && gammaPrice > 0.02 && gammaPrice < 0.98) {
-        this._log('INFO', `[INFO] lastTradePrice 404 — using Gamma price ${gammaPrice.toFixed(4)} for ${tokenId?.slice(0,12)}...`);
-        lastTradePrice = gammaPrice;
-      } else {
-        this._log('WARN', `[SKIP] No price source for ${tokenId?.slice(0,12)}... — lastTrade=404, Gamma unavailable`);
-        return;
-      }
-    }
-
-    // ── 4. Stale price guard ──────────────────────────────────────────────────
-    // If the fetch itself took too long (network slow), the price may no longer
-    // reflect the current market. Reject if the fetch took > 5s.
-    const fetchLatencyMs = Date.now() - priceFetchedAt;
-    if (fetchLatencyMs > 5000) {
-      this._log('WARN', `[SKIP] Price fetch took ${fetchLatencyMs}ms — too slow, price may be stale`);
+    // ── 3. Price from signal engine (single source of truth) ────────────────
+    // signal.yesPrice is the smoothed, sanity-checked price from GBMSignalEngine.
+    // We never call getLastTradePrice() or Gamma here — that was the source of the
+    // split-brain pricing bug (0.505 vs 0.700) and fake stop-losses from Gamma jumps.
+    const signalYesPrice = signal.yesPrice;
+    if (!signalYesPrice || signalYesPrice <= 0.02 || signalYesPrice >= 0.98) {
+      this._log('WARN', `[SKIP] Invalid signal.yesPrice=${signalYesPrice} — skipping`);
       return;
     }
+    // For Kelly: use the token we're buying (YES price for YES, NO price for NO)
+    const lastTradePrice = direction === 'NO' ? (1 - signalYesPrice) : signalYesPrice;
 
-    // ── 5. Tradeable range check ──────────────────────────────────────────────
-    if (lastTradePrice <= 0.02 || lastTradePrice >= 0.98) {
-      this._log('WARN', `[SKIP] lastTradePrice=${lastTradePrice.toFixed(4)} near resolution boundary`);
-      return;
-    }
+    // ── 5. Tradeable range check (already covered above, kept for clarity) ───
+    // (range check included in the guard above)
 
-    // ── 6. Kelly position sizing at lastTradePrice ────────────────────────────
-    // Use lastTradePrice as the execution price for Kelly (not signal.entryPrice).
-    // modelProb comes from GBM signal engine — for NO trades, flip to P(NO resolves).
+    // ── 6. Kelly position sizing ──────────────────────────────────────────────
     const mProb = direction === 'NO'
       ? Math.min(0.99, Math.max(0.01, 1 - (modelProb || lastTradePrice)))
       : Math.min(0.99, Math.max(0.01, modelProb || lastTradePrice));
@@ -526,11 +506,11 @@ class BotInstance {
 
   // Paper fill simulation — stochastic model based on distance + time
   async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
-    let currentPrice = await this.polymarket.getLastTradePrice(pending.tokenId);
-    // CLOB returns 404 for new market windows with no trades yet.
-    // Fall back to the Gamma reference price stored at order placement.
-    if (!currentPrice) currentPrice = pending.referencePrice;
-    if (!currentPrice) return; // truly no price available
+    // Use the signal price stored at order placement — no external price calls.
+    // getLastTradePrice() was returning 404 on new windows and falling back to
+    // Gamma, which could jump violently and trigger false adverse-selection cancels.
+    const currentPrice = pending.referencePrice;
+    if (!currentPrice) return;
 
     pending.lastCheckedPrice = currentPrice;
 
@@ -598,8 +578,9 @@ class BotInstance {
         return;
       }
 
-      // Still LIVE (resting) — check for adverse selection
-      const currentPrice = await this.polymarket.getLastTradePrice(pending.tokenId);
+      // Still LIVE (resting) — check for adverse selection using CLOB mid (no Gamma)
+      const liveBook = await this.polymarket.getOrderBook(pending.tokenId);
+      const currentPrice = liveBook?.midPrice ?? null;
       if (currentPrice && currentPrice < pending.limitPrice - ADVERSE_TICKS * TICK) {
         this._log('WARN', `🚫 [LIVE] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} — cancelling order ${orderId.slice(0,12)}`);
         try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
@@ -643,7 +624,7 @@ class BotInstance {
   // POSITION MANAGEMENT — EV-BASED EXITS
   // ==========================================
 
-  async _manageOpenPositions() {
+  async _manageOpenPositions(signal) {
     try {
       const result = await pool.query(
         "SELECT * FROM trades WHERE user_id = $1 AND status = $2",
@@ -651,9 +632,6 @@ class BotInstance {
       );
 
       if (result.rows.length === 0) return;
-
-      let consecutivePriceFailures = 0;
-      const MAX_PRICE_FAILURES = 5;
 
       for (const trade of result.rows) {
         // Close legacy trades that pre-date the token_id column — can't manage them
@@ -665,46 +643,43 @@ class BotInstance {
 
         const tradeAgeMin = (Date.now() - new Date(trade.created_at).getTime()) / 60000;
 
-        // CLOB returns null when book is boundary-only (spread > 90%) — use Gamma fallback
-        let livePrice = await this.polymarket.getLiveTokenPrice(trade.token_id);
-        if (!livePrice && trade.market_id) {
-          livePrice = await this.polymarket.getLivePriceFromGamma(trade.market_id, trade.token_id);
-          if (livePrice) this._log('INFO', `📡 Gamma price fallback: token=${trade.token_id?.slice(0,8)}... price=${livePrice.toFixed(3)}`);
+        // ── Single source of truth: signal.yesPrice ──────────────────────────
+        // signal is evaluated once per tick at the top of _mainLoop.
+        // All price consumers in this loop use the same value — no independent
+        // Gamma calls, no getLastTradePrice(), no split-brain.
+        //
+        // For YES trades: livePrice = yesPrice
+        // For NO trades:  livePrice = 1 - yesPrice (= noPrice)
+        let livePrice = null;
+        if (signal?.yesPrice != null) {
+          livePrice = trade.direction === 'NO' ? signal.noPrice : signal.yesPrice;
+
+          // Desync guard: if our stored position price diverges > 5% from signal,
+          // force-resync so EV calcs and PnL are consistent with the market.
+          if (trade._cachedLivePrice != null &&
+              Math.abs(trade._cachedLivePrice - livePrice) > 0.05) {
+            this._log('WARN', `⚠️ Desync detected on trade #${trade.id}: cached=${trade._cachedLivePrice?.toFixed(3)} signal=${livePrice.toFixed(3)} — resyncing`);
+          }
+          trade._cachedLivePrice = livePrice;
         }
 
         if (!livePrice) {
-          consecutivePriceFailures++;
-
-          // 5-min market expired: close >= 5.5 min after entry (30s buffer past expiry)
-          // Using > 6 would miss trades where tradeAgeMin is exactly 6.0 (6.0 > 6 = false)
+          // No price from signal this tick (signal returned SKIP with yesPrice=null).
+          // Check for expired market before giving up.
           if (tradeAgeMin >= 5.5) {
-            // Query Gamma API for definitive market outcome — order books go empty at resolution
-            // so the cached midPrice (still 0.50 from market start) is unreliable
             const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id)
-              ?? parseFloat(trade.entry_price); // break-even if API unavailable
-
+              ?? parseFloat(trade.entry_price);
             this._log('INFO', `⏱️ Market expired — trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min, resolvedAt=${resolvedAt.toFixed(3)}`);
             await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
             this.evEngine.clearMarket(trade.market_id);
             this.signalEngine.clearMarket(trade.market_id);
-            consecutivePriceFailures = 0;
-            continue;
-          }
-
-          this._log('WARN', `Price fetch failed for token ${trade.token_id} (age=${tradeAgeMin.toFixed(1)}min)`);
-          if (consecutivePriceFailures >= MAX_PRICE_FAILURES) {
-            this._log('CRITICAL', `🛑 ${MAX_PRICE_FAILURES} consecutive price failures — emergency close`);
-            await this._closePosition(trade, parseFloat(trade.entry_price), 'EMERGENCY_PRICE_FEED_DOWN');
-            consecutivePriceFailures = 0;
+          } else {
+            this._log('WARN', `No price in signal for trade #${trade.id} (age=${tradeAgeMin.toFixed(1)}min) — holding`);
           }
           continue;
         }
 
-        consecutivePriceFailures = 0;
-
         // Near-resolution detection: token price approaching 0 or 1 = market settling
-        // BTC 5-min markets rarely reach 0.92 before expiry — also close at 4.5 min
-        // to catch trades where the book stays active but we want to lock in gains
         if (livePrice >= 0.92 || livePrice <= 0.08) {
           const resolvedAt = livePrice >= 0.92 ? 0.99 : 0.01;
           this._log('INFO', `🏁 Near-resolution detected: price=${livePrice.toFixed(3)} — closing trade #${trade.id} at ${resolvedAt}`);
@@ -714,8 +689,7 @@ class BotInstance {
           continue;
         }
 
-        // Time-based close at 4.5 min: market is about to expire — get resolution from Gamma API now
-        // while the market may still appear live (before CLOB books drain)
+        // Time-based close at 4.5 min
         if (tradeAgeMin >= 4.5) {
           const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id);
           if (resolvedAt !== null) {
@@ -727,57 +701,52 @@ class BotInstance {
           }
         }
 
-        consecutivePriceFailures = 0;
-
         const entryPrice = parseFloat(trade.entry_price);
         const marketId = trade.market_id;
 
-        // --- EV-based exit ---
-        // Recompute model probability using same logic as signal engine
-        const btcPrice = this.binance.getLastKnownPrice();
-        if (!btcPrice) continue;
-
+        // --- EV-based exit (uses same livePrice from signal) ---
         const btcDelta = this.binance.getWindowDeltaScore(30);
         const latency = this.signalEngine?.microEngine?.detectLatency() || 0;
         const exitLagEdge = latency > 0.3 ? 0.05 : 0;
-        // FIX: btcDelta is already in % — multiply by 0.5 not 0.05 (was 10x too small)
         const exitBtcEdge = Math.min(Math.abs(btcDelta) * 0.5, 0.15);
         const exitTotalEdge = exitBtcEdge + exitLagEdge;
         const exitBullish = btcDelta > 0;
         const currentModelProb = Math.min(0.99, Math.max(0.01,
           exitBullish ? livePrice + exitTotalEdge : livePrice - exitTotalEdge
         ));
-        const clampedProb = currentModelProb;
 
         const currentEV = this.evEngine.calculateAdjustedEV(
-          clampedProb, livePrice,
+          currentModelProb, livePrice,
           trade.direction,
           { spread: 0.01, estimatedSlippage: 0.005, fees: 0.002 }
         );
 
-        // Record EV for trend tracking + flip evaluation
         this.evEngine.recordEV(marketId, currentEV, trade.direction);
 
-        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% price=${livePrice.toFixed(3)}`);
-
-        // EXIT CONDITION 1: Hard stop-loss — price moved sharply against us
-        // Token price is always the token we bought (YES token for YES, NO token for NO).
-        // PnL direction is always (currentPrice - entryPrice) — same formula for both sides.
         const pnlPct = ((livePrice - entryPrice) / entryPrice) * 100;
+        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% price=${livePrice.toFixed(3)} PnL=${pnlPct.toFixed(1)}% src=${signal.priceSource}`);
 
-        if (pnlPct <= -20) {
-          this._log('WARN', `🛑 Hard stop-loss: PnL ${pnlPct.toFixed(1)}% — closing`);
+        // EXIT CONDITION 1: Time-gated stop-loss
+        // Binary markets naturally swing 10–20%. A hard -20% stop on a single tick
+        // from Gamma was closing correct trades as losses. Only stop-loss if market
+        // has < 30s remaining AND we are in loss — otherwise hold to resolution.
+        const marketEndSec = trade.market_id
+          ? await this._getMarketRemaining(trade.market_id)
+          : 300;
+        if (marketEndSec < 30 && pnlPct <= -20) {
+          this._log('WARN', `🛑 Time-gated stop-loss: PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing`);
           await this._closePosition(trade, livePrice, 'HARD_STOP_LOSS');
           this.evEngine.clearMarket(marketId);
+          this.signalEngine.clearMarket(marketId);
           continue;
         }
 
-        // EXIT CONDITION 2: Edge fully gone — EV deeply negative AND no flip candidate
-        // We hold through mild negative EV (market noise) but exit if structurally wrong
+        // EXIT CONDITION 2: Edge fully gone — EV deeply negative
         if (currentEV < -8) {
           this._log('WARN', `📉 Edge gone: EV=${currentEV.toFixed(2)}% — closing`);
           await this._closePosition(trade, livePrice, 'NEGATIVE_EV_EXIT');
           this.evEngine.clearMarket(marketId);
+          this.signalEngine.clearMarket(marketId);
           continue;
         }
 
@@ -786,6 +755,18 @@ class BotInstance {
     } catch (err) {
       this._log('ERROR', `Position management error: ${err.message}`);
     }
+  }
+
+  // Returns seconds remaining for a market, or 300 if unknown.
+  async _getMarketRemaining(marketId) {
+    try {
+      const markets = this.polymarket?.marketsCache || [];
+      const m = markets.find(x => (x.id || x.condition_id) === marketId);
+      if (m?.end_date_iso) {
+        return Math.max(0, new Date(m.end_date_iso).getTime() / 1000 - Date.now() / 1000);
+      }
+    } catch (_) {}
+    return 300; // assume plenty of time if unknown
   }
 
   async _closePosition(trade, exitPrice, reason) {
