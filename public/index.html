@@ -392,17 +392,108 @@
     .section-poly   { border-left: 3px solid var(--yellow); }
 
     /* ─── RESPONSIVE ─── */
+
+    /* Named utility classes for inline grids — allows media queries to target them */
+    .grid-5col  { display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-bottom: 12px; }
+    .grid-4col  { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 12px; }
+    .grid-3col  { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; margin-bottom: 16px; }
+    .grid-2col  { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid-strategy { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; }
+    .grid-lab-main { display: grid; grid-template-columns: 1fr 340px; gap: 12px; margin-bottom: 12px; }
+
     @media (max-width: 900px) {
-      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-      .gates-grid   { grid-template-columns: 1fr 1fr !important; }
-      .stat-strip   { grid-template-columns: repeat(3, 1fr) !important; }
+      .metrics-grid   { grid-template-columns: repeat(2, 1fr); }
+      .gates-grid     { grid-template-columns: 1fr 1fr !important; }
+      .stat-strip     { grid-template-columns: repeat(3, 1fr) !important; }
       .pro-metrics-grid { grid-template-columns: repeat(2, 1fr); }
-      .nav-links { display: none; }
+
+      /* Nav: hide text labels, show icons via abbreviated text */
+      .nav-links .nav-link { padding: 0 10px; font-size: 10px; letter-spacing: 0.5px; }
+      #userEmail { display: none; }
+
+      /* Inline grids */
+      .grid-5col  { grid-template-columns: repeat(3, 1fr); }
+      .grid-4col  { grid-template-columns: repeat(2, 1fr); }
+      .grid-3col  { grid-template-columns: 1fr 1fr; gap: 12px; }
+      .grid-lab-main { grid-template-columns: 1fr; }
+
+      /* Status banner: stack controls below text */
+      .status-banner { flex-wrap: wrap; gap: 10px; }
+      .status-buttons { width: 100%; justify-content: flex-start; }
+
+      /* Tables: allow horizontal scroll */
+      .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+      /* Session bar: wrap items */
+      #sessionBar { flex-wrap: wrap; gap: 8px; }
+    }
+
+    @media (max-width: 600px) {
+      .container { padding: 10px; }
+
+      /* Nav: collapse to icon-only scrollable strip */
+      .nav-container { padding: 0 10px; }
+      .logo { font-size: 13px; letter-spacing: 2px; padding-right: 12px; margin-right: 0; }
+      .nav-links { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+      .nav-links::-webkit-scrollbar { display: none; }
+      .nav-links .nav-link { padding: 0 8px; font-size: 9px; white-space: nowrap; }
+      .btn-logout { display: none; }
+
+      /* Grids collapse to 2-col or 1-col */
+      .metrics-grid   { grid-template-columns: 1fr 1fr; }
+      .stat-strip     { grid-template-columns: repeat(2, 1fr) !important; }
+      .gates-grid     { grid-template-columns: 1fr 1fr !important; }
+      .pro-metrics-grid { grid-template-columns: repeat(2, 1fr); }
+      .grid-5col      { grid-template-columns: repeat(2, 1fr); }
+      .grid-4col      { grid-template-columns: repeat(2, 1fr); }
+      .grid-3col      { grid-template-columns: 1fr; }
+      .grid-2col      { grid-template-columns: 1fr; }
+      .grid-strategy  { grid-template-columns: 1fr; }
+      .grid-lab-main  { grid-template-columns: 1fr; }
+
+      /* Metric values: slightly smaller on tiny screens */
+      .metric-value { font-size: 18px; }
+      .stat-val     { font-size: 16px; }
+      .pro-metric-val { font-size: 16px; }
+
+      /* Status banner */
+      .status-banner { padding: 10px 12px; }
+      #modeIndicator { font-size: 9px; padding: 3px 8px; }
+
+      /* Panel body padding */
+      .panel-body { padding: 10px; }
+      .form-section { padding: 14px; }
+
+      /* Signals grid: compress columns */
+      .signals-header,
+      .signal-row { font-size: 10px !important; }
+
+      /* Page title */
+      .page-title { font-size: 15px; }
+
+      /* Tabs: scrollable */
+      .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex-wrap: nowrap; }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab { white-space: nowrap; padding: 10px 12px; font-size: 9px; }
+
+      /* Trade filter buttons: wrap */
+      #tradeFilterRow { flex-wrap: wrap; }
+
+      /* Session history modal */
+      #sessionHistoryModal > div { width: 100vw !important; max-height: 95vh !important; border-radius: 0 !important; }
+    }
+
+    /* Copy-targets / settings form grids */
+    @media (max-width: 900px) {
+      .grid-trade-stats { grid-template-columns: repeat(3, 1fr) !important; }
     }
     @media (max-width: 600px) {
-      .metrics-grid { grid-template-columns: 1fr 1fr; }
-      .stat-strip { grid-template-columns: repeat(2, 1fr) !important; }
-      .container { padding: 12px; }
+      .grid-trade-stats { grid-template-columns: repeat(2, 1fr) !important; }
+    }
+
+    @media (max-width: 420px) {
+      .grid-5col  { grid-template-columns: 1fr 1fr; }
+      .gate-card  { padding: 10px; }
     }
   </style>
   <script src="/config.js"></script>
@@ -556,7 +647,7 @@
   </div>
 
   <!-- Trade Performance P&L strip -->
-  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px;">
+  <div class="grid-5col">
     <div class="panel" style="margin:0;">
       <div class="panel-body" style="padding:10px 14px;">
         <div style="font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Balance</div>
@@ -624,7 +715,7 @@
       <span class="panel-title">Strategy</span>
       <span style="font-size:10px;color:var(--text-muted);letter-spacing:1px;">GBM SIGNAL ENGINE</span>
     </div>
-    <div class="panel-body" style="padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;">
+    <div class="panel-body grid-strategy" style="padding:12px 16px;">
       <!-- Left col -->
       <div>
         <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:6px;">MARKET</div>
@@ -736,7 +827,7 @@
   </div>
 
   <!-- 2-col bottom row -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+  <div class="grid-2col">
     <!-- Claude widget -->
     <div class="claude-widget" style="margin:0;">
       <div class="claude-header">
@@ -861,7 +952,7 @@
       </div>
 
       <!-- Metric grid -->
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0;border-bottom:1px solid var(--border);">
+      <div class="grid-5col" style="gap:0;margin-bottom:0;border-bottom:1px solid var(--border);">
         <div style="padding:12px 16px;border-right:1px solid var(--border);">
           <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">BTC Price</div>
           <div id="lvBTCPrice" style="font-size:18px;font-weight:700;color:var(--text-hi);">—</div>
@@ -930,7 +1021,7 @@
   <div class="page-title"><span>▸</span> TRADE HISTORY</div>
 
   <!-- P&L Statement bar -->
-  <div id="tradeSummaryBar" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">
+  <div id="tradeSummaryBar" class="grid-4col">
     <!-- Revenue -->
     <div class="panel" style="margin:0;border-color:rgba(0,232,122,0.3);">
       <div class="panel-body" style="padding:12px 14px;">
@@ -1013,7 +1104,7 @@
   <div class="panel">
     <div class="panel-header"><span class="panel-title">Analysis Control</span></div>
     <div class="panel-body">
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:16px;">
+      <div class="grid-3col">
         <div>
           <div style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Trades Analyzed</div>
           <div style="font-size:24px;font-weight:700;color:var(--text-hi);" id="totalAnalyzed">0</div>
@@ -1274,7 +1365,7 @@
   </div>
 
   <!-- Summary KPI bar -->
-  <div id="labKpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:6px;">
+  <div id="labKpis" class="grid-4col" style="gap:6px;margin-bottom:6px;">
     <div class="panel" style="padding:10px;text-align:center;">
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">TOTAL PnL</div>
       <div id="lkTotalPnl" style="font-size:18px;font-weight:700;color:var(--green);">—</div>
@@ -1292,7 +1383,7 @@
       <div id="lkExpectancy" style="font-size:18px;font-weight:700;">—</div>
     </div>
   </div>
-  <div id="labKpis2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px;">
+  <div id="labKpis2" class="grid-4col" style="gap:6px;margin-bottom:12px;">
     <div class="panel" style="padding:10px;text-align:center;">
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">SHARPE</div>
       <div id="lkSharpe" style="font-size:18px;font-weight:700;">—</div>
@@ -1314,7 +1405,7 @@
   </div>
 
   <!-- Two column layout: charts + params -->
-  <div style="display:grid;grid-template-columns:1fr 340px;gap:12px;margin-bottom:12px;">
+  <div class="grid-lab-main">
 
     <!-- Left: P&L curve -->
     <div class="panel">
@@ -1395,7 +1486,7 @@
   </div>
 
   <!-- Bottom row: breakdowns -->
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;">
+  <div class="grid-3col" style="gap:12px;">
 
     <!-- By Direction -->
     <div class="panel">
@@ -2276,7 +2367,7 @@
           </div>
 
           <!-- Main stats row -->
-          <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:end;">
+          <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:end;flex-wrap:wrap;" class="grid-trade-stats">
             <div>
               <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;">Direction</div>
               <div style="font-size:14px;font-weight:700;color:${dirColor};">${dirLabel}</div>
