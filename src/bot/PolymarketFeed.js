@@ -453,6 +453,47 @@ class PolymarketFeed {
       throw err;
     }
   }
+
+  /**
+   * Cancel a resting GTC limit order.
+   * Returns true if the cancel request was accepted, false on error.
+   */
+  async cancelOrder(orderId) {
+    try {
+      if (!this.clobClient) throw new Error('CLOB client not initialized');
+      await this.clobClient.cancelOrder({ orderID: orderId });
+      console.log(`[PolymarketFeed] Order ${orderId} cancelled`);
+      return true;
+    } catch (err) {
+      console.error(`[PolymarketFeed] cancelOrder failed for ${orderId}: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Poll the status of a placed order.
+   * Returns { status, sizeMatched, sizeTotal, isFilled, isPartial } or null on error.
+   * status values: 'LIVE' (resting), 'MATCHED' (fully filled), 'CANCELLED'
+   */
+  async getOrderStatus(orderId) {
+    try {
+      if (!this.clobClient) throw new Error('CLOB client not initialized');
+      const order = await this.clobClient.getOrder(orderId);
+      if (!order) return null;
+      const sizeMatched = parseFloat(order.size_matched ?? order.sizeMatched ?? 0);
+      const sizeTotal   = parseFloat(order.size ?? order.original_size ?? 0);
+      return {
+        status:     order.status || 'UNKNOWN',
+        sizeMatched,
+        sizeTotal,
+        isFilled:  order.status === 'MATCHED',
+        isPartial: sizeMatched > 0 && sizeMatched < sizeTotal
+      };
+    } catch (err) {
+      console.error(`[PolymarketFeed] getOrderStatus failed for ${orderId}: ${err.message}`);
+      return null;
+    }
+  }
 }
 
 module.exports = PolymarketFeed;

@@ -219,6 +219,23 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
         ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4);
 
+      ALTER TABLE copy_targets
+        ADD COLUMN IF NOT EXISTS min_confirmations INTEGER DEFAULT 1;
+
+    `);
+
+    // whale_performance — tracks historical performance per copy target address
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS whale_performance (
+        id SERIAL PRIMARY KEY,
+        target_address VARCHAR(255) NOT NULL UNIQUE,
+        total_trades INTEGER DEFAULT 0,
+        win_trades INTEGER DEFAULT 0,
+        total_pnl DECIMAL DEFAULT 0,
+        avg_latency_ms INTEGER DEFAULT 0,
+        last_updated TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_whale_perf_address ON whale_performance(target_address);
     `);
 
     // Ensure legacy 'size' column has no NOT NULL constraint (old schema had it; new schema uses trade_size)

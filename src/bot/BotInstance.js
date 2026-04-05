@@ -36,6 +36,11 @@ class BotInstance {
     // Slippage tracking
     this.slippageHistory = []; // { expected, actual, difference, timestamp }
 
+    // Pending orders — placed but not yet confirmed filled or cancelled
+    // Map<orderId, { orderId, isPaper, tokenId, side, limitPrice, referencePrice,
+    //                dollarSize, direction, market, signal, placedAt, lastCheckedPrice }>
+    this._pendingOrders = new Map();
+
     // Logs
     this.decisionLog = [];
     this.maxLogEntries = 100;
@@ -146,6 +151,9 @@ class BotInstance {
       // if (!canTrade) return;
       // const dailyLimitHit = await this._checkDailyLossLimit();
       // if (dailyLimitHit) return;
+
+      // --- Monitor pending orders (fill / cancel / adverse-selection) ---
+      await this._monitorPendingOrders();
 
       // --- Manage open positions (EV-based exits + flips) ---
       await this._manageOpenPositions();
@@ -303,148 +311,279 @@ class BotInstance {
   }
 
   // ==========================================
-  // TRADE EXECUTION
+  // TRADE EXECUTION — ORDER LIFECYCLE
+  //
+  // Flow: signal → _executeTrade → _pendingOrders map
+  //               → _monitorPendingOrders (every tick)
+  //               → fill confirmed → _recordFilledTrade → trades DB
+  //
+  // Paper and live use the same code path. The only difference is:
+  //   live: sends createAndPostOrder to Polymarket CLOB + polls getOrderStatus
+  //   paper: synthesises a fill by checking whether market moved to our limit
+  //
+  // This ensures paper P&L is realistic — orders can and do go unfilled.
   // ==========================================
 
   async _executeTrade(signal) {
     const { direction, tokenId, market, confidence, evAdj, modelProb, marketId, fillProb } = signal;
+    const TICK = 0.01;
+    const ORDER_TIMEOUT_MS = 10000; // cancel if still resting after 10s
 
     // ── 1. Token ID safety check ──────────────────────────────────────────────
-    // Gamma markets sometimes return tokens[] with no `outcome` field; the IDs
-    // come from clobTokenIds. If tokenId is still missing/undefined, abort.
     if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
-      this._log('WARN', `[SKIP] No valid tokenId for ${direction} trade — token IDs missing from market data. marketId=${marketId}`);
+      this._log('WARN', `[SKIP] No valid tokenId for ${direction} trade — marketId=${marketId}`);
       return;
     }
 
-    // ── 2. Fetch lastTradePrice — the REAL execution price ───────────────────
-    // 5-min BTC markets always have boundary order books (bid=0.01, ask=0.99, spread=98%).
-    // The book spread does NOT reflect real market price — it's resting boundary liquidity.
-    // Real fills happen at lastTradePrice (~0.505) via GTC limit orders at fair value.
-    // We do NOT use book ASK (would pay 0.99) or Gamma mid (unreliable).
-    // Docs: "If spread > $0.10, last traded price is shown instead of midpoint."
+    // ── 2. Prevent duplicate pending orders for the same token ───────────────
+    const alreadyPending = [...this._pendingOrders.values()].some(o => o.tokenId === tokenId);
+    if (alreadyPending) {
+      this._log('INFO', `[SKIP] Pending order already exists for token ${tokenId?.slice(0,12)}... — skipping duplicate`);
+      return;
+    }
+
+    // ── 3. Fetch lastTradePrice with freshness guarantee ─────────────────────
+    // Fetched live — AbortSignal.timeout(4000) in getLastTradePrice ensures we
+    // never use a stale cached value. If fetch fails, skip the trade.
+    const priceFetchedAt = Date.now();
     const lastTradePrice = await this.polymarket.getLastTradePrice(tokenId);
     if (!lastTradePrice) {
-      this._log('WARN', `[SKIP] No lastTradePrice for token ${tokenId?.slice(0,12)}... — cannot determine fair execution price`);
+      this._log('WARN', `[SKIP] No lastTradePrice for ${tokenId?.slice(0,12)}... — cannot determine fair value`);
       return;
     }
 
-    // ── 3. Validate price is in tradeable range ───────────────────────────────
-    // Skip if price is clearly invalid or at resolution extremes.
+    // ── 4. Stale price guard ──────────────────────────────────────────────────
+    // If the fetch itself took too long (network slow), the price may no longer
+    // reflect the current market. Reject if the fetch took > 5s.
+    const fetchLatencyMs = Date.now() - priceFetchedAt;
+    if (fetchLatencyMs > 5000) {
+      this._log('WARN', `[SKIP] Price fetch took ${fetchLatencyMs}ms — too slow, price may be stale`);
+      return;
+    }
+
+    // ── 5. Tradeable range check ──────────────────────────────────────────────
     if (lastTradePrice <= 0.02 || lastTradePrice >= 0.98) {
-      this._log('WARN', `[SKIP] lastTradePrice=${lastTradePrice.toFixed(4)} is near resolution boundary — market may be settling`);
+      this._log('WARN', `[SKIP] lastTradePrice=${lastTradePrice.toFixed(4)} near resolution boundary`);
       return;
     }
 
-    this._log('INFO', `[EXEC] lastTradePrice=${lastTradePrice.toFixed(4)} — GTC limit order will rest at fair value`);
-
-    // ── 4. Entry price for sizing and recording ───────────────────────────────
-    // For live orders: placeOrder adds 1 tick (0.01) to lastTradePrice to improve
-    // fill probability. We record lastTradePrice as the entry for EV/PnL tracking.
-    // Paper trading simulates slippage: +0.5¢ to reflect real-world fill cost.
-    let entryPrice = lastTradePrice;
-    if (this.settings.paper_trading) {
-      entryPrice = Math.min(0.98, parseFloat((lastTradePrice + 0.005).toFixed(4)));
-      this._log('INFO', `[PAPER] Simulated fill: lastTrade=${lastTradePrice.toFixed(4)} + 0.5¢ slip → entry=${entryPrice.toFixed(4)}`);
-    }
-
-    // ── 6. Kelly Criterion at REAL execution price ────────────────────────────
-    // modelProb is P(YES) from GBM signal. For NO trades, flip to P(NO resolves).
-    // b = payout ratio at real ask price (not mid-price).
+    // ── 6. Kelly position sizing at lastTradePrice ────────────────────────────
+    // Use lastTradePrice as the execution price for Kelly (not signal.entryPrice).
+    // modelProb comes from GBM signal engine — for NO trades, flip to P(NO resolves).
     const mProb = direction === 'NO'
-      ? Math.min(0.99, Math.max(0.01, 1 - (modelProb || entryPrice)))
-      : Math.min(0.99, Math.max(0.01, modelProb || entryPrice));
-    const b = (1 / entryPrice) - 1;
+      ? Math.min(0.99, Math.max(0.01, 1 - (modelProb || lastTradePrice)))
+      : Math.min(0.99, Math.max(0.01, modelProb || lastTradePrice));
+    const b = (1 / lastTradePrice) - 1;
     let kellyFraction = b > 0 ? Math.max(0, (mProb * b - (1 - mProb)) / b) : 0;
 
-    // Kelly cap from settings (default 25%)
     const kellyCap = parseFloat(this.settings.kelly_cap) || 0.25;
     kellyFraction = Math.min(kellyFraction, kellyCap);
-    kellyFraction *= (fillProb || 1.0);
+    kellyFraction *= (fillProb || 1.0); // scale by expected fill probability from signal
 
     if (kellyFraction <= 0) {
-      this._log('WARN', `[SKIP] Kelly=0 at real ask=${entryPrice.toFixed(4)} — signal had edge at mid=${signal.entryPrice?.toFixed(4)} but not at real execution price. No trade.`);
+      this._log('WARN', `[SKIP] Kelly=0 at lastTrade=${lastTradePrice.toFixed(4)}`);
       return;
     }
 
-    // ── 7. Position sizing — hard cap $5 per trade at real market price ───────
-    // Max trade size = $5, valued at the real live ask price (not a cached or mid price).
-    // This prevents runaway sizing regardless of balance or Kelly fraction.
     const MAX_TRADE_DOLLARS = 5.00;
-
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
     if (!balance || isNaN(balance) || balance <= 0) {
-      this._log('WARN', `Invalid balance=${balance}. Skipping trade.`);
+      this._log('WARN', `Invalid balance=${balance} — skipping`);
       return;
     }
 
-    // Kelly size based on real ask price, then hard-capped at $5
-    const kellySize = parseFloat((balance * kellyFraction).toFixed(2));
-    const tradeSize = Math.min(kellySize, MAX_TRADE_DOLLARS);
-
+    const tradeSize = Math.min(parseFloat((balance * kellyFraction).toFixed(2)), MAX_TRADE_DOLLARS);
     if (tradeSize < 1) {
-      this._log('WARN', `[SKIP] Trade size $${tradeSize.toFixed(2)} < $1 minimum — insufficient balance or Kelly fraction too small`);
+      this._log('WARN', `[SKIP] Trade size $${tradeSize.toFixed(2)} < $1 minimum`);
       return;
     }
-
     if (this.settings.paper_trading && this.paperBalance < tradeSize) {
-      this._log('WARN', `Insufficient paper balance: $${this.paperBalance.toFixed(2)} < $${tradeSize.toFixed(2)}`);
-      return;
-    }
-    if (!isFinite(tradeSize) || isNaN(tradeSize) || tradeSize <= 0) {
-      this._log('ERROR', `Invalid tradeSize=${tradeSize} — aborting trade`);
+      this._log('WARN', `Insufficient paper balance $${this.paperBalance.toFixed(2)} < $${tradeSize.toFixed(2)}`);
       return;
     }
 
-    this._log('INFO', `📊 Signal: ${direction} on "${market.question}"`);
-    this._log('INFO', `   Entry: ${entryPrice.toFixed(4)}, Size: $${tradeSize.toFixed(2)}, Kelly: ${(kellyFraction * 100).toFixed(1)}%, EV_adj: ${evAdj.toFixed(2)}%, Model: ${mProb.toFixed(3)}`);
+    // Limit price: 1 tick above lastTradePrice for buys (improves fill probability).
+    // Snapped to tick grid. This is also the price we use for slippage tracking.
+    const limitPrice = Math.min(0.99, parseFloat((Math.ceil(lastTradePrice / TICK) * TICK + TICK).toFixed(2)));
 
-    // ── 8. Execute — paper vs live ────────────────────────────────────────────
+    this._log('INFO', `📊 ${direction} "${market.question?.slice(0,40)}" — ref=${lastTradePrice.toFixed(4)} limit=${limitPrice.toFixed(2)} size=$${tradeSize.toFixed(2)} kelly=${(kellyFraction*100).toFixed(1)}% EV=${evAdj.toFixed(2)}%`);
+
+    // ── 7. Place order and add to pending map ─────────────────────────────────
+    const pendingBase = {
+      tokenId, side: 'BUY', limitPrice,
+      referencePrice: lastTradePrice, // price when order was created — used for adverse-selection check
+      dollarSize: tradeSize,
+      direction, market, signal,
+      placedAt: Date.now(),
+      lastCheckedPrice: lastTradePrice
+    };
+
     if (this.settings.paper_trading) {
-      // Paper: debit balance, record at simulated fill price (ask + slippage)
-      this.paperBalance -= tradeSize;
-      await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2', [this.paperBalance, this.userId]);
-
-      await pool.query(`
-        INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'open', 'signal', $8, $9, $10, $11, $12)
-      `, [
-        this.userId, marketId, market.question, tokenId, direction,
-        entryPrice, tradeSize, confidence, evAdj,
-        signal.log?.gates?.gate1?.confidence || 0,
-        signal.log?.gates?.gate2?.bestEV || 0,
-        signal.log?.gates?.gate3?.emaEdge || 0
-      ]);
-
-      this._recordSlippage(lastTradePrice, entryPrice);
-      this._log('INFO', `📝 Paper trade recorded at ${entryPrice.toFixed(4)} (lastTrade=${lastTradePrice.toFixed(4)}). Balance: $${this.paperBalance.toFixed(2)}`);
+      // Paper: create a synthetic order ID — no API call needed
+      const paperId = `paper_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      this._pendingOrders.set(paperId, { ...pendingBase, orderId: paperId, isPaper: true });
+      this._log('INFO', `📋 [PAPER] Order resting: ${direction} limit=${limitPrice.toFixed(2)} $${tradeSize.toFixed(2)} — fill check in next tick(s)`);
 
     } else {
-      // Live: place real order on Polymarket CLOB
-      // placeOrder handles: tokenID field name, token size conversion ($/price), createAndPostOrder
+      // Live: send to Polymarket CLOB
       try {
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
-        // Prefer actual fill price from response; fall back to limit price
-        const actualFillPrice = order?.price || order?.averagePrice || entryPrice;
-
-        await pool.query(`
-          INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'open', 'signal', $8, $9, $10, $11, $12)
-        `, [
-          this.userId, marketId, market.question, tokenId, direction,
-          actualFillPrice, tradeSize, confidence, evAdj,
-          signal.log?.gates?.gate1?.confidence || 0,
-          signal.log?.gates?.gate2?.bestEV || 0,
-          signal.log?.gates?.gate3?.emaEdge || 0
-        ]);
-
-        this._recordSlippage(lastTradePrice, actualFillPrice);
-        this._log('INFO', `🔥 LIVE trade executed. LastTrade=${lastTradePrice.toFixed(4)} LimitPrice=${entryPrice.toFixed(4)} Fill=${actualFillPrice.toFixed(4)}`);
+        const orderId = order?.orderID || order?.order_id || order?.id;
+        if (!orderId) {
+          this._log('WARN', `[LIVE] Order placed but no orderId returned — cannot monitor fill`);
+          return;
+        }
+        this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: order.price || limitPrice });
+        this._log('INFO', `🔥 [LIVE] Order ${orderId} resting at ${(order.price || limitPrice).toFixed(2)} — monitoring fill`);
       } catch (err) {
-        this._log('ERROR', `Live trade failed: ${err.message}`);
-        return;
+        this._log('ERROR', `[LIVE] placeOrder failed: ${err.message}`);
       }
     }
+  }
+
+  // ==========================================
+  // ORDER MONITORING — fill, cancel, adverse selection
+  // Called every main loop tick, before signal evaluation.
+  // ==========================================
+
+  async _monitorPendingOrders() {
+    if (this._pendingOrders.size === 0) return;
+
+    const ORDER_TIMEOUT_MS = 10000; // 10s: cancel resting orders older than this
+    const TICK = 0.01;
+    const ADVERSE_TICKS = 2; // cancel if market moves 2 ticks against our limit
+
+    for (const [orderId, pending] of this._pendingOrders) {
+      const age = Date.now() - pending.placedAt;
+
+      // ── Timeout: cancel if resting too long ──────────────────────────────
+      if (age > ORDER_TIMEOUT_MS) {
+        if (!pending.isPaper) {
+          try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
+        }
+        this._log('WARN', `⏱️ Order ${orderId.slice(0,12)}... timed out after ${(age/1000).toFixed(1)}s — unfilled, discarded`);
+        this._pendingOrders.delete(orderId);
+        continue;
+      }
+
+      if (pending.isPaper) {
+        await this._checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS);
+      } else {
+        await this._checkLiveFill(orderId, pending, TICK, ADVERSE_TICKS);
+      }
+    }
+  }
+
+  // Paper fill simulation — stochastic model based on distance + time
+  async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
+    const currentPrice = await this.polymarket.getLastTradePrice(pending.tokenId);
+    if (!currentPrice) return; // can't check — wait for next tick
+
+    pending.lastCheckedPrice = currentPrice;
+
+    // Adverse selection: market moved 2+ ticks against our BUY limit.
+    // Example: limit=0.52, market dropped to 0.49 → we'd be buying above market.
+    // This reflects real-world scenario where informed sellers push price down.
+    if (currentPrice < pending.limitPrice - ADVERSE_TICKS * TICK) {
+      this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} but market=${currentPrice.toFixed(3)} (-${((pending.limitPrice - currentPrice)/TICK).toFixed(0)} ticks) — cancelling`);
+      this._pendingOrders.delete(orderId);
+      return;
+    }
+
+    // Fill probability model:
+    //   dist=0 ticks → high base fill prob (0.75)
+    //   dist=1 tick  → moderate (0.50)
+    //   dist=2 ticks → low (0.20)
+    //   dist=3+ ticks → very low (0.05)
+    // Time factor adds up to +0.3 over 8 seconds (orders rest longer = more fill chances)
+    const timeSincePlaced = Date.now() - pending.placedAt;
+    const dist = Math.abs(pending.limitPrice - currentPrice);
+    const distanceFactor = Math.max(0.05, 1 - dist / (3 * TICK));   // 0.05 at 3+ ticks
+    const timeFactor = Math.min(0.3, timeSincePlaced / 8000 * 0.3); // ramps to 0.3 over 8s
+    const atMarket = currentPrice >= pending.limitPrice - TICK ? 0.15 : 0; // bonus if at/near limit
+    const fillProb = Math.min(0.95, distanceFactor * 0.55 + timeFactor + atMarket);
+
+    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} dist=${(dist/TICK).toFixed(1)}ticks prob=${(fillProb*100).toFixed(0)}% age=${(timeSincePlaced/1000).toFixed(1)}s`);
+
+    if (Math.random() < fillProb) {
+      // Filled at our limit price (maker fill — we set the price)
+      // Slight improvement on lastTradePrice if market moved in our favour
+      const fillPrice = parseFloat(Math.min(pending.limitPrice, currentPrice + TICK).toFixed(2));
+      this._log('INFO', `✅ [PAPER] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} (market=${currentPrice.toFixed(3)})`);
+      await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
+      this._pendingOrders.delete(orderId);
+    }
+  }
+
+  // Live fill check — poll order status + adverse selection cancel
+  async _checkLiveFill(orderId, pending, TICK, ADVERSE_TICKS) {
+    try {
+      const status = await this.polymarket.getOrderStatus(orderId);
+      if (!status) return;
+
+      if (status.isFilled) {
+        const fillDollars = status.sizeMatched * pending.limitPrice;
+        this._log('INFO', `✅ [LIVE] Order ${orderId.slice(0,12)} MATCHED @ ${pending.limitPrice.toFixed(4)} — $${fillDollars.toFixed(2)}`);
+        await this._recordFilledTrade(pending, pending.limitPrice, fillDollars);
+        this._pendingOrders.delete(orderId);
+        return;
+      }
+
+      if (status.status === 'CANCELLED') {
+        this._log('WARN', `🚫 [LIVE] Order ${orderId.slice(0,12)} was cancelled externally`);
+        this._pendingOrders.delete(orderId);
+        return;
+      }
+
+      if (status.isPartial) {
+        // Partial fill — accept what we got, cancel the rest
+        const fillDollars = status.sizeMatched * pending.limitPrice;
+        this._log('INFO', `📊 [LIVE] Partial fill ${orderId.slice(0,12)}: ${status.sizeMatched.toFixed(2)}/${status.sizeTotal.toFixed(2)} tokens = $${fillDollars.toFixed(2)}`);
+        try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
+        await this._recordFilledTrade(pending, pending.limitPrice, fillDollars);
+        this._pendingOrders.delete(orderId);
+        return;
+      }
+
+      // Still LIVE (resting) — check for adverse selection
+      const currentPrice = await this.polymarket.getLastTradePrice(pending.tokenId);
+      if (currentPrice && currentPrice < pending.limitPrice - ADVERSE_TICKS * TICK) {
+        this._log('WARN', `🚫 [LIVE] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} — cancelling order ${orderId.slice(0,12)}`);
+        try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
+        this._pendingOrders.delete(orderId);
+      }
+
+    } catch (err) {
+      this._log('WARN', `Order status check failed ${orderId.slice(0,12)}: ${err.message}`);
+    }
+  }
+
+  // Write confirmed fill to DB and update balance
+  async _recordFilledTrade(pending, fillPrice, fillDollars) {
+    const { direction, market, signal, tokenId } = pending;
+    const { confidence, evAdj } = signal;
+    const marketId = market?.id || market?.condition_id;
+
+    if (pending.isPaper) {
+      this.paperBalance -= fillDollars;
+      await pool.query('UPDATE bot_settings SET paper_balance=$1 WHERE user_id=$2', [this.paperBalance, this.userId]);
+    }
+
+    await pool.query(`
+      INSERT INTO trades (user_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'open', 'signal', $8, $9, $10, $11, $12)
+    `, [
+      this.userId, marketId, market?.question, tokenId, direction,
+      fillPrice, fillDollars, confidence, evAdj,
+      signal.log?.gates?.gate1?.confidence || 0,
+      signal.log?.gates?.gate2?.bestEV || 0,
+      signal.log?.gates?.gate3?.emaEdge || 0
+    ]);
+
+    this._recordSlippage(pending.referencePrice, fillPrice);
+
+    const slipTicks = Math.abs(fillPrice - pending.referencePrice) / 0.01;
+    this._log('INFO', `📝 Trade recorded: ${direction} fill=${fillPrice.toFixed(4)} ref=${pending.referencePrice.toFixed(4)} slip=${slipTicks.toFixed(1)} ticks size=$${fillDollars.toFixed(2)} balance=$${(pending.isPaper ? this.paperBalance : 0).toFixed(2)}`);
   }
 
   // ==========================================
