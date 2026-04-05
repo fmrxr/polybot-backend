@@ -333,6 +333,10 @@ class BotInstance {
   async _executeTrade(signal) {
     const { direction, tokenId, market, confidence, evAdj, modelProb, marketId, fillProb } = signal;
     const TICK = 0.01;
+
+    // Diagnostic: log what the signal engine sent vs what's in the order book
+    const ob = signal.orderBook;
+    console.log(`[_executeTrade] direction=${direction} entryPrice=${signal.entryPrice} bestBid=${ob?.bestBid} bestAsk=${ob?.bestAsk} mid=${ob?.midPrice}`);
     const ORDER_TIMEOUT_MS = 10000; // cancel if still resting after 10s
 
     // ── 1. Token ID safety check ──────────────────────────────────────────────
@@ -433,9 +437,24 @@ class BotInstance {
       return;
     }
 
-    // Limit price: 1 tick above lastTradePrice for buys (improves fill probability).
-    // Snapped to tick grid. This is also the price we use for slippage tracking.
-    const limitPrice = Math.min(0.99, parseFloat((Math.ceil(lastTradePrice / TICK) * TICK + TICK).toFixed(2)));
+    // Limit price: passive buy just inside the spread — at most at mid, ideally
+    // 1 tick above bestBid so the order rests in the book waiting for a seller.
+    // NEVER post above mid (= crossing the spread = immediate fill at ask price,
+    // which is what was happening when ceil()+TICK pushed the price above mid).
+    //
+    // If bestBid is 0.01 (boundary-only book), fall back to mid - 2 ticks so we
+    // don't post at 0.02 which also won't fill against any real liquidity.
+    //
+    // Floor rounding: Math.floor ensures we never round up past mid.
+    const bestBid = ob?.bestBid ?? 0;
+    const mid = ob?.midPrice ?? lastTradePrice;
+    const rawLimit = bestBid <= TICK
+      ? mid - 2 * TICK                       // boundary book fallback
+      : bestBid + TICK;                       // 1 tick above best bid
+    const limitPrice = Math.min(
+      mid,                                    // hard ceiling: never above mid
+      Math.floor(rawLimit * 100) / 100        // floor-round to 2dp (not Math.round)
+    );
 
     this._log('INFO', `📊 ${direction} "${market.question?.slice(0,40)}" — ref=${lastTradePrice.toFixed(4)} limit=${limitPrice.toFixed(2)} size=$${tradeSize.toFixed(2)} kelly=${(kellyFraction*100).toFixed(1)}% EV=${evAdj.toFixed(2)}%`);
 
