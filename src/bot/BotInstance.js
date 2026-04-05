@@ -342,13 +342,12 @@ class BotInstance {
   // ==========================================
 
   async _executeTrade(signal) {
-    const { direction, tokenId, market, confidence, evAdj, modelProb, marketId, fillProb } = signal;
+    const { direction, tokenId, market, evAdj, modelProb, marketId, fillProb } = signal;
     const TICK = 0.01;
 
     // Diagnostic: log what the signal engine sent vs what's in the order book
     const ob = signal.orderBook;
     console.log(`[_executeTrade] direction=${direction} entryPrice=${signal.entryPrice} bestBid=${ob?.bestBid} bestAsk=${ob?.bestAsk} mid=${ob?.midPrice}`);
-    const ORDER_TIMEOUT_MS = 10000; // cancel if still resting after 10s
 
     // ── 1. Token ID safety check ──────────────────────────────────────────────
     if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
@@ -654,21 +653,22 @@ class BotInstance {
 
         const tradeAgeMin = (Date.now() - new Date(trade.created_at).getTime()) / 60000;
 
-        // ── Single source of truth: signal.yesPrice ──────────────────────────
+        // ── Single source of truth: signal.yesPrice / signal.rawPrice ──────────
         // signal is evaluated once per tick at the top of _mainLoop.
-        // All price consumers in this loop use the same value — no independent
-        // Gamma calls, no getLastTradePrice(), no split-brain.
         //
-        // For YES trades: livePrice = yesPrice
-        // For NO trades:  livePrice = 1 - yesPrice (= noPrice)
+        // livePrice (smoothed) → all decisions: EV, gates, stop-loss trigger
+        // rawLivePrice (unsmoothed) → PnL marking only (more reactive to real moves)
+        //
+        // For YES trades: token price = yesPrice
+        // For NO trades:  token price = noPrice (= 1 - yesPrice)
         let livePrice = null;
+        let rawLivePrice = null;
         if (signal?.yesPrice != null) {
-          livePrice = trade.direction === 'NO' ? signal.noPrice : signal.yesPrice;
+          livePrice    = trade.direction === 'NO' ? signal.noPrice          : signal.yesPrice;
+          rawLivePrice = trade.direction === 'NO' ? 1 - (signal.rawPrice ?? signal.yesPrice)
+                                                  : (signal.rawPrice ?? signal.yesPrice);
 
-          // Desync guard: log if price jumped >10% relative to last observed value.
-          // Threshold is relative (not absolute) — on a 0.50 market, 5% absolute is
-          // only 0.025 which is within normal spread territory and would fire constantly.
-          // 10% relative means 0.50 → 0.55 which is a real unusual jump worth logging.
+          // Desync guard: log if smoothed price jumped >10% relative vs last tick.
           if (trade._cachedLivePrice != null) {
             const relDivergence = Math.abs(trade._cachedLivePrice - livePrice) / trade._cachedLivePrice;
             if (relDivergence > 0.10) {
@@ -738,8 +738,10 @@ class BotInstance {
 
         this.evEngine.recordEV(marketId, currentEV, trade.direction);
 
-        const pnlPct = ((livePrice - entryPrice) / entryPrice) * 100;
-        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% price=${livePrice.toFixed(3)} PnL=${pnlPct.toFixed(1)}% src=${signal.priceSource}`);
+        // PnL uses rawLivePrice (unsmoothed) — the smoothed price lags real moves
+        // and would understate losses near resolution. Decisions still use livePrice.
+        const pnlPct = (((rawLivePrice ?? livePrice) - entryPrice) / entryPrice) * 100;
+        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% smoothed=${livePrice.toFixed(3)} raw=${(rawLivePrice ?? livePrice).toFixed(3)} PnL=${pnlPct.toFixed(1)}% src=${signal.priceSource}`);
 
         // EXIT CONDITION 1: Time-gated stop-loss
         // pnlPct = (currentTokenPrice - entryPrice) / entryPrice * 100

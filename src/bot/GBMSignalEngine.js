@@ -18,30 +18,39 @@ class GBMSignalEngine {
     // Track signal timestamps for freshness
     this.lastSignalPrices = {}; // marketId -> { price, timestamp }
 
-    // Single-source-of-truth price cache: marketId -> smoothed yesPrice
-    // ALL price consumers (BotInstance, position manager) read from the returned signal.
-    // Nothing outside evaluate() recomputes or re-fetches price.
-    this._priceCache = {}; // marketId -> { smoothedPrice, priceSource, timestamp }
+    // Single-source-of-truth price cache: Map<marketId, { smoothedPrice, priceSource, timestamp }>
+    // Keyed ONLY by marketId. Cleared explicitly in clearMarket() — never reset per tick.
+    this._priceCache = new Map();
   }
 
-  // Exponential smoothing to suppress CLOB mid-price noise (alpha=0.25).
-  // Disabled in the last 60s — near resolution, price legitimately spikes hard
-  // toward 0 or 1 and smoothing would lag a real exit signal by several ticks.
+  // Adaptive EMA alpha based on seconds remaining in the 5-min window.
+  // Higher alpha = faster reaction. Near expiry, price moves decisively toward 0/1
+  // and we need to track it without lag.
+  //   >120s: smooth aggressively (noise suppression is the priority)
+  //   60–120s: moderate (balance noise vs signal)
+  //   <60s: fast (resolution spike must propagate immediately)
+  _adaptiveAlpha(remaining) {
+    if (remaining == null || remaining > 120) return 0.25;
+    if (remaining > 60) return 0.40;
+    return 0.65;
+  }
+
+  // Smooth price using adaptive alpha. rawPrice is always stored separately so
+  // callers can use it for PnL marking without smoothing-induced distortion.
   _smoothPrice(marketId, rawPrice, remaining) {
-    if (remaining != null && remaining < 60) return rawPrice;
-    const last = this._priceCache[marketId]?.smoothedPrice;
+    const last = this._priceCache.get(marketId)?.smoothedPrice;
     if (!last) return rawPrice;
-    return (1 - 0.25) * last + 0.25 * rawPrice;
+    const alpha = this._adaptiveAlpha(remaining);
+    return (1 - alpha) * last + alpha * rawPrice;
   }
 
   // Sanity filter: reject implausible single-tick spikes from CLOB mid-price only.
-  // Gamma outcomePrices are NOT filtered — they represent real market consensus and
-  // can legitimately jump 10-15%+ when news breaks. Filtering them would silently
-  // discard the most valuable price updates.
-  // Threshold is 25% (not 10%) — CLOB mid shouldn't move >25% in one tick.
+  // Gamma outcomePrices are NOT filtered — a 10–15%+ Gamma jump is real market
+  // consensus (news broke) and is the most valuable update we can receive.
+  // CLOB mid threshold: 25% — anything larger is a data artifact, not a real move.
   _sanityCheck(marketId, rawPrice, priceSource) {
     if (priceSource === 'gamma') return rawPrice;
-    const last = this._priceCache[marketId]?.smoothedPrice;
+    const last = this._priceCache.get(marketId)?.smoothedPrice;
     if (!last) return rawPrice;
     return Math.abs(rawPrice - last) > 0.25 ? last : rawPrice;
   }
@@ -85,7 +94,7 @@ class GBMSignalEngine {
 
       if (!btcPrice) {
         log.reason = 'No BTC price available from Binance';
-        return { verdict: 'SKIP', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+        return { verdict: 'SKIP', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
       }
 
       this.updateEMA(btcPrice);
@@ -94,7 +103,7 @@ class GBMSignalEngine {
       const markets = await this.polymarket.fetchActiveBTCMarkets();
       if (!markets || markets.length === 0) {
         log.reason = 'No active BTC markets found';
-        return { verdict: 'SKIP', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+        return { verdict: 'SKIP', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
       }
 
       // --- Evaluate each market ---
@@ -177,30 +186,28 @@ class GBMSignalEngine {
           continue;
         }
 
-        // Rough seconds-remaining estimate for smoothing decisions.
-        // Full remaining calc happens later in the gate pipeline; this approximation
-        // is only used to decide whether to apply smoothing (last 60s = no smoothing).
+        // Rough seconds-remaining estimate — used for adaptive smoothing alpha.
+        // Full remaining calc happens later in the gate pipeline; this is only
+        // needed to pick the right alpha before we proceed.
         const roughRemaining = market.end_date_iso
           ? new Date(market.end_date_iso).getTime() / 1000 - Date.now() / 1000
           : 300;
 
-        // Sanity filter: reject implausible single-tick spikes from CLOB mid only.
-        // Gamma prices are passed through unfiltered — a 15%+ jump in Gamma is real
-        // market consensus (news broke) and is exactly the signal we want to trade.
+        // Sanity filter: CLOB mid only (Gamma passes through unfiltered).
         const sanitizedPrice = this._sanityCheck(marketId, rawYesPrice, priceSource);
         if (sanitizedPrice !== rawYesPrice) {
-          console.log(`[GBMSignalEngine] Sanity filter (CLOB): rawPrice=${rawYesPrice.toFixed(3)} jumped >25% vs last=${this._priceCache[marketId]?.smoothedPrice?.toFixed(3)} — using last`);
+          console.log(`[GBMSignalEngine] Sanity filter (CLOB): rawPrice=${rawYesPrice.toFixed(3)} jumped >25% vs last=${this._priceCache.get(marketId)?.smoothedPrice?.toFixed(3)} — using last`);
         }
 
-        // Smooth price to suppress high-frequency CLOB mid noise.
-        // Smoothing is disabled in the last 60s so late-window resolution spikes
-        // (price → 0 or 1) propagate immediately without lag.
+        // Adaptive EMA: faster near expiry so resolution spikes propagate without lag.
         const yesPrice = this._smoothPrice(marketId, sanitizedPrice, roughRemaining);
 
-        // Commit to cache — this is the authoritative price for this market this tick.
-        // BotInstance reads signal.yesPrice; nothing else calls getLastTradePrice() or Gamma.
-        this._priceCache[marketId] = { smoothedPrice: yesPrice, priceSource, timestamp: Date.now() };
-        console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
+        // Commit smoothed price to cache (keyed by marketId, never tokenId).
+        // rawYesPrice is preserved separately so _manageOpenPositions can use it
+        // for PnL marking without smoothing-induced distortion.
+        this._priceCache.set(marketId, { smoothedPrice: yesPrice, priceSource, timestamp: Date.now() });
+        const alpha = this._adaptiveAlpha(roughRemaining);
+        console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} alpha=${alpha} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
 
         const spread = orderBook.spread || (yesBook?.spread) || 0;
 
@@ -510,8 +517,11 @@ class GBMSignalEngine {
           microstructure: micro,
           costs: costs,
           log: log,
-          // Single-source-of-truth price fields — BotInstance must use ONLY these
+          // Single-source-of-truth price fields — BotInstance must use ONLY these.
+          // yesPrice: smoothed — used for all decisions (EV, entries, exits, gates)
+          // rawPrice: unsmoothed — used ONLY for PnL marking (more reactive to real moves)
           yesPrice: yesPrice,
+          rawPrice: rawYesPrice,
           noPrice: 1 - yesPrice,
           priceSource: priceSource,
           timestamp: Date.now()
@@ -525,13 +535,13 @@ class GBMSignalEngine {
       log.reason = 'No market passed all gates';
       log.skipDetail = failedAt;
       console.log(`[GBMSignalEngine] SKIP — ${failedAt}`, JSON.stringify(log.gates).slice(0, 200));
-      return { verdict: 'SKIP', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+      return { verdict: 'SKIP', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
 
     } catch (err) {
       console.error('[GBMSignalEngine] evaluate error:', err.message);
       log.verdict = 'ERROR';
       log.reason = `Evaluation error: ${err.message}`;
-      return { verdict: 'ERROR', log, yesPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+      return { verdict: 'ERROR', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
     }
   }
 
@@ -542,7 +552,7 @@ class GBMSignalEngine {
    */
   clearMarket(marketId) {
     delete this.lastSignalPrices[marketId];
-    delete this._priceCache[marketId];
+    this._priceCache.delete(marketId);
     this.evEngine.clearMarket(marketId);
   }
 
