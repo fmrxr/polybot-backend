@@ -1121,7 +1121,7 @@ class BotInstance {
       // freshness.lagAge is the BTC tick age when Gate A ran.
       const evAdjLogged  = signal.evAdj ?? gates.gate2?.evReal ?? null;
       const spreadLogged = signal.orderBook?.spread ?? gates.gate2?.spread ?? null;
-      const lagLogged    = gates.freshness?.lagAge ?? null;
+      const lagLogged    = gates.freshness?.lagAge != null ? Math.round(gates.freshness.lagAge) : null;
 
       await pool.query(`
         INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct)
@@ -1131,21 +1131,21 @@ class BotInstance {
         signal.market?.id || signal.marketId || null,
         signal.market?.question || null,
         signal.verdict,
-        signal.log?.reason || '',
+        signal.log?.reason || signal.reason || '',
         signal.direction || null,
         signal.confidence || null,
         signal.evRaw || null,
         evAdjLogged,
         signal.emaEdge || null,
-        gates.gate1?.passed || false,
-        gates.gate2?.passed || false,
-        gates.gate3?.passed || false,
+        gates.gate1?.passed ?? false,
+        gates.gate2?.passed ?? false,
+        gates.gate3?.passed ?? false,
         gateFailed,
         lagLogged,
         spreadLogged
       ]);
     } catch (err) {
-      // Don't crash on signal logging failure
+      console.error('[_logSignal] DB insert failed:', err.message);
     }
   }
 
