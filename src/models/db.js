@@ -206,6 +206,7 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS snipe_before_close_sec INTEGER DEFAULT 10,
         ADD COLUMN IF NOT EXISTS order_timeout_sec INTEGER DEFAULT 10,
         ADD COLUMN IF NOT EXISTS adverse_ticks INTEGER DEFAULT 2,
+        ADD COLUMN IF NOT EXISTS gate3_min_delta DECIMAL(5,4) DEFAULT 0.05,
         ADD COLUMN IF NOT EXISTS require_whale_convergence BOOLEAN DEFAULT false,
         ADD COLUMN IF NOT EXISTS max_trade_size DECIMAL(20,2) DEFAULT 100.00,
         ADD COLUMN IF NOT EXISTS min_ev_threshold DECIMAL(5,2) DEFAULT 3.00,

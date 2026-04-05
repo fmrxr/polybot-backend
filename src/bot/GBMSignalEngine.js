@@ -360,7 +360,7 @@ class GBMSignalEngine {
         if (this.settings.gate3_enabled !== false) {
           // btcDelta > 0 = BTC rising (bullish), < 0 = falling (bearish)
           const isBullish = btcDelta > 0;
-          const minDelta = parseFloat(this.settings.min_edge) || 0.015;
+          const minDelta = parseFloat(this.settings.gate3_min_delta) || 0.05;
 
           log.gates.gate3 = {
             btcDelta,

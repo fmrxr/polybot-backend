@@ -1078,12 +1078,20 @@
         <label><input type="checkbox" id="gate3Enabled" checked onchange="updateSetting()"> Gate 3: BTC Momentum Direction Confirmation</label>
       </div>
       <div class="form-group">
-        <label>Gate 3: Min BTC Delta (momentum threshold)</label>
+        <label>Min Kelly Edge (trade entry threshold)</label>
         <div class="slider-container">
-          <input type="range" id="minEdge" min="0.01" max="0.20" step="0.01" value="0.02" onchange="updateSliderValue('minEdge')">
-          <span class="slider-value" id="minEdgeValue">2%</span>
+          <input type="range" id="minEdge" min="0.01" max="0.20" step="0.01" value="0.05" onchange="updateSliderValue('minEdge')">
+          <span class="slider-value" id="minEdgeValue">5%</span>
         </div>
-        <div class="form-hint">Min 30s BTC % move required for directional trade — lower = more trades</div>
+        <div class="form-hint">Minimum Kelly edge (modelProb − marketProb) required to enter — filters low-edge trades</div>
+      </div>
+      <div class="form-group">
+        <label>Gate 3: Min BTC Δ (momentum threshold)</label>
+        <div class="slider-container">
+          <input type="range" id="gate3MinDelta" min="0.005" max="0.20" step="0.005" value="0.05" onchange="updateSliderValue('gate3MinDelta')">
+          <span class="slider-value" id="gate3MinDeltaValue">0.050%</span>
+        </div>
+        <div class="form-hint">Min 30s BTC % move for Gate 3 direction confirmation — independent of Kelly sizing</div>
       </div>
       <div class="form-group">
         <label>Signal Interval</label>
@@ -2363,6 +2371,7 @@
     }
     if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
     if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
+    if (settings.gate3_min_delta) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
     if (settings.snipe_before_close_sec) { document.getElementById('snipeTiming').value = settings.snipe_before_close_sec; updateSliderValue('snipeTiming'); }
     if (settings.order_timeout_sec) { document.getElementById('orderTimeout').value = settings.order_timeout_sec; updateSliderValue('orderTimeout'); }
     if (settings.adverse_ticks) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
@@ -2386,8 +2395,8 @@
     if (el('sdMaxLoss')  && settings.max_daily_loss) el('sdMaxLoss').textContent  = parseFloat(settings.max_daily_loss).toFixed(0);
     if (el('sdGate1T')   && settings.gate1_threshold) el('sdGate1T').textContent  = parseFloat(settings.gate1_threshold).toFixed(2);
     if (el('sdGate2F')   && settings.gate2_ev_floor)  el('sdGate2F').textContent  = parseFloat(settings.gate2_ev_floor).toFixed(1);
-    if (el('sdGate3E')   && settings.min_edge)        el('sdGate3E').textContent  = (parseFloat(settings.min_edge)*100).toFixed(3);
-    if (el('sdBtcThresh') && settings.min_edge)       el('sdBtcThresh').textContent = (parseFloat(settings.min_edge)*100).toFixed(3) + '%';
+    if (el('sdGate3E')    && settings.gate3_min_delta) el('sdGate3E').textContent   = parseFloat(settings.gate3_min_delta).toFixed(3);
+    if (el('sdBtcThresh') && settings.gate3_min_delta) el('sdBtcThresh').textContent = parseFloat(settings.gate3_min_delta).toFixed(3) + '%';
     if (el('sdStaleLag')  && settings.stale_lag_seconds) el('sdStaleLag').textContent = settings.stale_lag_seconds + 's'; // includes trailing 's'
     if (el('sdGate3Disabled')) el('sdGate3Disabled').style.display = settings.gate3_enabled === false ? 'inline' : 'none';
     if (settings.require_whale_convergence !== undefined) {
@@ -2414,8 +2423,9 @@
     const span  = document.getElementById(id+'Value');
     if (!span) return;
     const v = input.value;
-    if      (id === 'gate2Floor')    span.textContent = parseFloat(v).toFixed(1)+'%';
-    else if (id === 'minEdge')       span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
+    if      (id === 'gate2Floor')      span.textContent = parseFloat(v).toFixed(1)+'%';
+    else if (id === 'minEdge')         span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
+    else if (id === 'gate3MinDelta')   span.textContent = parseFloat(v).toFixed(3)+'%';
     else if (id.includes('Threshold')) span.textContent = parseFloat(v).toFixed(2);
     else if (id.includes('Timing'))  span.textContent = v+'s';
     else if (id.includes('Cap'))     span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
@@ -2477,6 +2487,7 @@
       gate2_ev_floor: parseFloat(document.getElementById('gate2Floor').value),
       gate3_enabled: document.getElementById('gate3Enabled').checked,
       min_edge: parseFloat(document.getElementById('minEdge').value),
+      gate3_min_delta: parseFloat(document.getElementById('gate3MinDelta')?.value || '0.05'),
       snipe_before_close_sec: parseInt(document.getElementById('snipeTiming').value),
       order_timeout_sec: parseInt(document.getElementById('orderTimeout').value),
       adverse_ticks: parseInt(document.getElementById('adverseTicks').value)
@@ -3184,7 +3195,7 @@
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           gate2_ev_floor: g2,
-          min_edge: mom,
+          gate3_min_delta: mom,
           kelly_cap: kelly,
           snipe_before_close_sec: snipe,
           max_trade_size: maxSz,
@@ -3203,7 +3214,7 @@
     const setLabel = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
 
     if (s.gate2_ev_floor != null) { set('lpG2', s.gate2_ev_floor); setLabel('lpG2Val', s.gate2_ev_floor + '%'); }
-    if (s.min_edge != null)       { set('lpMom', s.min_edge); setLabel('lpMomVal', parseFloat(s.min_edge).toFixed(3) + '%'); }
+    if (s.gate3_min_delta != null) { set('lpMom', s.gate3_min_delta); setLabel('lpMomVal', parseFloat(s.gate3_min_delta).toFixed(3) + '%'); }
     if (s.kelly_cap != null)      { set('lpKelly', parseFloat(s.kelly_cap)*100); setLabel('lpKellyVal', Math.round(parseFloat(s.kelly_cap)*100) + '%'); }
     if (s.snipe_timer_seconds != null) { set('lpInterval', s.snipe_timer_seconds); setLabel('lpIntervalVal', s.snipe_timer_seconds + 's'); }
     if (s.max_trade_size != null) { set('lpMaxSize', s.max_trade_size); setLabel('lpMaxSizeVal', '$' + s.max_trade_size); }
