@@ -374,7 +374,8 @@ class BotInstance {
     const b = (1 / entryPrice) - 1;
     let kellyFraction = b > 0 ? Math.max(0, (mProb * b - (1 - mProb)) / b) : 0;
 
-    const kellyCap = parseFloat(this.settings.kelly_cap) || 0.10;
+    // Kelly cap from settings (default 25%)
+    const kellyCap = parseFloat(this.settings.kelly_cap) || 0.25;
     kellyFraction = Math.min(kellyFraction, kellyCap);
     kellyFraction *= (fillProb || 1.0);
 
@@ -383,13 +384,25 @@ class BotInstance {
       return;
     }
 
-    // ── 7. Position sizing ────────────────────────────────────────────────────
+    // ── 7. Position sizing — hard cap $5 per trade at real market price ───────
+    // Max trade size = $5, valued at the real live ask price (not a cached or mid price).
+    // This prevents runaway sizing regardless of balance or Kelly fraction.
+    const MAX_TRADE_DOLLARS = 5.00;
+
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
     if (!balance || isNaN(balance) || balance <= 0) {
       this._log('WARN', `Invalid balance=${balance}. Skipping trade.`);
       return;
     }
-    const tradeSize = Math.max(1, parseFloat((balance * kellyFraction).toFixed(2)));
+
+    // Kelly size based on real ask price, then hard-capped at $5
+    const kellySize = parseFloat((balance * kellyFraction).toFixed(2));
+    const tradeSize = Math.min(kellySize, MAX_TRADE_DOLLARS);
+
+    if (tradeSize < 1) {
+      this._log('WARN', `[SKIP] Trade size $${tradeSize.toFixed(2)} < $1 minimum — insufficient balance or Kelly fraction too small`);
+      return;
+    }
 
     if (this.settings.paper_trading && this.paperBalance < tradeSize) {
       this._log('WARN', `Insufficient paper balance: $${this.paperBalance.toFixed(2)} < $${tradeSize.toFixed(2)}`);
