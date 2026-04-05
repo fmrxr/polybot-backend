@@ -1455,6 +1455,15 @@
       <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;">
         <span>Strategy Parameters</span>
         <button onclick="saveLabSettings()" style="font-size:10px;padding:3px 10px;background:var(--amber);border:none;color:#000;cursor:pointer;font-weight:700;">APPLY</button>
+        <button onclick="(function(){
+          var d={'lpG2':'1.5','lpMom':'0.065','lpKelly':'5','lpInterval':'10','lpMaxSize':'10'};
+          document.getElementById('lpG2').value='1.5'; document.getElementById('lpG2Val').textContent='1.5%';
+          document.getElementById('lpMom').value='0.065'; document.getElementById('lpMomVal').textContent='0.065%';
+          document.getElementById('lpKelly').value='5'; document.getElementById('lpKellyVal').textContent='5%';
+          document.getElementById('lpInterval').value='10'; document.getElementById('lpIntervalVal').textContent='10s';
+          document.getElementById('lpMaxSize').value='10'; document.getElementById('lpMaxSizeVal').textContent='$10';
+          document.getElementById('lpGate3').checked=true;
+        })()" style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;font-weight:600;">RESET</button>
       </div>
       <div class="panel-body" style="padding:10px 14px;display:flex;flex-direction:column;gap:10px;">
 
