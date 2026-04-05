@@ -352,6 +352,35 @@ class PolymarketFeed {
     } catch (_) { return null; }
   }
 
+  /**
+   * Fetch the last traded price for a token from the CLOB.
+   * This is the REAL execution price for 5-min BTC markets — the order book
+   * shows boundary orders (0.01/0.99) but trades happen at the last traded price (~0.505).
+   * Returns price as 0–1 float, or null if unavailable/invalid.
+   */
+  async getLastTradePrice(tokenId) {
+    try {
+      const res = await fetch(
+        `https://clob.polymarket.com/lastTradePrice?token_id=${tokenId}`,
+        { signal: AbortSignal.timeout(4000) }
+      );
+      if (!res.ok) {
+        console.warn(`[PolymarketFeed] lastTradePrice HTTP ${res.status} for ${tokenId?.slice(0,12)}...`);
+        return null;
+      }
+      const data = await res.json();
+      const p = parseFloat(data.price);
+      if (isNaN(p) || p <= 0.01 || p >= 0.99) {
+        console.warn(`[PolymarketFeed] lastTradePrice invalid: ${data.price} for ${tokenId?.slice(0,12)}...`);
+        return null;
+      }
+      return p;
+    } catch (err) {
+      console.warn(`[PolymarketFeed] getLastTradePrice failed for ${tokenId?.slice(0,12)}...: ${err.message}`);
+      return null;
+    }
+  }
+
   /** Fetch USDC balance for a wallet */
   static async fetchBalance(privateKey, walletAddress) {
     try {
@@ -367,48 +396,58 @@ class PolymarketFeed {
   }
 
   /**
-   * Place a limit order on Polymarket CLOB.
-   * @param {string} tokenId   - Conditional token ID (YES or NO token)
-   * @param {string} side      - 'BUY' or 'SELL'
-   * @param {number} dollarSize - Dollar amount to spend (e.g. $1.00)
-   * @param {number} price     - Limit price in token probability scale (0–1)
+   * Place a GTC limit order at the last traded price.
    *
-   * SDK v5.8.1 notes:
-   *   - Method renamed: createAndPlaceOrder → createAndPostOrder
-   *   - Field renamed:  tokenId           → tokenID (capital ID)
-   *   - size is in TOKENS not dollars: tokenSize = dollarSize / price
-   *     e.g. $1 at price 0.50 → 2 tokens; at price 0.99 → ~1.01 tokens
+   * Polymarket 5-min BTC markets always show a 98% book spread (boundary orders at
+   * 0.01/0.99). Real fills happen at the lastTradePrice (~0.505). Submitting a limit
+   * order at lastTradePrice + 0.01 (buy) rests on the book at fair value and gets
+   * filled by counter-parties — exactly how the UI works.
+   *
+   * A FOK "market order" at 0.99 would fill at 0.99 (terrible).
+   * A FOK at 0.55 would return FOK_ORDER_NOT_FILLED_ERROR (nothing between 0.55-0.99).
+   * GTC at lastTradePrice is the correct approach.
+   *
+   * @param {string} tokenId    - Conditional token ID
+   * @param {string} side       - 'BUY' or 'SELL'
+   * @param {number} dollarSize - Dollar amount to spend
+   * @param {number} fairPrice  - lastTradePrice (0–1) fetched before calling this
    */
-  async placeOrder(tokenId, side, dollarSize, price) {
+  async placeOrder(tokenId, side, dollarSize, fairPrice) {
     if (!this.clobClient) throw new Error('CLOB client not initialized for trading');
 
-    // Ensure SDK enums are loaded
     await getClobClient();
     const Side = _Side;
     const OrderType = _OrderType;
 
-    // Convert dollar amount to token quantity (what the CLOB expects for limit orders)
-    const tokenSize = parseFloat((dollarSize / price).toFixed(2));
-    if (!isFinite(tokenSize) || tokenSize <= 0) {
-      throw new Error(`Invalid token size: dollarSize=${dollarSize} price=${price} → tokenSize=${tokenSize}`);
+    // Snap price to 0.01 tick (Polymarket standard tick size for most markets).
+    // Add 1 tick for buys (improves fill probability vs sitting exactly at last trade).
+    // Subtract 1 tick for sells.
+    const TICK = 0.01;
+    let limitPrice;
+    if (side === 'SELL') {
+      limitPrice = Math.max(0.01, parseFloat((Math.floor(fairPrice / TICK) * TICK).toFixed(2)));
+    } else {
+      limitPrice = Math.min(0.99, parseFloat((Math.ceil(fairPrice / TICK) * TICK + TICK).toFixed(2)));
     }
 
-    // Map string side to SDK enum (Side.BUY=0, Side.SELL=1)
+    // size = token quantity (CLOB limit orders use token qty, not dollar amount)
+    const tokenSize = parseFloat((dollarSize / limitPrice).toFixed(2));
+    if (!isFinite(tokenSize) || tokenSize <= 0) {
+      throw new Error(`Invalid token size: dollarSize=${dollarSize} limitPrice=${limitPrice} → tokenSize=${tokenSize}`);
+    }
+
     const sideEnum = side === 'SELL' ? Side.SELL : Side.BUY;
 
-    console.log(`[PolymarketFeed] Placing order: ${side} ${tokenSize} tokens @ ${price} (~$${dollarSize}) for token ${tokenId?.slice(0,12)}...`);
+    console.log(`[PolymarketFeed] Placing GTC limit: ${side} ${tokenSize} tokens @ ${limitPrice} (fairPrice=${fairPrice}, ~$${dollarSize}) token=${tokenId?.slice(0,12)}...`);
 
     try {
-      // createAndPostOrder replaces old createAndPlaceOrder
-      // Uses GTC (Good Till Cancelled) by default
       const resp = await this.clobClient.createAndPostOrder(
-        { tokenID: tokenId, side: sideEnum, price, size: tokenSize },
-        undefined,         // options
-        OrderType.GTC,     // order type
-        false              // deferExec
+        { tokenID: tokenId, side: sideEnum, price: limitPrice, size: tokenSize },
+        { tickSize: '0.01', negRisk: false },
+        OrderType.GTC
       );
-      console.log(`[PolymarketFeed] Order placed successfully: orderId=${resp?.orderID ?? resp?.order_id ?? JSON.stringify(resp)?.slice(0,80)}`);
-      return resp;
+      console.log(`[PolymarketFeed] Order placed: orderId=${resp?.orderID ?? resp?.order_id} status=${resp?.status}`);
+      return { ...resp, price: limitPrice };
     } catch (err) {
       console.error(`[PolymarketFeed] placeOrder failed:`, err.message);
       throw err;

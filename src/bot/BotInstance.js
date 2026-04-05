@@ -317,52 +317,35 @@ class BotInstance {
       return;
     }
 
-    // ── 2. Fetch REAL order book for execution pricing ────────────────────────
-    // We NEVER use the signal's entryPrice (Gamma mid ~0.505) for execution.
-    // Real fills cost the ASK price. Using mid creates fake edge.
-    const book = await this.polymarket.getOrderBook(tokenId);
-    if (!book) {
-      this._log('WARN', `[SKIP] Cannot fetch order book for token ${tokenId?.slice(0,12)}... — no execution price available`);
+    // ── 2. Fetch lastTradePrice — the REAL execution price ───────────────────
+    // 5-min BTC markets always have boundary order books (bid=0.01, ask=0.99, spread=98%).
+    // The book spread does NOT reflect real market price — it's resting boundary liquidity.
+    // Real fills happen at lastTradePrice (~0.505) via GTC limit orders at fair value.
+    // We do NOT use book ASK (would pay 0.99) or Gamma mid (unreliable).
+    // Docs: "If spread > $0.10, last traded price is shown instead of midpoint."
+    const lastTradePrice = await this.polymarket.getLastTradePrice(tokenId);
+    if (!lastTradePrice) {
+      this._log('WARN', `[SKIP] No lastTradePrice for token ${tokenId?.slice(0,12)}... — cannot determine fair execution price`);
       return;
     }
 
-    // ── 3. Spread filter — skip boundary-only or illiquid books ──────────────
-    // bid=0.01 ask=0.99 (spread=98%) = no real liquidity; any fill would be at
-    // an extreme price. 15% is generous but filters out boundary-only books.
-    const MAX_EXECUTION_SPREAD = 0.15;
-    const spread = book.spread ?? (book.bestAsk != null && book.bestBid != null ? book.bestAsk - book.bestBid : null);
-    if (spread == null || spread > MAX_EXECUTION_SPREAD) {
-      this._log('WARN', `[SKIP] Spread too wide: ${spread != null ? (spread * 100).toFixed(1) + '%' : 'null'} > ${MAX_EXECUTION_SPREAD * 100}% — bid=${book.bestBid} ask=${book.bestAsk}. No realistic fill possible.`);
+    // ── 3. Validate price is in tradeable range ───────────────────────────────
+    // Skip if price is clearly invalid or at resolution extremes.
+    if (lastTradePrice <= 0.02 || lastTradePrice >= 0.98) {
+      this._log('WARN', `[SKIP] lastTradePrice=${lastTradePrice.toFixed(4)} is near resolution boundary — market may be settling`);
       return;
     }
 
-    // ── 4. Real execution price — use ASK price (cost to enter) ──────────────
-    // For both YES and NO tokens: buying a token costs the ASK.
-    // Signal's entryPrice (Gamma mid) is only for EV/Kelly signal evaluation,
-    // NOT for execution. Real cost = ask price.
-    if (book.bestAsk == null) {
-      this._log('WARN', `[SKIP] No ask price in order book for token ${tokenId?.slice(0,12)}...`);
-      return;
-    }
-    const bookAskPrice = book.bestAsk;
+    this._log('INFO', `[EXEC] lastTradePrice=${lastTradePrice.toFixed(4)} — GTC limit order will rest at fair value`);
 
-    // Guard: ask must be a valid probability (0–1 exclusive)
-    if (bookAskPrice <= 0 || bookAskPrice >= 1) {
-      this._log('WARN', `[SKIP] Invalid ask price=${bookAskPrice} for token ${tokenId?.slice(0,12)}...`);
-      return;
-    }
-
-    this._log('INFO', `[EXEC] Order book: bid=${book.bestBid?.toFixed(4)} ask=${bookAskPrice.toFixed(4)} spread=${(spread * 100).toFixed(1)}% — using real ASK for entry`);
-
-    // ── 5. Entry price: real ASK + paper slippage simulation ─────────────────
-    // Paper trading simulates realistic fills: add 25% of spread as slippage.
-    // (Real market orders often fill slightly above best ask due to partial fills.)
-    // Live trading uses the ask directly — the actual fill is determined by the CLOB.
-    let entryPrice = bookAskPrice;
+    // ── 4. Entry price for sizing and recording ───────────────────────────────
+    // For live orders: placeOrder adds 1 tick (0.01) to lastTradePrice to improve
+    // fill probability. We record lastTradePrice as the entry for EV/PnL tracking.
+    // Paper trading simulates slippage: +0.5¢ to reflect real-world fill cost.
+    let entryPrice = lastTradePrice;
     if (this.settings.paper_trading) {
-      const slip = spread * 0.25;
-      entryPrice = Math.min(0.99, bookAskPrice + slip);
-      this._log('INFO', `[PAPER] Slippage simulation: ask=${bookAskPrice.toFixed(4)} + ${(slip * 100).toFixed(3)}% slip → entry=${entryPrice.toFixed(4)}`);
+      entryPrice = Math.min(0.98, parseFloat((lastTradePrice + 0.005).toFixed(4)));
+      this._log('INFO', `[PAPER] Simulated fill: lastTrade=${lastTradePrice.toFixed(4)} + 0.5¢ slip → entry=${entryPrice.toFixed(4)}`);
     }
 
     // ── 6. Kelly Criterion at REAL execution price ────────────────────────────
@@ -433,14 +416,14 @@ class BotInstance {
         signal.log?.gates?.gate3?.emaEdge || 0
       ]);
 
-      this._recordSlippage(bookAskPrice, entryPrice);
-      this._log('INFO', `📝 Paper trade recorded at ${entryPrice.toFixed(4)} (real ask=${bookAskPrice.toFixed(4)}, spread=${(spread * 100).toFixed(1)}%). Balance: $${this.paperBalance.toFixed(2)}`);
+      this._recordSlippage(lastTradePrice, entryPrice);
+      this._log('INFO', `📝 Paper trade recorded at ${entryPrice.toFixed(4)} (lastTrade=${lastTradePrice.toFixed(4)}). Balance: $${this.paperBalance.toFixed(2)}`);
 
     } else {
       // Live: place real order on Polymarket CLOB
       // placeOrder handles: tokenID field name, token size conversion ($/price), createAndPostOrder
       try {
-        const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, entryPrice);
+        const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
         // Prefer actual fill price from response; fall back to limit price
         const actualFillPrice = order?.price || order?.averagePrice || entryPrice;
 
@@ -455,8 +438,8 @@ class BotInstance {
           signal.log?.gates?.gate3?.emaEdge || 0
         ]);
 
-        this._recordSlippage(bookAskPrice, actualFillPrice);
-        this._log('INFO', `🔥 LIVE trade executed. Ask=${bookAskPrice.toFixed(4)} Fill=${actualFillPrice.toFixed(4)} Slip=${((actualFillPrice - bookAskPrice) * 100).toFixed(3)}%`);
+        this._recordSlippage(lastTradePrice, actualFillPrice);
+        this._log('INFO', `🔥 LIVE trade executed. LastTrade=${lastTradePrice.toFixed(4)} LimitPrice=${entryPrice.toFixed(4)} Fill=${actualFillPrice.toFixed(4)}`);
       } catch (err) {
         this._log('ERROR', `Live trade failed: ${err.message}`);
         return;
