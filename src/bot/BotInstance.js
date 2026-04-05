@@ -449,9 +449,9 @@ class BotInstance {
   async _monitorPendingOrders() {
     if (this._pendingOrders.size === 0) return;
 
-    const ORDER_TIMEOUT_MS = 10000; // 10s: cancel resting orders older than this
+    const ORDER_TIMEOUT_MS = (parseInt(this.settings.order_timeout_sec) || 10) * 1000;
     const TICK = 0.01;
-    const ADVERSE_TICKS = 2; // cancel if market moves 2 ticks against our limit
+    const ADVERSE_TICKS = parseInt(this.settings.adverse_ticks) || 2;
 
     for (const [orderId, pending] of this._pendingOrders) {
       const age = Date.now() - pending.placedAt;
@@ -1108,6 +1108,18 @@ class BotInstance {
   }
 
   getStatus() {
+    // Summarise pending orders for dashboard display
+    const pendingOrders = [...this._pendingOrders.values()].map(p => ({
+      orderId: p.orderId.slice(0, 16),
+      direction: p.direction,
+      limitPrice: p.limitPrice,
+      referencePrice: p.referencePrice,
+      dollarSize: p.dollarSize,
+      isPaper: p.isPaper,
+      ageMs: Date.now() - p.placedAt,
+      lastCheckedPrice: p.lastCheckedPrice
+    }));
+
     return {
       isRunning: this.isRunning,
       userId: this.userId,
@@ -1121,6 +1133,7 @@ class BotInstance {
       drawdownCooldownUntil: this.drawdownCooldownUntil,
       recentLogs: this.decisionLog.slice(-20),
       lastStreamState: this._lastStreamState,
+      pendingOrders,
     };
   }
 }

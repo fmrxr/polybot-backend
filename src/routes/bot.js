@@ -76,7 +76,8 @@ router.get('/status', authMiddleware, async (req, res) => {
           ? (parseInt(stats.wins) / parseInt(stats.closed_trades) * 100).toFixed(1)
           : '0.0'
       },
-      recentLogs: status?.recentLogs || []
+      recentLogs: status?.recentLogs || [],
+      pendingOrders: status?.pendingOrders || []
     });
   } catch (err) {
     console.error(`[Bot Route] Status error for user ${req.userId}:`, err.message);

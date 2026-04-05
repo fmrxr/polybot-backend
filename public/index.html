@@ -704,6 +704,15 @@
     </div>
   </div>
 
+  <!-- Pending Orders -->
+  <div class="panel" id="pendingOrdersPanel" style="display:none;">
+    <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <span class="panel-title">⏳ Pending Orders</span>
+      <span style="font-size:10px;color:var(--yellow);letter-spacing:1px;">RESTING — AWAITING FILL</span>
+    </div>
+    <div class="panel-body" id="pendingOrdersList" style="padding:0;"></div>
+  </div>
+
   <!-- Recent Signals -->
   <div class="panel">
     <div class="panel-header"><span class="panel-title">Recent Signals (Last 10)</span></div>
@@ -1084,6 +1093,31 @@
         </div>
         <div class="form-hint">Seconds between signal evaluations (10s recommended)</div>
       </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">Order Execution</div>
+      <div class="form-group">
+        <label>Order Timeout</label>
+        <div class="slider-container">
+          <input type="range" id="orderTimeout" min="5" max="30" step="1" value="10" onchange="updateSliderValue('orderTimeout')">
+          <span class="slider-value" id="orderTimeoutValue">10s</span>
+        </div>
+        <div class="form-hint">Cancel unfilled GTC limit orders after this many seconds (5–10s for 5-min markets)</div>
+      </div>
+      <div class="form-group">
+        <label>Adverse Selection Tolerance (ticks)</label>
+        <div class="slider-container">
+          <input type="range" id="adverseTicks" min="1" max="5" step="1" value="2" onchange="updateSliderValue('adverseTicks')">
+          <span class="slider-value" id="adverseTicksValue">2</span>
+        </div>
+        <div class="form-hint">Cancel BUY if market drops this many ticks below limit price while order rests</div>
+      </div>
+      <div style="padding:8px 10px;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);font-size:11px;color:var(--text-muted);line-height:1.5;margin-bottom:8px;">
+        Orders rest as GTC limits at <span style="color:var(--amber);">lastTradePrice + 1 tick</span>.
+        Paper orders use stochastic fill simulation — fills are <strong style="color:var(--yellow);">NOT guaranteed</strong>.
+        Live orders poll CLOB status until filled, timed-out, or adverse-selection-cancelled.
+      </div>
       <div style="display:flex;gap:8px;margin-top:4px;">
         <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
         <button class="secondary" onclick="resetSettingsToDefaults('strategy')" style="flex:0 0 auto;">Reset</button>
@@ -1228,7 +1262,7 @@
   </div>
 
   <!-- Summary KPI bar -->
-  <div id="labKpis" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:12px;">
+  <div id="labKpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:6px;">
     <div class="panel" style="padding:10px;text-align:center;">
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">TOTAL PnL</div>
       <div id="lkTotalPnl" style="font-size:18px;font-weight:700;color:var(--green);">—</div>
@@ -1245,6 +1279,8 @@
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">EXPECTANCY</div>
       <div id="lkExpectancy" style="font-size:18px;font-weight:700;">—</div>
     </div>
+  </div>
+  <div id="labKpis2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px;">
     <div class="panel" style="padding:10px;text-align:center;">
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">SHARPE</div>
       <div id="lkSharpe" style="font-size:18px;font-weight:700;">—</div>
@@ -1257,6 +1293,11 @@
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">TRADES</div>
       <div id="lkTrades" style="font-size:18px;font-weight:700;">—</div>
       <div id="lkOpenBadge" style="font-size:10px;color:var(--yellow);"></div>
+    </div>
+    <div class="panel" style="padding:10px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">AVG SLIPPAGE</div>
+      <div id="lkSlippage" style="font-size:18px;font-weight:700;color:var(--cyan);">—</div>
+      <div style="font-size:10px;color:var(--text-muted);">ticks</div>
     </div>
   </div>
 
@@ -1648,6 +1689,31 @@
           ? (btcPrice ? `BTC $${Math.round(btcPrice).toLocaleString()} · All feeds nominal` : 'All feeds nominal')
           : 'Bot is stopped';
       }
+
+      // Pending orders panel
+      const pendingPanel = document.getElementById('pendingOrdersPanel');
+      const pendingList  = document.getElementById('pendingOrdersList');
+      const orders = data.pendingOrders || [];
+      if (orders.length > 0 && pendingPanel) {
+        pendingPanel.style.display = '';
+        pendingList.innerHTML = orders.map(o => {
+          const ageSec = (o.ageMs / 1000).toFixed(1);
+          const slipTicks = Math.abs(o.limitPrice - o.referencePrice) / 0.01;
+          const dirColor = o.direction === 'YES' ? 'var(--green)' : 'var(--red)';
+          const modeTag = o.isPaper ? '<span style="color:var(--text-muted);font-size:9px;">PAPER</span>' : '<span style="color:var(--yellow);font-size:9px;">LIVE</span>';
+          return `<div style="display:grid;grid-template-columns:50px 60px 70px 70px 60px 1fr;align-items:center;padding:6px 14px;border-bottom:1px solid var(--border);font-size:11px;gap:8px;">
+            <span style="color:${dirColor};font-weight:700;">${o.direction}</span>
+            <span style="color:var(--amber);">L:${o.limitPrice.toFixed(2)}</span>
+            <span style="color:var(--text-muted);">ref:${o.referencePrice.toFixed(3)}</span>
+            <span style="color:var(--cyan);">$${o.dollarSize.toFixed(2)}</span>
+            <span style="color:var(--text-muted);">${ageSec}s</span>
+            ${modeTag}
+          </div>`;
+        }).join('');
+      } else if (pendingPanel) {
+        pendingPanel.style.display = 'none';
+      }
+
     } catch (err) { console.error('Load status error:', err); }
   }
 
@@ -2302,6 +2368,8 @@
     if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
     if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
     if (settings.snipe_before_close_sec) { document.getElementById('snipeTiming').value = settings.snipe_before_close_sec; updateSliderValue('snipeTiming'); }
+    if (settings.order_timeout_sec) { document.getElementById('orderTimeout').value = settings.order_timeout_sec; updateSliderValue('orderTimeout'); }
+    if (settings.adverse_ticks) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
     if (settings.gate2_ev_floor) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
     if (settings.gate3_enabled !== undefined) document.getElementById('gate3Enabled').checked = settings.gate3_enabled;
@@ -2403,7 +2471,9 @@
       gate2_ev_floor: parseFloat(document.getElementById('gate2Floor').value),
       gate3_enabled: document.getElementById('gate3Enabled').checked,
       min_edge: parseFloat(document.getElementById('minEdge').value),
-      snipe_before_close_sec: parseInt(document.getElementById('snipeTiming').value)
+      snipe_before_close_sec: parseInt(document.getElementById('snipeTiming').value),
+      order_timeout_sec: parseInt(document.getElementById('orderTimeout').value),
+      adverse_ticks: parseInt(document.getElementById('adverseTicks').value)
     };
     try {
       const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
@@ -2853,6 +2923,14 @@
     if (trEl) trEl.textContent = s.total + ' (' + s.wins + 'W / ' + s.losses + 'L)';
     const obEl = $('lkOpenBadge');
     if (obEl && d.total_open > 0) obEl.textContent = '⬤ ' + d.total_open + ' open';
+
+    // Avg slippage (from bot status, in ticks)
+    const slipEl = $('lkSlippage');
+    if (slipEl && botStatus?.avgSlippage != null) {
+      const slipTicks = botStatus.avgSlippage / 0.01;
+      slipEl.textContent = slipTicks.toFixed(1);
+      slipEl.style.color = slipTicks <= 1 ? 'var(--green)' : slipTicks <= 2 ? 'var(--amber)' : 'var(--red)';
+    }
 
     // P&L curve (canvas)
     _drawPnlCurve(d.pnl_curve);
