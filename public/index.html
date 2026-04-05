@@ -2132,7 +2132,7 @@
     const tbody = document.getElementById('dsBody');
     if (!tbody) return;
     if (!rows || rows.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">No decisions yet</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">No decisions yet — check Railway logs for [SignalLog ERROR]</td></tr>`;
       return;
     }
 
@@ -2140,6 +2140,7 @@
     const filterLabel = f => {
       if (f == null) return '—';
       const n = parseFloat(f);
+      if (n === 0.1) return 'btcFlat';
       if (n === 0.2) return 'stale';
       if (n === 0.3) return 'chase';
       if (n === 0.4) return 'evTrend';

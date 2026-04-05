@@ -1101,27 +1101,39 @@ class BotInstance {
   }
 
   async _logSignal(signal) {
+    if (!signal?.log) return;
+    if (!this.userId) {
+      console.error('[SignalLog ERROR] Missing userId — cannot persist signal');
+      return;
+    }
+
     try {
-      if (!signal?.log) return;
-      // Derive gate_failed code from which gate blocked execution
-      let gateFailed = null;
       const gates = signal.log?.gates || {};
+
+      // Gate failure code mapping — includes all known pre-filters and gates
+      let gateFailed = null;
       if (signal.verdict === 'SKIP') {
-        if (gates.freshness && !gates.freshness.passed)  gateFailed = 0.2;
-        else if (gates.chase && !gates.chase.passed)     gateFailed = 0.3;
-        else if (gates.evTrend && !gates.evTrend.passed) gateFailed = 0.4;
-        else if (gates.gate1 && !gates.gate1.passed)     gateFailed = 1;
-        else if (gates.gate2 && !gates.gate2.passed)     gateFailed = 2;
-        else if (gates.gate3 && !gates.gate3.passed)     gateFailed = 3;
+        if (gates.btcFlat    && !gates.btcFlat.passed)    gateFailed = 0.1;
+        else if (gates.freshness && !gates.freshness.passed)  gateFailed = 0.2;
+        else if (gates.chase && !gates.chase.passed)          gateFailed = 0.3;
+        else if (gates.evTrend && !gates.evTrend.passed)      gateFailed = 0.4;
+        else if (gates.gate1 && !gates.gate1.passed)          gateFailed = 1;
+        else if (gates.gate2 && !gates.gate2.passed)          gateFailed = 2;
+        else if (gates.gate3 && !gates.gate3.passed)          gateFailed = 3;
       }
 
-      // For SKIP signals, top-level evAdj/spread/lagAge are null — read from gate data instead.
-      // gate2.evReal is logged whenever Gate 2 ran (even if it failed).
-      // gate2.spread is the order book spread at evaluation time.
-      // freshness.lagAge is the BTC tick age when Gate A ran.
-      const evAdjLogged  = signal.evAdj ?? gates.gate2?.evReal ?? null;
+      const evAdjLogged  = signal.evAdj     ?? gates.gate2?.evReal ?? null;
       const spreadLogged = signal.orderBook?.spread ?? gates.gate2?.spread ?? null;
       const lagLogged    = gates.freshness?.lagAge != null ? Math.round(gates.freshness.lagAge) : null;
+
+      console.log('[SignalLog ATTEMPT]', {
+        verdict: signal.verdict,
+        marketId: signal.marketId || null,
+        gateFailed,
+        evAdj: evAdjLogged,
+        lag: lagLogged,
+        spread: spreadLogged
+      });
 
       await pool.query(`
         INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct)
@@ -1131,12 +1143,12 @@ class BotInstance {
         signal.market?.id || signal.marketId || null,
         signal.market?.question || null,
         signal.verdict,
-        signal.log?.reason || signal.reason || '',
+        signal.log?.reason || '',
         signal.direction || null,
         signal.confidence || null,
-        signal.evRaw || null,
+        signal.evRaw     || null,
         evAdjLogged,
-        signal.emaEdge || null,
+        signal.emaEdge   || null,
         gates.gate1?.passed ?? false,
         gates.gate2?.passed ?? false,
         gates.gate3?.passed ?? false,
@@ -1145,7 +1157,11 @@ class BotInstance {
         spreadLogged
       ]);
     } catch (err) {
-      console.error('[_logSignal] DB insert failed:', err.message);
+      console.error('[SignalLog ERROR]', {
+        message: err.message,
+        stack: err.stack,
+        signal: { verdict: signal?.verdict, marketId: signal?.marketId, hasLog: !!signal?.log }
+      });
     }
   }
 

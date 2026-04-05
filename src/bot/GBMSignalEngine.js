@@ -94,7 +94,7 @@ class GBMSignalEngine {
 
       if (!btcPrice) {
         log.reason = 'No BTC price available from Binance';
-        return { verdict: 'SKIP', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+        return { verdict: 'SKIP', log, marketId: null, market: null, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
       }
 
       this.updateEMA(btcPrice);
@@ -103,11 +103,13 @@ class GBMSignalEngine {
       const markets = await this.polymarket.fetchActiveBTCMarkets();
       if (!markets || markets.length === 0) {
         log.reason = 'No active BTC markets found';
-        return { verdict: 'SKIP', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+        return { verdict: 'SKIP', log, marketId: null, market: null, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
       }
 
       // --- Evaluate each market ---
+      let lastMarket = null; // track last market seen so SKIP returns can include market context
       for (const market of markets) {
+        lastMarket = market;
         const marketId = market.id || market.condition_id;
 
         // Gamma API returns clobTokenIds as a JSON string "[\"id1\",\"id2\"]" — must parse it
@@ -545,14 +547,15 @@ class GBMSignalEngine {
       log.verdict = 'SKIP';
       log.reason = 'No market passed all gates';
       log.skipDetail = failedAt;
+      const lastMarketId = lastMarket ? (lastMarket.id || lastMarket.condition_id) : null;
       console.log(`[GBMSignalEngine] SKIP — ${failedAt}`, JSON.stringify(log.gates).slice(0, 200));
-      return { verdict: 'SKIP', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+      return { verdict: 'SKIP', log, marketId: lastMarketId, market: lastMarket, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
 
     } catch (err) {
       console.error('[GBMSignalEngine] evaluate error:', err.message);
       log.verdict = 'ERROR';
       log.reason = `Evaluation error: ${err.message}`;
-      return { verdict: 'ERROR', log, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+      return { verdict: 'ERROR', log, marketId: null, market: null, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
     }
   }
 
