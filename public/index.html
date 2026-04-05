@@ -1095,6 +1095,40 @@
   <!-- Trade cards -->
   <div id="tradesCards"></div>
   <div class="pagination" id="tradesPagination"></div>
+
+  <!-- Decision Stream -->
+  <div class="panel" style="margin-top:16px;">
+    <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <span class="panel-title">Decision Stream</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <select id="dsFilter" onchange="loadDecisionStream()" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:3px 8px;font-size:11px;">
+          <option value="all">All</option>
+          <option value="TRADE">TRADE</option>
+          <option value="SKIP">SKIP</option>
+        </select>
+        <button class="secondary" onclick="loadDecisionStream()" style="font-size:10px;padding:3px 10px;">↻</button>
+      </div>
+    </div>
+    <div class="panel-body" style="padding:0;overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="background:var(--bg2);color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-size:10px;">
+            <th style="padding:7px 10px;text-align:left;white-space:nowrap;">Time</th>
+            <th style="padding:7px 10px;text-align:center;">Dir</th>
+            <th style="padding:7px 10px;text-align:center;">Filter</th>
+            <th style="padding:7px 10px;text-align:right;">Lag</th>
+            <th style="padding:7px 10px;text-align:right;">EV adj</th>
+            <th style="padding:7px 10px;text-align:right;">Spread</th>
+            <th style="padding:7px 10px;text-align:center;">Verdict</th>
+            <th style="padding:7px 10px;text-align:left;">Reason</th>
+          </tr>
+        </thead>
+        <tbody id="dsBody">
+          <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ CLAUDE AI PAGE -->
@@ -2066,6 +2100,71 @@
       renderTrades(data);
       if (statsRes.ok) { const stats = await statsRes.json(); renderProMetrics(stats); }
     } catch (err) { console.error('Load trades error:', err); }
+    loadDecisionStream();
+  }
+
+  async function loadDecisionStream() {
+    const token = localStorage.getItem('token');
+    const filterVal = document.getElementById('dsFilter')?.value || 'all';
+    try {
+      const res = await fetch(`${window.API_BASE||''}/api/bot/signals?limit=100`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const rows = (data.signals || data || []).filter(r =>
+        filterVal === 'all' || r.verdict === filterVal
+      );
+      renderDecisionStream(rows);
+    } catch (err) { console.error('Decision stream error:', err); }
+  }
+
+  function renderDecisionStream(rows) {
+    const tbody = document.getElementById('dsBody');
+    if (!tbody) return;
+    if (!rows || rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">No decisions yet</td></tr>`;
+      return;
+    }
+
+    // gate_failed codes: 0.2=freshness, 0.3=chase, 0.4=evTrend, 1=gate1, 2=gate2, 3=gate3, null=passed
+    const filterLabel = f => {
+      if (f == null) return '—';
+      const n = parseFloat(f);
+      if (n === 0.2) return 'stale';
+      if (n === 0.3) return 'chase';
+      if (n === 0.4) return 'evTrend';
+      if (n === 1)   return 'G1';
+      if (n === 2)   return 'G2';
+      if (n === 3)   return 'G3';
+      return String(f);
+    };
+
+    tbody.innerHTML = rows.slice(0, 80).map(r => {
+      const t = new Date(r.created_at);
+      const timeStr = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      const isTraded = r.verdict === 'TRADE';
+      const verdictColor = isTraded ? 'var(--green)' : 'var(--text-muted)';
+      const dirColor = r.direction === 'YES' ? 'var(--green)' : r.direction === 'NO' ? 'var(--red)' : 'var(--text-muted)';
+      const ev = r.ev_adj != null ? parseFloat(r.ev_adj) : null;
+      const evStr = ev != null ? (ev >= 0 ? '+' : '') + ev.toFixed(2) + '%' : '—';
+      const evColor = ev == null ? 'var(--text-muted)' : ev >= 0 ? 'var(--green)' : 'var(--red)';
+      const lag = r.lag_age_sec != null ? parseFloat(r.lag_age_sec).toFixed(0) + 's' : '—';
+      const spread = r.spread_pct != null ? (parseFloat(r.spread_pct) * 100).toFixed(0) + '%' : '—';
+      const filter = filterLabel(r.gate_failed);
+      const reason = (r.reason || '').slice(0, 60);
+
+      return `<tr style="border-top:1px solid var(--border);${isTraded ? 'background:rgba(0,232,122,0.04);' : ''}">
+        <td style="padding:5px 10px;color:var(--text-muted);white-space:nowrap;">${timeStr}</td>
+        <td style="padding:5px 10px;text-align:center;font-weight:600;color:${dirColor};">${r.direction || '—'}</td>
+        <td style="padding:5px 10px;text-align:center;color:var(--amber);">${filter}</td>
+        <td style="padding:5px 10px;text-align:right;color:var(--text-muted);">${lag}</td>
+        <td style="padding:5px 10px;text-align:right;font-weight:600;color:${evColor};">${evStr}</td>
+        <td style="padding:5px 10px;text-align:right;color:var(--text-muted);">${spread}</td>
+        <td style="padding:5px 10px;text-align:center;font-weight:700;color:${verdictColor};letter-spacing:0.5px;">${r.verdict}</td>
+        <td style="padding:5px 10px;color:var(--text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(r.reason||'').replace(/"/g,"'")}">${reason}</td>
+      </tr>`;
+    }).join('');
   }
 
   function renderProMetrics(s) {
