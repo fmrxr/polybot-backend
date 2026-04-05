@@ -342,6 +342,21 @@ class BotInstance {
       return;
     }
 
+    // ── 2b. Prevent multiple open positions in the same market ───────────────
+    // _checkDirectionalExposure only checks total cross-market exposure, not per-market.
+    // Without this, a filled order removed from _pendingOrders allows the next signal
+    // tick to immediately open another position in the same market.
+    if (marketId) {
+      const existing = await pool.query(
+        "SELECT id FROM trades WHERE user_id=$1 AND status='open' AND market_id=$2",
+        [this.userId, marketId]
+      );
+      if (existing.rows.length > 0) {
+        this._log('INFO', `[SKIP] Already have ${existing.rows.length} open position(s) in market ${marketId?.slice(0,12)} — skipping`);
+        return;
+      }
+    }
+
     // ── 3. Fetch lastTradePrice with freshness guarantee ─────────────────────
     // Fetched live — AbortSignal.timeout(4000) in getLastTradePrice ensures we
     // never use a stale cached value. If 404 (new market window, no trades yet),
@@ -635,8 +650,9 @@ class BotInstance {
         if (!livePrice) {
           consecutivePriceFailures++;
 
-          // 5-min market expired: close > 6 min after entry (1 min buffer past expiry)
-          if (tradeAgeMin > 6) {
+          // 5-min market expired: close >= 5.5 min after entry (30s buffer past expiry)
+          // Using > 6 would miss trades where tradeAgeMin is exactly 6.0 (6.0 > 6 = false)
+          if (tradeAgeMin >= 5.5) {
             // Query Gamma API for definitive market outcome — order books go empty at resolution
             // so the cached midPrice (still 0.50 from market start) is unreliable
             const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id)
