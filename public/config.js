@@ -1,2 +1,2 @@
-// API_BASE: empty = same domain (Vercel serves both frontend and API)
-window.API_BASE = '';
+// Backend API on Railway
+window.API_BASE = 'https://magnificent-prosperity-production.up.railway.app';
