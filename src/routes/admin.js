@@ -166,7 +166,7 @@ router.get('/logs', async (req, res) => {
     const result = await pool.query(`
       SELECT al.*, u.email as admin_email, tu.email as target_email
       FROM admin_logs al
-      LEFT JOIN users u ON al.admin_id = u.id
+      LEFT JOIN users u ON al.admin_user_id = u.id
       LEFT JOIN users tu ON al.target_user_id = tu.id
       ORDER BY al.created_at DESC
       LIMIT $1

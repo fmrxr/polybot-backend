@@ -608,6 +608,7 @@
       <li><a onclick="showPage('lab', this)"       class="nav-link">⚗ Lab</a></li>
       <li><a onclick="showPage('claude', this)"    class="nav-link">Claude AI</a></li>
       <li><a onclick="showPage('settings', this)"  class="nav-link">Settings</a></li>
+      <li id="adminNavItem" style="display:none"><a onclick="showPage('admin', this)" class="nav-link" style="color:var(--amber);">⚙ Admin</a></li>
     </ul>
     <div class="nav-right">
       <span id="userEmail"></span>
@@ -1656,6 +1657,111 @@
 </div>
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════ ADMIN PAGE ═══════════════════════════════════════ -->
+<div id="admin" class="page">
+  <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <span class="panel-title" style="color:var(--amber);">⚙ Admin Panel</span>
+      <button class="secondary" onclick="loadAdmin()" style="font-size:11px;padding:5px 12px;">↻ Refresh</button>
+    </div>
+    <!-- Platform stats -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;" id="adminStats">
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">TOTAL USERS</div>
+        <div style="font-size:22px;font-weight:700;" id="adTotalUsers">—</div>
+      </div>
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">ACTIVE BOTS</div>
+        <div style="font-size:22px;font-weight:700;color:var(--green);" id="adActiveBots">—</div>
+      </div>
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">TOTAL TRADES</div>
+        <div style="font-size:22px;font-weight:700;" id="adTotalTrades">—</div>
+      </div>
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">PLATFORM P&L</div>
+        <div style="font-size:22px;font-weight:700;" id="adTotalPnl">—</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">TRADES (24H)</div>
+        <div style="font-size:18px;font-weight:700;" id="adTrades24h">—</div>
+      </div>
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">P&L (24H)</div>
+        <div style="font-size:18px;font-weight:700;" id="adPnl24h">—</div>
+      </div>
+      <div class="panel" style="text-align:center;padding:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">WIN RATE</div>
+        <div style="font-size:18px;font-weight:700;color:var(--green);" id="adWinRate">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User management table -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div class="panel-title" style="margin-bottom:12px;">Users</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;" id="adminUsersTable">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--text-muted);text-transform:uppercase;font-size:10px;letter-spacing:.5px;">
+            <th style="padding:8px;text-align:left;">Email</th>
+            <th style="padding:8px;text-align:center;">Role</th>
+            <th style="padding:8px;text-align:center;">Bot</th>
+            <th style="padding:8px;text-align:center;">Mode</th>
+            <th style="padding:8px;text-align:right;">Trades</th>
+            <th style="padding:8px;text-align:right;">Win%</th>
+            <th style="padding:8px;text-align:right;">P&L</th>
+            <th style="padding:8px;text-align:center;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="adminUsersBody">
+          <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- All trades -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <span class="panel-title">All Trades</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span id="adminTradeCount" style="font-size:11px;color:var(--text-muted);"></span>
+        <button class="secondary" onclick="loadAdminTrades(1)" style="font-size:11px;padding:4px 10px;">↻</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--text-muted);text-transform:uppercase;font-size:10px;">
+            <th style="padding:6px 8px;text-align:left;">User</th>
+            <th style="padding:6px 8px;text-align:left;">Market</th>
+            <th style="padding:6px 8px;text-align:center;">Dir</th>
+            <th style="padding:6px 8px;text-align:right;">Entry</th>
+            <th style="padding:6px 8px;text-align:right;">Size</th>
+            <th style="padding:6px 8px;text-align:right;">P&L</th>
+            <th style="padding:6px 8px;text-align:center;">Result</th>
+            <th style="padding:6px 8px;text-align:center;">Time</th>
+          </tr>
+        </thead>
+        <tbody id="adminTradesBody">
+          <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="adminTradesPagination" style="display:flex;gap:6px;justify-content:center;margin-top:12px;flex-wrap:wrap;"></div>
+  </div>
+
+  <!-- Admin action log -->
+  <div class="panel">
+    <div class="panel-title" style="margin-bottom:12px;">Admin Action Log</div>
+    <div id="adminLogsBody" style="font-size:12px;"></div>
+  </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
 </div><!-- /container -->
 </main>
 
@@ -1774,6 +1880,9 @@
       // Start real-time SSE stream for live market viewer
       initLiveStream();
 
+      // Check admin access (shows nav link if user is admin)
+      await checkAdminAccess();
+
       loadSettingsIntoForms(userSettings);
     } catch (err) {
       console.error('Init error:', err);
@@ -1798,6 +1907,7 @@
     if (pageId === 'lab') loadLab();
     if (pageId === 'settings') loadSettingsFromAPI();
     if (pageId === 'dashboard') loadDashboard();
+    if (pageId === 'admin') loadAdmin();
   }
 
   function switchSettingsTab(tabId, clickedEl) {
@@ -3694,6 +3804,176 @@
 
   // ─── Patch authMiddleware to also accept ?token= query param for SSE ─────
   // (Applied server-side — see note in bot.js. This comment is just a reminder.)
+
+  // ═══════════════════════════════════════════ ADMIN PANEL ═══════════════════
+
+  async function checkAdminAccess() {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch((window.API_BASE||'')+'/api/admin/analytics', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        window._isAdmin = true;
+        document.getElementById('adminNavItem').style.display = '';
+      }
+    } catch (_) {}
+  }
+
+  async function loadAdmin() {
+    const token = localStorage.getItem('token');
+    try {
+      // Load platform stats
+      const statsRes = await fetch((window.API_BASE||'')+'/api/admin/analytics', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (statsRes.ok) {
+        const s = await statsRes.json();
+        const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
+        set('adTotalUsers', s.total_users ?? s.totalUsers);
+        set('adActiveBots', s.active_bots ?? s.activeBots);
+        set('adTotalTrades', s.total_trades ?? s.totalTrades);
+        const pnl = parseFloat(s.total_pnl ?? s.totalPnl ?? 0);
+        const el = document.getElementById('adTotalPnl');
+        if (el) { el.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2); el.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)'; }
+        set('adTrades24h', s.trades_24h ?? s.trades24h);
+        const pnl24 = parseFloat(s.pnl_24h ?? s.pnl24h ?? 0);
+        const el24 = document.getElementById('adPnl24h');
+        if (el24) { el24.textContent = (pnl24 >= 0 ? '+' : '') + '$' + pnl24.toFixed(2); el24.style.color = pnl24 >= 0 ? 'var(--green)' : 'var(--red)'; }
+        const wr = parseFloat(s.platform_win_rate ?? s.win_rate ?? s.winRate ?? 0);
+        set('adWinRate', wr.toFixed(1) + '%');
+      }
+
+      // Load users
+      const usersRes = await fetch((window.API_BASE||'')+'/api/admin/users', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (usersRes.ok) {
+        const users = await usersRes.json();
+        renderAdminUsers(Array.isArray(users) ? users : (users.users || []));
+      }
+
+      // Load logs
+      const logsRes = await fetch((window.API_BASE||'')+'/api/admin/logs?limit=20', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (logsRes.ok) {
+        const logs = await logsRes.json();
+        renderAdminLogs(Array.isArray(logs) ? logs : (logs.logs || []));
+      }
+
+      // Load trades page 1
+      loadAdminTrades(1);
+    } catch (err) {
+      console.error('Admin load error:', err);
+    }
+  }
+
+  function renderAdminUsers(users) {
+    const tbody = document.getElementById('adminUsersBody');
+    if (!tbody) return;
+    if (!users.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No users</td></tr>'; return; }
+    tbody.innerHTML = users.map(u => {
+      const pnl = parseFloat(u.total_pnl || 0);
+      const wr = parseFloat(u.win_rate || 0);
+      const botActive = u.bot_active || u.is_active;
+      return `<tr>
+        <td style="padding:8px 6px;">${u.email || '—'}</td>
+        <td style="padding:8px 6px;"><span style="color:${u.role==='admin'?'var(--amber)':'var(--text-muted)'}">${u.role||'user'}</span></td>
+        <td style="padding:8px 6px;"><span style="color:${botActive?'var(--green)':'var(--text-muted)'}">${botActive?'ON':'OFF'}</span></td>
+        <td style="padding:8px 6px;">${u.paper_trading?'<span style="color:var(--cyan)">Paper</span>':'<span style="color:var(--amber)">Live</span>'}</td>
+        <td style="padding:8px 6px;">${u.trade_count||0}</td>
+        <td style="padding:8px 6px;">${wr.toFixed(1)}%</td>
+        <td style="padding:8px 6px;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
+        <td style="padding:8px 6px;">
+          <button onclick="adminToggleBot(${u.id}, ${botActive})" style="padding:3px 8px;font-size:10px;font-family:var(--font);background:${botActive?'var(--red-dim)':'var(--green-dim)'};color:${botActive?'var(--red)':'var(--green)'};border:1px solid ${botActive?'var(--red)':'var(--green)'};border-radius:3px;cursor:pointer;">
+            ${botActive?'Stop':'Start'}
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function adminToggleBot(userId, currentlyActive) {
+    const token = localStorage.getItem('token');
+    const action = currentlyActive ? 'stop' : 'start';
+    try {
+      const res = await fetch((window.API_BASE||'')+`/api/admin/users/${userId}/toggle-bot`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      if (res.ok) { showAlert(`Bot ${action}ped for user ${userId}`, 'success'); loadAdmin(); }
+      else { const d = await res.json(); showAlert(d.error || 'Action failed', 'error'); }
+    } catch (err) { showAlert('Request failed', 'error'); }
+  }
+
+  let _adminTradesPage = 1;
+  async function loadAdminTrades(page) {
+    _adminTradesPage = page || 1;
+    const token = localStorage.getItem('token');
+    const tbody = document.getElementById('adminTradesBody');
+    const pag = document.getElementById('adminTradesPagination');
+    if (!tbody) return;
+    try {
+      const res = await fetch((window.API_BASE||'')+`/api/admin/trades?page=${_adminTradesPage}&limit=20`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const trades = Array.isArray(data) ? data : (data.trades || []);
+      const totalPages = data.pages || data.totalPages || data.total_pages || 1;
+
+      if (!trades.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No trades</td></tr>';
+        if (pag) pag.innerHTML = '';
+        return;
+      }
+
+      tbody.innerHTML = trades.map(t => {
+        const pnl = parseFloat(t.pnl || 0);
+        const date = t.created_at ? new Date(t.created_at).toLocaleString() : '—';
+        return `<tr>
+          <td style="padding:6px 4px;color:var(--text-muted);font-size:11px;">${t.email||t.user_email||t.user_id||'?'}</td>
+          <td style="padding:6px 4px;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${t.market_question||''}">${(t.market_question||'—').substring(0,40)}${(t.market_question||'').length>40?'…':''}</td>
+          <td style="padding:6px 4px;"><span style="color:${t.direction==='YES'?'var(--green)':'var(--red)'}">${t.direction||'—'}</span></td>
+          <td style="padding:6px 4px;">$${parseFloat(t.entry_price||0).toFixed(4)}</td>
+          <td style="padding:6px 4px;">$${parseFloat(t.trade_size||0).toFixed(2)}</td>
+          <td style="padding:6px 4px;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
+          <td style="padding:6px 4px;"><span style="color:${t.status==='open'?'var(--cyan)':t.status==='closed'?'var(--text-muted)':'var(--amber)'}">${t.status||'—'}</span></td>
+          <td style="padding:6px 4px;font-size:10px;color:var(--text-muted);">${date}</td>
+        </tr>`;
+      }).join('');
+
+      // Pagination
+      if (pag && totalPages > 1) {
+        let btns = '';
+        for (let i = 1; i <= Math.min(totalPages, 10); i++) {
+          btns += `<button onclick="loadAdminTrades(${i})" style="padding:3px 8px;font-family:var(--font);font-size:11px;background:${i===_adminTradesPage?'var(--amber)':'transparent'};color:${i===_adminTradesPage?'var(--bg)':'var(--text-muted)'};border:1px solid ${i===_adminTradesPage?'var(--amber)':'var(--border)'};border-radius:3px;cursor:pointer;">${i}</button>`;
+        }
+        pag.innerHTML = btns;
+      } else if (pag) pag.innerHTML = '';
+    } catch (err) { console.error('Admin trades error:', err); }
+  }
+
+  function renderAdminLogs(logs) {
+    const el = document.getElementById('adminLogsBody');
+    if (!el) return;
+    if (!logs.length) { el.innerHTML = '<div style="color:var(--text-muted);padding:12px;">No logs</div>'; return; }
+    el.innerHTML = logs.map(l => {
+      const date = l.created_at ? new Date(l.created_at).toLocaleString() : '';
+      const details = l.details ? JSON.stringify(l.details).substring(0,80) : '';
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:baseline;">
+        <span style="color:var(--text-muted);font-size:10px;white-space:nowrap;">${date}</span>
+        <span style="color:var(--amber);">${l.action||'—'}</span>
+        <span style="color:var(--text-muted);">user#${l.target_user_id||'?'}</span>
+        <span style="color:var(--text-muted);font-size:10px;">${details}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
 </script>
 </body>
 </html>
