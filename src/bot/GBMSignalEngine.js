@@ -232,8 +232,10 @@ class GBMSignalEngine {
         const lagAgeSeconds = lastTick > 0 ? (Date.now() - lastTick) / 1000 : 999;
         const maxLagAge = this.settings.stale_lag_seconds || 20;
 
+        // Always record lagAge so avg_lag_age computes for ALL signals, not just stale ones
+        log.gates.freshness = { lagAge: lagAgeSeconds, max: maxLagAge, passed: lagAgeSeconds <= maxLagAge };
+
         if (lagAgeSeconds > maxLagAge) {
-          log.gates.freshness = { lagAge: lagAgeSeconds, max: maxLagAge, passed: false };
           continue;
         }
 

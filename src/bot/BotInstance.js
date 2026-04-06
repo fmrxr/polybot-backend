@@ -1228,6 +1228,9 @@ class BotInstance {
       console.error('[SignalLog ERROR] Missing userId — cannot persist signal');
       return;
     }
+    // Skip logging "No market passed all gates" summary SKIPs — they have no
+    // direction/ev/spread data and flood the decision stream with useless rows.
+    if (signal.log?.reason === 'No market passed all gates') return;
 
     try {
       const gates = signal.log?.gates || {};
