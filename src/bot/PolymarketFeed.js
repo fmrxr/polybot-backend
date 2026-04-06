@@ -72,7 +72,7 @@ class PolymarketFeed {
     if (fromGamma.length > 0) {
       this.marketsCache = fromGamma;
       this.lastMarketFetch = nowUTC;
-      this.marketCacheTTL = 30000;
+      this.marketCacheTTL = 15000; // 15s — re-check frequently so new windows are picked up fast
       return fromGamma;
     }
 
@@ -117,8 +117,14 @@ class PolymarketFeed {
 
     const _normalise = (m) => this._normaliseMarket(m, nowSec, false, true);
 
-    // ── Strategy 0: slug-based lookup (btc-updown-5m-<epochSec>) ──────────────
-    // 5-min windows align to 300s boundaries. Try current, previous, and next.
+    // ── Strategy 0 + 1 combined: collect ALL active BTC markets ─────────────────
+    // S0: slug-based lookup for exactly-aligned 5-min windows
+    // S1: end_date_min/max sweep for all markets ending in next 30 min
+    // Both run always — S0 alone misses markets with non-slug-aligned windows
+    // (e.g. 1:30-1:45, 1:35-1:40 that exist alongside the boundary-only slug market)
+    const seenIds = new Set();
+    const collected = [];
+
     const windowBase = Math.floor(nowSec / 300) * 300;
     for (const t of [windowBase, windowBase + 300, windowBase - 300]) {
       const slug = `btc-updown-5m-${t}`;
@@ -131,7 +137,10 @@ class PolymarketFeed {
           console.log(`[PolymarketFeed] Slug ${slug} → "${(m.question||'').trim().slice(0,55)}" | ends in ${endMs ? ((endMs-nowUTC)/1000).toFixed(0)+'s' : '?'}`);
           if (endMs > nowUTC) {
             const norm = _normalise(m);
-            if (norm) { console.log('[PolymarketFeed] S0 slug match — found BTC 5-min market'); return [norm]; }
+            if (norm) {
+              const id = norm.id || norm.conditionId;
+              if (id && !seenIds.has(id)) { seenIds.add(id); collected.push(norm); }
+            }
           }
         } else if (res.status !== 404) {
           console.warn(`[PolymarketFeed] Slug ${slug} HTTP ${res.status}`);
@@ -141,9 +150,9 @@ class PolymarketFeed {
       }
     }
 
-    // ── Strategy 1: end_date_min/max ──────────────────────────────────────────
+    // ── Strategy 1: end_date_min/max — 30-min window to catch all active markets ─
     const endMin = new Date(nowUTC).toISOString();
-    const endMax = new Date(nowUTC + 10 * 60 * 1000).toISOString();
+    const endMax = new Date(nowUTC + 30 * 60 * 1000).toISOString();
     try {
       const url = `https://gamma-api.polymarket.com/markets?end_date_min=${endMin}&end_date_max=${endMax}&active=true&closed=false&limit=100`;
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -151,31 +160,32 @@ class PolymarketFeed {
         const markets = await res.json();
         if (Array.isArray(markets) && markets.length > 0) {
           const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
-          if (btc.length > 0) {
-            console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s)`);
-            // Try _normaliseMarket first
-            const normalised = btc.map(_normalise).filter(Boolean);
-            if (normalised.length > 0) return normalised;
-            // normalise returned empty — build directly from Gamma data (already validated by end_date_min/max)
-            console.warn('[PolymarketFeed] S1: _normalise returned null for all — building directly');
-            const direct = btc.map(m => {
-              const endMs = _endMs(m);
-              if (!endMs || endMs <= nowUTC) { console.warn(`[PolymarketFeed] S1 direct: endMs=${endMs} nowUTC=${nowUTC} — skipping`); return null; }
-              const tokens = m.tokens || [];
-              let clobIds = m.clobTokenIds || m.clob_token_ids;
-              if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = []; } }
-              if (!clobIds || !clobIds.length) clobIds = tokens.map(t => t.token_id || t.tokenId).filter(Boolean);
-              return {
-                ...m,
-                id: m.id || m.conditionId || m.condition_id,
-                question: m.question || m.title || '',
-                tokens,
-                clobTokenIds: clobIds || [],
-                end_date_iso: new Date(endMs).toISOString(),
-                start_date_iso: new Date(endMs - 300000).toISOString(),
-              };
-            }).filter(Boolean);
-            if (direct.length > 0) { console.log(`[PolymarketFeed] S1 direct builder: ${direct.length} market(s)`); return direct; }
+          console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) in next 30 min`);
+          for (const m of btc) {
+            const norm = _normalise(m);
+            if (norm) {
+              const id = norm.id || norm.conditionId;
+              if (id && !seenIds.has(id)) { seenIds.add(id); collected.push(norm); }
+              continue;
+            }
+            // _normalise rejected it — build directly from Gamma data
+            const endMs = _endMs(m);
+            if (!endMs || endMs <= nowUTC) continue;
+            const tokens = m.tokens || [];
+            let clobIds = m.clobTokenIds || m.clob_token_ids;
+            if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = []; } }
+            if (!clobIds || !clobIds.length) clobIds = tokens.map(t => t.token_id || t.tokenId).filter(Boolean);
+            const direct = {
+              ...m,
+              id: m.id || m.conditionId || m.condition_id,
+              question: m.question || m.title || '',
+              tokens,
+              clobTokenIds: clobIds || [],
+              end_date_iso: new Date(endMs).toISOString(),
+              start_date_iso: new Date(endMs - 300000).toISOString(),
+            };
+            const id = direct.id;
+            if (id && !seenIds.has(id)) { seenIds.add(id); collected.push(direct); }
           }
         }
       } else {
@@ -185,7 +195,10 @@ class PolymarketFeed {
       console.warn('[PolymarketFeed] S1 failed:', e.message);
     }
 
-    return [];
+    if (collected.length > 0) {
+      console.log(`[PolymarketFeed] Discovery complete: ${collected.length} BTC market(s) — ${collected.map(m=>(m.question||'').slice(20,45)).join(' | ')}`);
+    }
+    return collected;
   }
 
   /**
