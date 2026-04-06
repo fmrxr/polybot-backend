@@ -7,7 +7,7 @@ const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
 
-const { pool, initDB, addDecisionsTable, addCopyTradingSchema, addWhalePerformanceSchema } = require('../src/models/db');
+const { pool, initDB } = require('../src/models/db');
 const authRoutes   = require('../src/routes/auth');
 const botRoutes    = require('../src/routes/bot');
 const tradesRoutes = require('../src/routes/trades');
@@ -37,15 +37,22 @@ app.use(async (req, res, next) => {
   if (dbReady) return next();
   try {
     await initDB();
-    await addDecisionsTable();
-    await addCopyTradingSchema();
-    await addWhalePerformanceSchema();
     const adminEmail = process.env.ADMIN_EMAIL;
     if (adminEmail) {
       await pool.query('UPDATE users SET is_admin = true WHERE email = $1', [adminEmail.toLowerCase()]);
     }
     // No BotManager on Vercel — bot runs on Railway
     global.botManager = null;
+    app.locals.botManager = {
+      startBot: async () => { throw new Error('Bot runs on Railway, not Vercel'); },
+      stopBot: async () => { throw new Error('Bot runs on Railway, not Vercel'); },
+      getBotStatus: () => ({ status: 'unknown', message: 'Bot managed by Railway' }),
+      getBot: () => null,
+      getActiveCount: () => 0,
+      startCopyBot: async () => { throw new Error('Bot runs on Railway, not Vercel'); },
+      stopCopyBot: async () => {},
+      stopAll: async () => {},
+    };
     dbReady = true;
     next();
   } catch (e) {
