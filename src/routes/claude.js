@@ -8,7 +8,7 @@ const { decrypt } = require('../services/encryption');
 router.post('/test', authMiddleware, async (req, res) => {
   try {
     const settings = await pool.query(
-      'SELECT claude_api_key_encrypted FROM bot_settings WHERE user_id = $1',
+      'SELECT claude_api_key_encrypted, claude_model FROM bot_settings WHERE user_id = $1',
       [req.userId]
     );
 
@@ -17,6 +17,7 @@ router.post('/test', authMiddleware, async (req, res) => {
     }
 
     const apiKey = decrypt(settings.rows[0].claude_api_key_encrypted);
+    const model = settings.rows[0].claude_model || 'claude-sonnet-4-6';
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -26,7 +27,7 @@ router.post('/test', authMiddleware, async (req, res) => {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model,
         max_tokens: 10,
         messages: [{ role: 'user', content: 'ping' }]
       })
@@ -51,7 +52,7 @@ router.post('/test', authMiddleware, async (req, res) => {
 router.post('/analyze', authMiddleware, async (req, res) => {
   try {
     const settings = await pool.query(
-      'SELECT claude_api_key_encrypted FROM bot_settings WHERE user_id = $1',
+      'SELECT claude_api_key_encrypted, claude_model FROM bot_settings WHERE user_id = $1',
       [req.userId]
     );
 
@@ -60,6 +61,7 @@ router.post('/analyze', authMiddleware, async (req, res) => {
     }
 
     const apiKey = decrypt(settings.rows[0].claude_api_key_encrypted);
+    const model = settings.rows[0].claude_model || 'claude-sonnet-4-6';
 
     // Fetch recent trade data for analysis
     const trades = await pool.query(`
@@ -114,7 +116,7 @@ Be specific with numbers. If you recommend changing a threshold, state the exact
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model,
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }]
       })
