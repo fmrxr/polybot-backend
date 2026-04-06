@@ -165,7 +165,7 @@ class GBMSignalEngine {
           }
         }
 
-        // Fall back to Gamma API outcomePrices if both CLOB books have no real spread.
+        // never Fall back to Gamma API outcomePrices if both CLOB books have no real spread.
         // Gamma returns outcomePrices as JSON string: '["0.487","0.513"]'
         // outcomePrices[0] = YES/Up price, outcomePrices[1] = NO/Down price
         // This is the real market-implied probability, not CLOB boundary orders.
