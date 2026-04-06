@@ -333,7 +333,7 @@ class GBMSignalEngine {
           confidence: micro.confidence,
           threshold: gate1Threshold,
           hasLag: micro.hasMarketLag,
-          passed: true  // informational only — Gate 2 EV is the real filter
+          passed: micro.confidence >= gate1Threshold  // informational only — Gate 2 EV is the real filter, no hard block here
         };
 
         // ==========================================
