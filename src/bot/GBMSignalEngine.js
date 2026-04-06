@@ -391,29 +391,44 @@ class GBMSignalEngine {
           continue;
         }
 
-        // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 books have enormous totalDepth
-        // (50000+ USDC in ghost resting orders) but zero real liquidity. Spread is
-        // the correct signal — a 90%+ spread means no real market participants.
-        // fillProb must be 0 here regardless of depth.
-        if (spread >= 0.90) {
-          log.gates.boundaryBook = { spread, passed: false };
-          log.reason = `Boundary book: spread=${(spread*100).toFixed(0)}% — no real liquidity`;
-          continue;
+        // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 books have no resting liquidity at fair
+        // value. However, execution uses GTC limit orders at Gamma price — so a boundary
+        // CLOB book does NOT mean we can't trade. It means we place a passive limit and
+        // wait for a counter-party.
+        //
+        // Allow trading on boundary books ONLY when Gamma shows meaningful displacement
+        // (≥ 2% from 0.5 = |yesPrice - 0.5| > 0.02). At exactly 0.5 there's no edge.
+        // For real books (spread < 90%), normal fill probability logic applies below.
+        const isBoundaryBook = spread >= 0.90;
+        if (isBoundaryBook) {
+          const gammaDisp = Math.abs(yesPrice - 0.5);
+          if (gammaDisp < 0.02) {
+            log.gates.boundaryBook = { spread, gammaDisp, passed: false };
+            log.reason = `Boundary book + flat Gamma (|${yesPrice.toFixed(3)}-0.5|=${gammaDisp.toFixed(3)} < 0.02) — no edge`;
+            continue;
+          }
+          // Gamma shows real displacement — allow GTC limit execution
+          log.gates.boundaryBook = { spread, gammaDisp, passed: true, note: 'GTC-limit-ok' };
         }
 
         // DEPTH FLOOR: avoid thin real books (< 100 USDC total depth)
         const totalDepth = orderBook.totalDepth || 0;
-        if (totalDepth < 100) {
+        if (!isBoundaryBook && totalDepth < 100) {
           log.reason = `Thin book: depth=${totalDepth.toFixed(0)} USDC < 100 min`;
           continue;
         }
 
         // Fill probability: spread-adjusted depth score.
-        // totalDepth on a tight (1-2%) book of 500 USDC = 100% fill confidence.
-        // Same depth on a 50% spread book = much lower — wide spread means
-        // resting orders are far from mid and won't fill a passive limit.
-        const spreadPenalty = Math.max(0, 1 - spread * 5); // 10% spread → 0.5, 20% → 0
-        const fillProb = Math.min(1.0, (totalDepth / 500) * spreadPenalty);
+        // Boundary books use GTC limit execution — assign baseline fillProb of 0.40
+        // (moderate confidence: passive limit will fill if any counter-party enters).
+        // Real books use spread-adjusted depth score.
+        let fillProb;
+        if (isBoundaryBook) {
+          fillProb = 0.40; // GTC passive limit on boundary book
+        } else {
+          const spreadPenalty = Math.max(0, 1 - spread * 5); // 10% spread → 0.5, 20% → 0
+          fillProb = Math.min(1.0, (totalDepth / 500) * spreadPenalty);
+        }
 
         // Evaluate BOTH sides — check EV directly against floor (no fillProb penalty)
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
