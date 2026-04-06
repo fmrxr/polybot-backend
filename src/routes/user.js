@@ -71,7 +71,8 @@ router.put('/settings', async (req, res) => {
     market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
     claude_api_key, claude_model, auto_claude_analysis,
     gate1_threshold, gate2_ev_floor, gate3_enabled, gate3_min_delta,
-    order_timeout_sec, adverse_ticks, kelly_mode, snipe_timer_seconds
+    order_timeout_sec, adverse_ticks, kelly_mode, snipe_timer_seconds,
+    flip_threshold, ev_decay_ratio
   } = req.body;
 
   try {
@@ -104,8 +105,8 @@ router.put('/settings', async (req, res) => {
       INSERT INTO bot_settings (user_id, encrypted_private_key, encrypted_polymarket_api_key, polymarket_wallet_address, kelly_cap, max_daily_loss, max_trade_size,
         min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
         claude_api_key_encrypted, claude_model, claude_auto_analysis, gate1_threshold, gate2_ev_floor, gate3_enabled, gate3_min_delta,
-        order_timeout_sec, adverse_ticks, kelly_mode, snipe_timer_seconds, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, NOW())
+        order_timeout_sec, adverse_ticks, kelly_mode, snipe_timer_seconds, flip_threshold, ev_decay_ratio, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
@@ -133,6 +134,8 @@ router.put('/settings', async (req, res) => {
         adverse_ticks = COALESCE($25, bot_settings.adverse_ticks),
         kelly_mode = COALESCE($26, bot_settings.kelly_mode),
         snipe_timer_seconds = COALESCE($27, bot_settings.snipe_timer_seconds),
+        flip_threshold = COALESCE($28, bot_settings.flip_threshold),
+        ev_decay_ratio = COALESCE($29, bot_settings.ev_decay_ratio),
         updated_at = NOW()
     `, [
       req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
@@ -148,7 +151,8 @@ router.put('/settings', async (req, res) => {
       gate3_enabled !== undefined ? gate3_enabled : null,
       gate3_min_delta || null,
       order_timeout_sec || null, adverse_ticks || null,
-      kelly_mode || null, snipe_timer_seconds || null
+      kelly_mode || null, snipe_timer_seconds || null,
+      flip_threshold || null, ev_decay_ratio || null
     ]);
 
     res.json({ success: true });

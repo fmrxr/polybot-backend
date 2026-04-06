@@ -7,7 +7,9 @@ const pool = new Pool({
     rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED === 'true'
   } : false,
   max: 20,
-  idleTimeoutMillis: 30000,
+  // Keep connections alive for 10 minutes — the bot ticks every 8-10s so a
+  // 30s idle timeout caused constant connect/disconnect churn (new client log every 20s).
+  idleTimeoutMillis: 600000,
   connectionTimeoutMillis: 10000,
 });
 
@@ -216,7 +218,9 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS market_prob_max DECIMAL(5,3) DEFAULT 0.90,
         ADD COLUMN IF NOT EXISTS claude_model VARCHAR(100),
         ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false,
-        ADD COLUMN IF NOT EXISTS kelly_mode VARCHAR(10) DEFAULT 'manual';
+        ADD COLUMN IF NOT EXISTS kelly_mode VARCHAR(10) DEFAULT 'manual',
+        ADD COLUMN IF NOT EXISTS flip_threshold DECIMAL(5,2) DEFAULT 5.00,
+        ADD COLUMN IF NOT EXISTS ev_decay_ratio DECIMAL(5,2) DEFAULT 0.50;
 
       ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),

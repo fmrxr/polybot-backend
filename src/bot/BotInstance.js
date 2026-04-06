@@ -221,7 +221,14 @@ class BotInstance {
       // BTC oscillates ±0.03% naturally every 30s; without this, flips fire on noise.
       const holdTimeMin = (Date.now() - new Date(existingTrade.created_at).getTime()) / 60000;
       if (holdTimeMin < 2.0) {
-        this._log('INFO', `⏳ Flip suppressed — position ${holdTimeMin.toFixed(1)}min old (min 2min to reduce noise flips)`);
+        // Rate-limit this log to once per minute per trade — it fires every tick otherwise
+        const suppressKey = `flipSuppress_${existingTrade.id}`;
+        const lastLog = this._flipSuppressLogAt?.[suppressKey] || 0;
+        if (Date.now() - lastLog > 60000) {
+          this._log('INFO', `⏳ Flip suppressed — position ${holdTimeMin.toFixed(1)}min old (min 2min to reduce noise flips)`);
+          if (!this._flipSuppressLogAt) this._flipSuppressLogAt = {};
+          this._flipSuppressLogAt[suppressKey] = Date.now();
+        }
         return false;
       }
 
@@ -314,9 +321,9 @@ class BotInstance {
     this._cleanOldFlips();
     const recentFlipCount = this.recentFlips.length;
 
-    // Base threshold: 5% EV differential required (was 2% — BTC oscillation creates 3-4% noise swings)
-    // Escalation: +1% per recent flip (last 10 minutes)
-    const baseThreshold = 5.0;
+    // Base threshold from settings (default 5% — BTC oscillation creates 3-4% noise swings)
+    // Escalation: +1% per recent flip (last 10 minutes) to suppress whipsaw
+    const baseThreshold = parseFloat(this.settings.flip_threshold) || 5.0;
     const escalation = recentFlipCount * 1.0;
 
     return baseThreshold + escalation;

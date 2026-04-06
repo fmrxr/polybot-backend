@@ -1260,6 +1260,26 @@
         Paper orders use stochastic fill simulation — fills are <strong style="color:var(--yellow);">NOT guaranteed</strong>.
         Live orders poll CLOB status until filled, timed-out, or adverse-selection-cancelled.
       </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">Flip &amp; EV Exit</div>
+      <div class="form-group">
+        <label>Flip Threshold (%)</label>
+        <div class="slider-container">
+          <input type="range" id="flipThreshold" min="2" max="15" step="0.5" value="5" onchange="updateSliderValue('flipThreshold')">
+          <span class="slider-value" id="flipThresholdValue">5%</span>
+        </div>
+        <div class="form-hint">Min EV gain required to flip an open position. Escalates +1% per recent flip. BTC noise creates ~3-4% EV swings — 5% filters most of it.</div>
+      </div>
+      <div class="form-group">
+        <label>EV Decay Exit Ratio</label>
+        <div class="slider-container">
+          <input type="range" id="evDecayRatio" min="0.2" max="0.9" step="0.05" value="0.5" onchange="updateSliderValue('evDecayRatio')">
+          <span class="slider-value" id="evDecayRatioValue">0.50</span>
+        </div>
+        <div class="form-hint">Exit when current EV drops below this fraction of the peak EV seen for the market. 0.5 = exit when EV halves from peak.</div>
+      </div>
       <div style="display:flex;gap:8px;margin-top:4px;">
         <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
         <button class="secondary" onclick="resetSettingsToDefaults('strategy')" style="flex:0 0 auto;">Reset</button>
@@ -2644,6 +2664,8 @@
     if (settings.snipe_timer_seconds) { document.getElementById('snipeTiming').value = settings.snipe_timer_seconds; updateSliderValue('snipeTiming'); }
     if (settings.order_timeout_sec) { document.getElementById('orderTimeout').value = settings.order_timeout_sec; updateSliderValue('orderTimeout'); }
     if (settings.adverse_ticks) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
+    if (settings.flip_threshold != null) { document.getElementById('flipThreshold').value = settings.flip_threshold; updateSliderValue('flipThreshold'); }
+    if (settings.ev_decay_ratio != null) { document.getElementById('evDecayRatio').value = settings.ev_decay_ratio; updateSliderValue('evDecayRatio'); }
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
     if (settings.gate2_ev_floor) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
     _syncLabParamsFromSettings(settings);
@@ -2701,6 +2723,8 @@
     if      (id === 'gate2Floor')      span.textContent = parseFloat(v).toFixed(1)+'%';
     else if (id === 'minEdge')         span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
     else if (id === 'gate3MinDelta')   span.textContent = parseFloat(v).toFixed(3)+'%';
+    else if (id === 'flipThreshold')   span.textContent = parseFloat(v).toFixed(1)+'%';
+    else if (id === 'evDecayRatio')    span.textContent = parseFloat(v).toFixed(2);
     else if (id.includes('Threshold')) span.textContent = parseFloat(v).toFixed(2);
     else if (id.includes('Timing') || id.includes('Timeout')) span.textContent = v+'s';
     else if (id.includes('Cap'))     span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
@@ -2765,7 +2789,9 @@
       gate3_min_delta: parseFloat(document.getElementById('gate3MinDelta')?.value || '0.05'),
       snipe_timer_seconds: parseInt(document.getElementById('snipeTiming').value),
       order_timeout_sec: parseInt(document.getElementById('orderTimeout').value),
-      adverse_ticks: parseInt(document.getElementById('adverseTicks').value)
+      adverse_ticks: parseInt(document.getElementById('adverseTicks').value),
+      flip_threshold: parseFloat(document.getElementById('flipThreshold').value),
+      ev_decay_ratio: parseFloat(document.getElementById('evDecayRatio').value)
     };
     try {
       const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
@@ -2859,8 +2885,9 @@
         gate2Floor: 3.0,
         gate3Enabled: true,
         minEdge: 0.02,
-        snipeTiming: 10
-
+        snipeTiming: 10,
+        flipThreshold: 5.0,
+        evDecayRatio: 0.50
       },
       risk: {
         kellyMode: 'manual',
@@ -2877,6 +2904,8 @@
       document.getElementById('gate3Enabled').checked = d.gate3Enabled;
       document.getElementById('minEdge').value = d.minEdge; updateSliderValue('minEdge');
       document.getElementById('snipeTiming').value = d.snipeTiming; updateSliderValue('snipeTiming');
+      document.getElementById('flipThreshold').value = d.flipThreshold; updateSliderValue('flipThreshold');
+      document.getElementById('evDecayRatio').value = d.evDecayRatio; updateSliderValue('evDecayRatio');
     } else if (tab === 'risk') {
       document.getElementById('kellyModeManual').checked = true; onKellyModeChange();
       document.getElementById('kellyCap').value = d.kellyCap; updateSliderValue('kellyCap');
