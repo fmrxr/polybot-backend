@@ -602,12 +602,12 @@
   <div class="nav-container">
     <div class="logo">AXIOM</div>
     <ul class="nav-links">
-      <li><a onclick="showPage('dashboard')" class="nav-link active">Dashboard</a></li>
-      <li><a onclick="showPage('signals')"   class="nav-link">Signals</a></li>
-      <li><a onclick="showPage('trades')"    class="nav-link">Trades</a></li>
-      <li><a onclick="showPage('lab')"       class="nav-link">⚗ Lab</a></li>
-      <li><a onclick="showPage('claude')"    class="nav-link">Claude AI</a></li>
-      <li><a onclick="showPage('settings')"  class="nav-link">Settings</a></li>
+      <li><a onclick="showPage('dashboard', this)" class="nav-link active">Dashboard</a></li>
+      <li><a onclick="showPage('signals', this)"   class="nav-link">Signals</a></li>
+      <li><a onclick="showPage('trades', this)"    class="nav-link">Trades</a></li>
+      <li><a onclick="showPage('lab', this)"       class="nav-link">⚗ Lab</a></li>
+      <li><a onclick="showPage('claude', this)"    class="nav-link">Claude AI</a></li>
+      <li><a onclick="showPage('settings', this)"  class="nav-link">Settings</a></li>
     </ul>
     <div class="nav-right">
       <span id="userEmail"></span>
@@ -913,8 +913,7 @@
     </div>
     <div class="gate-card" style="border-top:2px solid var(--green);">
       <div class="gate-title gate2">Gate 2: EV + Cost</div>
-      <div class="gate-stat"><span class="gate-stat-label">EV_adjusted avg</span><span class="gate-stat-value" id="gate2EV">—</span></div>
-      <div class="gate-stat"><span class="gate-stat-label">Total cost avg</span><span class="gate-stat-value" id="gate2Cost">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">EV_adjusted avg</span><span class="gate-stat-value" id="smGate2EV">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">Pass Rate</span><span class="gate-stat-value" id="gate2Rate">—</span></div>
       <div class="gate-stat"><span class="gate-stat-label">Fails (G2/2.5)</span><span class="gate-stat-value" id="sfGate2Count">—</span></div>
     </div>
@@ -1183,9 +1182,9 @@
   <div class="page-title"><span>▸</span> CONFIGURATION</div>
 
   <div class="tabs">
-    <button class="tab active" onclick="switchSettingsTab('strategy')">Strategy</button>
-    <button class="tab"        onclick="switchSettingsTab('risk')">Risk</button>
-    <button class="tab"        onclick="switchSettingsTab('advanced')">Advanced</button>
+    <button class="tab active" onclick="switchSettingsTab('strategy', this)">Strategy</button>
+    <button class="tab"        onclick="switchSettingsTab('risk', this)">Risk</button>
+    <button class="tab"        onclick="switchSettingsTab('advanced', this)">Advanced</button>
   </div>
 
   <!-- TAB: STRATEGY -->
@@ -1782,11 +1781,17 @@
     }
   }
 
-  function showPage(pageId) {
+  function showPage(pageId, clickedEl) {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.getElementById(pageId)?.classList.add('active');
     document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
-    event?.target.classList.add('active');
+    if (clickedEl) clickedEl.classList.add('active');
+    else {
+      // Fallback: match by data-page or text content if called programmatically
+      document.querySelectorAll('.nav-link').forEach(link => {
+        if (link.getAttribute('onclick')?.includes(`'${pageId}'`)) link.classList.add('active');
+      });
+    }
     if (pageId === 'claude') loadClaudeAnalysis();
     if (pageId === 'trades') { setTradeFilter('today'); loadTrades(); }
     if (pageId === 'signals') { loadGateStats(); loadSignals(); }
@@ -1795,11 +1800,11 @@
     if (pageId === 'dashboard') loadDashboard();
   }
 
-  function switchSettingsTab(tabId) {
+  function switchSettingsTab(tabId, clickedEl) {
     document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
     document.getElementById(tabId)?.classList.add('active');
     document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-    event?.target.classList.add('active');
+    if (clickedEl) clickedEl.classList.add('active');
   }
 
   async function startBot() {
@@ -2062,6 +2067,7 @@
       if (el('gate1Rate'))   el('gate1Rate').textContent = fmt1(s.gate1_rate) + '%';
       if (el('gate1Conf'))   el('gate1Conf').textContent = s.avg_gate1_conf != null ? parseFloat(s.avg_gate1_conf).toFixed(2) : '—';
       if (el('gate2EV'))     el('gate2EV').textContent   = fmt1(s.avg_ev_adj) + '%';
+      if (el('smGate2EV'))   el('smGate2EV').textContent = fmt1(s.avg_ev_adj) + '%';
       if (el('gate2Cost'))   el('gate2Cost').textContent = fmt2(s.avg_total_cost) + '%';
       if (el('gate2Rate'))   el('gate2Rate').textContent = fmt1(s.gate2_pass_rate) + '%';
       if (el('gate3Rate'))   el('gate3Rate').textContent = s.total > 0 ? fmt1(100 - s.skip_rate) + '%' : '—';
@@ -2215,7 +2221,8 @@
       const verdictColor = isTraded ? 'var(--green)' : 'var(--text-muted)';
       const dirColor = r.direction === 'YES' ? 'var(--green)' : r.direction === 'NO' ? 'var(--red)' : 'var(--text-muted)';
       const ev = r.ev_adj != null ? parseFloat(r.ev_adj) : null;
-      const evStr = ev != null ? (ev >= 0 ? '+' : '') + ev.toFixed(2) + '%' : '—';      const evColor = ev == null ? 'var(--text-muted)' : ev >= 0 ? 'var(--green)' : 'var(--red)';
+      const evStr = ev != null ? (ev >= 0 ? '+' : '') + ev.toFixed(2) + '%' : '—';
+      const evColor = ev == null ? 'var(--text-muted)' : ev >= 0 ? 'var(--green)' : 'var(--red)';
       const lag = r.lag_age_sec != null ? parseFloat(r.lag_age_sec).toFixed(0) + 's' : '—';
       const spread = r.spread_pct != null ? (parseFloat(r.spread_pct) * 100).toFixed(0) + '%' : '—';
       const filter = filterLabel(r.gate_failed);
@@ -2662,7 +2669,7 @@
     if (settings.gate3_min_delta) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
     if (settings.snipe_timer_seconds) { document.getElementById('snipeTiming').value = settings.snipe_timer_seconds; updateSliderValue('snipeTiming'); }
     if (settings.order_timeout_sec) { document.getElementById('orderTimeout').value = settings.order_timeout_sec; updateSliderValue('orderTimeout'); }
-    if (settings.adverse_ticks) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
+    if (settings.adverse_ticks != null) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
     if (settings.flip_threshold != null) { document.getElementById('flipThreshold').value = settings.flip_threshold; updateSliderValue('flipThreshold'); }
     if (settings.ev_decay_ratio != null) { document.getElementById('evDecayRatio').value = settings.ev_decay_ratio; updateSliderValue('evDecayRatio'); }
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
@@ -3137,6 +3144,9 @@
   let   _liveTimer     = null; // countdown interval
   let   _liveMarkets   = {};   // marketId -> { yesPrice, noPrice } — updated from SSE every 200ms
 
+  let _sseReconnectDelay = 3000;
+  let _sseReconnectTimer = null;
+
   function initLiveStream() {
     const token = localStorage.getItem('token');
     if (!token) return;
@@ -3150,6 +3160,7 @@
     _liveES = new EventSource(url);
 
     _liveES.onopen = () => {
+      _sseReconnectDelay = 3000; // reset backoff on successful connect
       const el = document.getElementById('liveStreamStatus');
       if (el) { el.textContent = '● LIVE'; el.style.color = 'var(--green)'; }
     };
@@ -3161,7 +3172,13 @@
     _liveES.onerror = () => {
       const el = document.getElementById('liveStreamStatus');
       if (el) { el.textContent = '● RECONNECTING'; el.style.color = 'var(--amber)'; }
-      // EventSource auto-reconnects; no manual retry needed
+      // EventSource auto-reconnects but we control the delay to avoid hammering
+      _liveES.close();
+      if (_sseReconnectTimer) clearTimeout(_sseReconnectTimer);
+      _sseReconnectTimer = setTimeout(() => {
+        _sseReconnectDelay = Math.min(_sseReconnectDelay * 2, 30000); // cap at 30s
+        initLiveStream();
+      }, _sseReconnectDelay);
     };
   }
 
