@@ -11,7 +11,8 @@
       "Bash(node --check src/routes/bot.js)",
       "Bash(node --check src/routes/user.js)",
       "Bash(node --check public/index.html)",
-      "Edit(/.claude/skills/frontend-auditor/**)"
+      "Edit(/.claude/skills/frontend-auditor/**)",
+      "Bash(node -e ':*)"
     ]
   },
   "hooks": {
