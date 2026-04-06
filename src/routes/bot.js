@@ -295,18 +295,24 @@ router.get('/analytics', authMiddleware, async (req, res) => {
     const bot = botManager?.getBot(req.userId);
     const openTrades = await Promise.all(openRes.rows.map(async t => {
       let livePrice = null;
+      let livePriceError = null;
       if (t.token_id && bot?.polymarket) {
-        try {
-          livePrice = await bot.polymarket.getLastTradePrice(t.token_id);
-        } catch (_) {}
+        const fetched = await bot.polymarket.getLastTradePrice(t.token_id);
+        if (fetched !== null) {
+          livePrice = fetched;
+        } else {
+          livePriceError = 'unavailable'; // 404 or no trades yet — EV skipped
+        }
+      } else {
+        livePriceError = t.token_id ? 'bot_offline' : 'no_token_id';
       }
       const entry = parseFloat(t.entry_price);
       const size  = parseFloat(t.trade_size);
       let livePnl = null;
-      if (livePrice !== null && isFinite(entry) && isFinite(size) && entry > 0) {
+      if (livePrice !== null && isFinite(livePrice) && isFinite(entry) && isFinite(size) && entry > 0) {
         livePnl = parseFloat(((livePrice - entry) * size / entry).toFixed(2));
       }
-      return { ...t, live_price: livePrice, live_pnl: livePnl };
+      return { ...t, live_price: livePrice, live_price_error: livePriceError, live_pnl: livePnl };
     }));
 
     if (!trades.length) {

@@ -368,10 +368,14 @@ class PolymarketFeed {
         console.warn(`[PolymarketFeed] lastTradePrice HTTP ${res.status} for ${tokenId?.slice(0,12)}...`);
         return null;
       }
-      const data = await res.json();
-      const p = parseFloat(data.price);
-      if (isNaN(p) || p <= 0.01 || p >= 0.99) {
-        console.warn(`[PolymarketFeed] lastTradePrice invalid: ${data.price} for ${tokenId?.slice(0,12)}...`);
+      let data;
+      try { data = await res.json(); } catch (_) {
+        console.warn(`[PolymarketFeed] lastTradePrice non-JSON response for ${tokenId?.slice(0,12)}...`);
+        return null;
+      }
+      const p = parseFloat(data?.price);
+      if (!isFinite(p) || p <= 0.01 || p >= 0.99) {
+        console.warn(`[PolymarketFeed] lastTradePrice invalid: ${data?.price} for ${tokenId?.slice(0,12)}...`);
         return null;
       }
       return p;
