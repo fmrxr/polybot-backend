@@ -1250,8 +1250,8 @@
       <div class="form-group">
         <label>Adverse Selection Tolerance (ticks)</label>
         <div class="slider-container">
-          <input type="range" id="adverseTicks" min="1" max="5" step="1" value="2" onchange="updateSliderValue('adverseTicks')">
-          <span class="slider-value" id="adverseTicksValue">2</span>
+          <input type="range" id="adverseTicks" min="1" max="15" step="1" value="8" onchange="updateSliderValue('adverseTicks')">
+          <span class="slider-value" id="adverseTicksValue">8</span>
         </div>
         <div class="form-hint">Cancel BUY if market drops this many ticks below limit price while order rests</div>
       </div>
@@ -2215,8 +2215,7 @@
       const verdictColor = isTraded ? 'var(--green)' : 'var(--text-muted)';
       const dirColor = r.direction === 'YES' ? 'var(--green)' : r.direction === 'NO' ? 'var(--red)' : 'var(--text-muted)';
       const ev = r.ev_adj != null ? parseFloat(r.ev_adj) : null;
-      const evStr = ev != null ? (ev >= 0 ? '+' : '') + ev.toFixed(2) + '%' : '—';
-      const evColor = ev == null ? 'var(--text-muted)' : ev >= 0 ? 'var(--green)' : 'var(--red)';
+      const evStr = ev != null ? (ev >= 0 ? '+' : '') + ev.toFixed(2) + '%' : '—';      const evColor = ev == null ? 'var(--text-muted)' : ev >= 0 ? 'var(--green)' : 'var(--red)';
       const lag = r.lag_age_sec != null ? parseFloat(r.lag_age_sec).toFixed(0) + 's' : '—';
       const spread = r.spread_pct != null ? (parseFloat(r.spread_pct) * 100).toFixed(0) + '%' : '—';
       const filter = filterLabel(r.gate_failed);
@@ -2421,7 +2420,7 @@
       const lagRaw = getField(signal, 'lag_age_sec', 'lag_age_sec');
       const lag    = lagRaw != null ? parseFloat(lagRaw).toFixed(0)+'s' : '—';
       const evRaw  = getField(signal, 'ev_adj', 'ev_adjusted');
-      const evAdj  = evRaw != null ? (parseFloat(evRaw)>1?parseFloat(evRaw).toFixed(1):(parseFloat(evRaw)*100).toFixed(1))+'%' : '—';
+      const evAdj  = evRaw != null ? parseFloat(evRaw).toFixed(2) + '%' : '—';
       const spreadRaw = getField(signal, 'spread_pct', 'spread_pct');
       const spread = spreadRaw != null ? parseFloat(spreadRaw).toFixed(2)+'%' : '—';
       const verdict = signal.verdict;
@@ -2504,7 +2503,7 @@
       const exitP    = parseFloat(trade.exit_price  || 0);
       const size     = parseFloat(trade.trade_size  || 0);
       const evRaw    = trade.ev_adj != null ? parseFloat(trade.ev_adj) : null;
-      const evStr    = evRaw != null ? (evRaw > 1 ? evRaw.toFixed(1) : (evRaw * 100).toFixed(1)) + '%' : '—';
+      const evStr    = evRaw != null ? evRaw.toFixed(2) + '%' : '—';
       const conf     = trade.signal_confidence != null ? (parseFloat(trade.signal_confidence) * 100).toFixed(0) + '%' : '—';
       const exitR    = (trade.close_reason || trade.exit_reason || (trade.status === 'open' ? 'open' : '—')).replace(/_/g, ' ');
       const dt       = new Date(trade.created_at);
@@ -2887,7 +2886,9 @@
         minEdge: 0.02,
         snipeTiming: 10,
         flipThreshold: 5.0,
-        evDecayRatio: 0.50
+        evDecayRatio: 0.50,
+        adverseTicks: 8,
+        orderTimeout: 60
       },
       risk: {
         kellyMode: 'manual',
@@ -2906,6 +2907,8 @@
       document.getElementById('snipeTiming').value = d.snipeTiming; updateSliderValue('snipeTiming');
       document.getElementById('flipThreshold').value = d.flipThreshold; updateSliderValue('flipThreshold');
       document.getElementById('evDecayRatio').value = d.evDecayRatio; updateSliderValue('evDecayRatio');
+      document.getElementById('adverseTicks').value = d.adverseTicks; updateSliderValue('adverseTicks');
+      document.getElementById('orderTimeout').value = d.orderTimeout; updateSliderValue('orderTimeout');
     } else if (tab === 'risk') {
       document.getElementById('kellyModeManual').checked = true; onKellyModeChange();
       document.getElementById('kellyCap').value = d.kellyCap; updateSliderValue('kellyCap');
@@ -3251,7 +3254,10 @@
         if (pnlEl) { pnlEl.textContent = '—'; pnlEl.style.color = 'var(--text-muted)'; }
         return;
       }
-      const pnl = (cur - entry) * size / entry;
+      // Binary market P&L: spent `size` dollars → received size/entry shares → each worth cur
+      // Matches _closePosition formula: pnl = shares * exitPrice - tradeSize
+      const shares = size / entry;
+      const pnl = shares * cur - size;
       const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
       if (curEl) curEl.textContent = cur.toFixed(3);
       if (pnlEl) { pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2); pnlEl.style.color = pnlColor; }
@@ -3519,7 +3525,7 @@
         const pnlColor = pnl > 0 ? 'var(--green)' : 'var(--red)';
         const dc = t.direction === 'YES' ? 'var(--green)' : 'var(--red)';
         const ev = t.ev_adj != null ? parseFloat(t.ev_adj) : null;
-        const evStr = ev !== null ? (ev > 1 ? ev.toFixed(1) : (ev*100).toFixed(1)) + '%' : '—';
+        const evStr = ev !== null ? ev.toFixed(2) + '%' : '—';
         const dt = new Date(t.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
         const size = parseFloat(t.trade_size || t.size || 0);
         return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
