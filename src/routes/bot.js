@@ -55,10 +55,10 @@ router.get('/status', authMiddleware, async (req, res) => {
     const tradeStats = await pool.query(`
       SELECT
         COUNT(*) FILTER (WHERE status = 'open') AS open_trades,
-        COUNT(*) FILTER (WHERE status = 'closed') AS closed_trades,
-        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) AS total_pnl,
-        COUNT(*) FILTER (WHERE status = 'closed' AND pnl > 0) AS wins,
-        COUNT(*) FILTER (WHERE status = 'closed' AND pnl <= 0) AS losses
+        COUNT(*) FILTER (WHERE status = 'closed' AND result IN ('WIN','LOSS','CLOSED')) AS closed_trades,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND ABS(COALESCE(pnl,0)) < 100000), 0) AS total_pnl,
+        COUNT(*) FILTER (WHERE status = 'closed' AND (result = 'WIN' OR (result = 'CLOSED' AND pnl > 0))) AS wins,
+        COUNT(*) FILTER (WHERE status = 'closed' AND (result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0))) AS losses
       FROM trades
       WHERE user_id = $1 AND trade_type = $2 ${sessionFilter}
     `, sessionParams);
@@ -262,7 +262,7 @@ router.get('/analytics', authMiddleware, async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 7;
 
-    // All closed trades in window
+    // All closed trades in window — must have pnl and result to contribute to metrics
     const tradesRes = await pool.query(`
       SELECT id, direction, entry_price, exit_price,
              COALESCE(trade_size, size) AS trade_size,
@@ -272,6 +272,9 @@ router.get('/analytics', authMiddleware, async (req, res) => {
       FROM trades
       WHERE user_id = $1
         AND status = 'closed'
+        AND pnl IS NOT NULL
+        AND ABS(pnl) < 100000
+        AND result IN ('WIN', 'LOSS', 'CLOSED')
         AND created_at > NOW() - ($2 || ' days')::INTERVAL
         AND COALESCE(trade_size, size) IS NOT NULL
         AND COALESCE(trade_size, size) > 0
@@ -328,13 +331,20 @@ router.get('/analytics', authMiddleware, async (req, res) => {
       });
     }
 
-    const pnls = trades.map(t => parseFloat(t.pnl));
-    const wins = trades.filter(t => t.result === 'WIN');
-    const losses = trades.filter(t => t.result === 'LOSS');
+    // Normalise legacy result='CLOSED' to WIN/LOSS based on pnl sign
+    const normalisedTrades = trades.map(t => ({
+      ...t,
+      pnl: parseFloat(t.pnl),
+      result: t.result === 'CLOSED' ? (parseFloat(t.pnl) > 0 ? 'WIN' : 'LOSS') : t.result
+    })).filter(t => isFinite(t.pnl));
+
+    const pnls = normalisedTrades.map(t => t.pnl);
+    const wins = normalisedTrades.filter(t => t.result === 'WIN');
+    const losses = normalisedTrades.filter(t => t.result === 'LOSS');
     const totalPnl = pnls.reduce((s, p) => s + p, 0);
-    const winRate = trades.length > 0 ? wins.length / trades.length : 0;
-    const avgWin = wins.length ? wins.reduce((s,t)=>s+parseFloat(t.pnl),0)/wins.length : 0;
-    const avgLoss = losses.length ? Math.abs(losses.reduce((s,t)=>s+parseFloat(t.pnl),0)/losses.length) : 0;
+    const winRate = normalisedTrades.length > 0 ? wins.length / normalisedTrades.length : 0;
+    const avgWin = wins.length ? wins.reduce((s,t)=>s+t.pnl,0)/wins.length : 0;
+    const avgLoss = losses.length ? Math.abs(losses.reduce((s,t)=>s+t.pnl,0)/losses.length) : 0;
 
     // Sharpe
     const mean = totalPnl / pnls.length;
@@ -345,69 +355,69 @@ router.get('/analytics', authMiddleware, async (req, res) => {
     let peak = 0, cum = 0, maxDD = 0;
     for (const p of pnls) { cum += p; if (cum > peak) peak = cum; const dd = peak - cum; if (dd > maxDD) maxDD = dd; }
 
-    const grossWins = wins.reduce((s,t)=>s+parseFloat(t.pnl),0);
-    const grossLoss = Math.abs(losses.reduce((s,t)=>s+parseFloat(t.pnl),0));
+    const grossWins = wins.reduce((s,t)=>s+t.pnl,0);
+    const grossLoss = Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
     const profitFactor = grossLoss > 0 ? Math.min(grossWins/grossLoss, 99) : grossWins > 0 ? 99 : 0;
     const expectancy = winRate * avgWin - (1-winRate) * avgLoss;
 
-    // P&L curve
+    // P&L curve (normalised)
     let runningPnl = 0;
-    const pnlCurve = trades.map(t => {
-      runningPnl += parseFloat(t.pnl);
-      return { ts: t.closed_at || t.created_at, pnl: parseFloat(t.pnl), cumPnl: parseFloat(runningPnl.toFixed(2)), result: t.result };
+    const pnlCurve = normalisedTrades.map(t => {
+      runningPnl += t.pnl;
+      return { ts: t.closed_at || t.created_at, pnl: t.pnl, cumPnl: parseFloat(runningPnl.toFixed(2)), result: t.result };
     });
 
     // By direction
     const byDir = {};
-    for (const t of trades) {
+    for (const t of normalisedTrades) {
       if (!byDir[t.direction]) byDir[t.direction] = { trades:0, wins:0, pnl:0 };
       byDir[t.direction].trades++;
       if (t.result==='WIN') byDir[t.direction].wins++;
-      byDir[t.direction].pnl += parseFloat(t.pnl);
+      byDir[t.direction].pnl += t.pnl;
     }
 
     // By exit reason
     const byReason = {};
-    for (const t of trades) {
+    for (const t of normalisedTrades) {
       const r = t.close_reason || 'resolved';
       if (!byReason[r]) byReason[r] = { count:0, pnl:0, wins:0 };
       byReason[r].count++;
-      byReason[r].pnl += parseFloat(t.pnl);
+      byReason[r].pnl += t.pnl;
       if (t.result==='WIN') byReason[r].wins++;
     }
 
     // By EV bucket
     const evBuckets = { '<0%':[], '0-2%':[], '2-5%':[], '5-10%':[], '>10%':[] };
-    for (const t of trades) {
+    for (const t of normalisedTrades) {
       const ev = parseFloat(t.ev_adj || 0);
-      const p = parseFloat(t.pnl);
-      if (ev < 0) evBuckets['<0%'].push(p);
-      else if (ev < 2) evBuckets['0-2%'].push(p);
-      else if (ev < 5) evBuckets['2-5%'].push(p);
-      else if (ev < 10) evBuckets['5-10%'].push(p);
-      else evBuckets['>10%'].push(p);
+      if (ev < 0) evBuckets['<0%'].push(t.pnl);
+      else if (ev < 2) evBuckets['0-2%'].push(t.pnl);
+      else if (ev < 5) evBuckets['2-5%'].push(t.pnl);
+      else if (ev < 10) evBuckets['5-10%'].push(t.pnl);
+      else evBuckets['>10%'].push(t.pnl);
     }
 
     // By hour of day
     const byHour = {};
-    for (const t of trades) {
+    for (const t of normalisedTrades) {
       const h = new Date(t.created_at).getUTCHours();
       if (!byHour[h]) byHour[h] = { trades:0, pnl:0, wins:0 };
       byHour[h].trades++;
-      byHour[h].pnl += parseFloat(t.pnl);
+      byHour[h].pnl += t.pnl;
       if (t.result==='WIN') byHour[h].wins++;
     }
 
+    const n = normalisedTrades.length;
     res.json({
       summary: {
-        total: trades.length,
+        total: n,
         wins: wins.length,
         losses: losses.length,
         win_rate: parseFloat((winRate*100).toFixed(1)),
         total_pnl: parseFloat(totalPnl.toFixed(2)),
-        avg_pnl: parseFloat((totalPnl/trades.length).toFixed(2)),
-        best: parseFloat(Math.max(...pnls).toFixed(2)),
-        worst: parseFloat(Math.min(...pnls).toFixed(2)),
+        avg_pnl: n > 0 ? parseFloat((totalPnl/n).toFixed(2)) : 0,
+        best: n > 0 ? parseFloat(Math.max(...pnls).toFixed(2)) : 0,
+        worst: n > 0 ? parseFloat(Math.min(...pnls).toFixed(2)) : 0,
         sharpe: parseFloat(sharpe.toFixed(3)),
         max_drawdown: parseFloat(maxDD.toFixed(2)),
         profit_factor: parseFloat(profitFactor.toFixed(2)),

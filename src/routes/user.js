@@ -184,15 +184,15 @@ router.get('/dashboard', async (req, res) => {
 
     const stats = await pool.query(`
       SELECT
-        COUNT(*) FILTER (WHERE result IS NOT NULL) as total_trades,
-        COUNT(*) FILTER (WHERE result = 'WIN' OR (result = 'CLOSED' AND pnl > 0)) as wins,
-        COUNT(*) FILTER (WHERE result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0)) as losses,
-        COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as total_pnl,
-        COALESCE(SUM(trade_size) FILTER (WHERE trade_size < 10000), 0) as total_invested,
-        COALESCE(AVG(trade_size) FILTER (WHERE trade_size < 10000), 0) as avg_trade_size,
-        COALESCE(MAX(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as best_trade,
-        COALESCE(MIN(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as worst_trade,
-        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
+        COUNT(*) FILTER (WHERE status = 'closed' AND result IN ('WIN','LOSS','CLOSED')) as total_trades,
+        COUNT(*) FILTER (WHERE status = 'closed' AND (result = 'WIN' OR (result = 'CLOSED' AND pnl > 0))) as wins,
+        COUNT(*) FILTER (WHERE status = 'closed' AND (result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0))) as losses,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND ABS(pnl) < 100000), 0) as total_pnl,
+        COALESCE(SUM(trade_size) FILTER (WHERE status = 'closed' AND trade_size < 10000), 0) as total_invested,
+        COALESCE(AVG(trade_size) FILTER (WHERE status = 'closed' AND trade_size < 10000), 0) as avg_trade_size,
+        COALESCE(MAX(pnl) FILTER (WHERE status = 'closed' AND ABS(pnl) < 100000), 0) as best_trade,
+        COALESCE(MIN(pnl) FILTER (WHERE status = 'closed' AND ABS(pnl) < 100000), 0) as worst_trade,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
       FROM trades WHERE user_id = $1
     `, [req.userId]);
 
@@ -225,15 +225,15 @@ router.get('/stats', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(*) FILTER (WHERE result IS NOT NULL) as total_trades,
-        COUNT(*) FILTER (WHERE result = 'WIN' OR (result = 'CLOSED' AND pnl > 0)) as wins,
-        COUNT(*) FILTER (WHERE result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0)) as losses,
-        COALESCE(SUM(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as total_pnl,
-        COALESCE(SUM(trade_size) FILTER (WHERE trade_size < 10000), 0) as total_invested,
-        COALESCE(AVG(trade_size) FILTER (WHERE trade_size < 10000), 0) as avg_trade_size,
-        COALESCE(MAX(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as best_trade,
-        COALESCE(MIN(pnl) FILTER (WHERE ABS(pnl) < 100000), 0) as worst_trade,
-        COALESCE(SUM(pnl) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
+        COUNT(*) FILTER (WHERE status = 'closed' AND result IN ('WIN','LOSS','CLOSED')) as total_trades,
+        COUNT(*) FILTER (WHERE status = 'closed' AND (result = 'WIN' OR (result = 'CLOSED' AND pnl > 0))) as wins,
+        COUNT(*) FILTER (WHERE status = 'closed' AND (result = 'LOSS' OR (result = 'CLOSED' AND pnl <= 0))) as losses,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND ABS(pnl) < 100000), 0) as total_pnl,
+        COALESCE(SUM(trade_size) FILTER (WHERE status = 'closed' AND trade_size < 10000), 0) as total_invested,
+        COALESCE(AVG(trade_size) FILTER (WHERE status = 'closed' AND trade_size < 10000), 0) as avg_trade_size,
+        COALESCE(MAX(pnl) FILTER (WHERE status = 'closed' AND ABS(pnl) < 100000), 0) as best_trade,
+        COALESCE(MIN(pnl) FILTER (WHERE status = 'closed' AND ABS(pnl) < 100000), 0) as worst_trade,
+        COALESCE(SUM(pnl) FILTER (WHERE status = 'closed' AND created_at >= NOW() - INTERVAL '24 hours' AND ABS(pnl) < 100000), 0) as daily_pnl
       FROM trades WHERE user_id = $1
     `, [req.userId]);
 

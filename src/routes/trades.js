@@ -105,15 +105,27 @@ router.get('/breakdown', async (req, res) => {
 // GET /api/trades/stats — Pro metrics: Sharpe, max drawdown, expectancy, profit factor, streak
 router.get('/stats', async (req, res) => {
   try {
-    // Fetch all resolved trades ordered by time
+    // Fetch all closed trades with valid pnl — exclude open trades and phantom values
     const result = await pool.query(`
       SELECT pnl, result, created_at, trade_size AS size
       FROM trades
-      WHERE user_id = $1 AND result IS NOT NULL AND pnl IS NOT NULL
+      WHERE user_id = $1
+        AND status = 'closed'
+        AND result IN ('WIN', 'LOSS', 'CLOSED')
+        AND pnl IS NOT NULL
+        AND ABS(pnl) < 100000
       ORDER BY created_at ASC
     `, [req.userId]);
 
-    const trades = result.rows;
+    // Normalise legacy result='CLOSED' to WIN/LOSS based on pnl sign, guard against NaN
+    const trades = result.rows
+      .map(t => ({
+        ...t,
+        pnl: parseFloat(t.pnl),
+        result: t.result === 'CLOSED' ? (parseFloat(t.pnl) > 0 ? 'WIN' : 'LOSS') : t.result
+      }))
+      .filter(t => isFinite(t.pnl));
+
     if (!trades.length) {
       return res.json({ sharpe: 0, max_drawdown: 0, expectancy: 0,
         win_streak: 0, loss_streak: 0, total_trades: 0, profit_factor: 0,
@@ -125,15 +137,15 @@ router.get('/stats', async (req, res) => {
     const losses = trades.filter(t => t.result === 'LOSS');
     const winRate = wins.length / trades.length;
     const avgWin = wins.length > 0
-      ? wins.reduce((s, t) => s + parseFloat(t.pnl), 0) / wins.length
+      ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length
       : 0;
     const avgLoss = losses.length > 0
-      ? Math.abs(losses.reduce((s, t) => s + parseFloat(t.pnl), 0) / losses.length)
+      ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length)
       : 0;
     const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
 
     // Sharpe Ratio = mean(returns) / std(returns) * sqrt(N)
-    const pnls = trades.map(t => parseFloat(t.pnl));
+    const pnls = trades.map(t => t.pnl);
     const mean = pnls.reduce((s, p) => s + p, 0) / pnls.length;
     const variance = pnls.reduce((s, p) => s + Math.pow(p - mean, 2), 0) / pnls.length;
     const stdDev = Math.sqrt(variance);
@@ -161,8 +173,8 @@ router.get('/stats', async (req, res) => {
     }
 
     // Profit factor = gross wins / gross losses
-    const grossWins = wins.reduce((s, t) => s + parseFloat(t.pnl), 0);
-    const grossLosses = Math.abs(losses.reduce((s, t) => s + parseFloat(t.pnl), 0));
+    const grossWins = wins.reduce((s, t) => s + t.pnl, 0);
+    const grossLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     res.json({
@@ -178,7 +190,7 @@ router.get('/stats', async (req, res) => {
       wins: wins.length,
       losses: losses.length,
       win_rate: parseFloat((winRate * 100).toFixed(1)),
-      total_pnl: parseFloat(pnls.reduce((s, p) => s + p, 0).toFixed(2)),
+      total_pnl: parseFloat((grossWins - grossLosses).toFixed(2)),
       gross_wins: parseFloat(grossWins.toFixed(2)),
       gross_losses: parseFloat(grossLosses.toFixed(2))
     });
