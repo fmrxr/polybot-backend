@@ -38,6 +38,9 @@ class GBMSignalEngine {
   // Smooth price using adaptive alpha. rawPrice is always stored separately so
   // callers can use it for PnL marking without smoothing-induced distortion.
   _smoothPrice(marketId, rawPrice, remaining) {
+    // In the final 60s bypass EMA entirely — resolution price moves are real and
+    // α=0.25 introduces ~12s lag that causes missed TP/SL exits near expiry.
+    if (remaining != null && remaining <= 60) return rawPrice;
     const last = this._priceCache.get(marketId)?.smoothedPrice;
     if (!last) return rawPrice;
     const alpha = this._adaptiveAlpha(remaining);
