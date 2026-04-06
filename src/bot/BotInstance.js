@@ -570,12 +570,46 @@ class BotInstance {
     // No book data — skip this tick, try again next cycle.
     if (!ob) return;
 
-    // Boundary-only books (bid=0.01/ask=0.99, spread≥90%) have no real liquidity.
-    // A real seller would never fill at our limit against ghost resting orders.
-    // Simulating fills here would produce fake trades at impossible prices.
     const spread = ob.bestAsk != null && ob.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
-    if (spread >= 0.90) {
-      this._log('INFO', `📊 [PAPER] Boundary book (spread=${(spread*100).toFixed(0)}%) — no real liquidity, skipping fill check`);
+    const isBoundaryBook = spread >= 0.90;
+
+    // Boundary-only books: CLOB ask=0.99 is a ghost resting order, not a real offer.
+    // Use Gamma price (from the signal engine's cached smoothed price) as fill proxy.
+    // Fill logic: GTC limit placed at Gamma fair value — simulate fill when Gamma
+    // price is at-or-below our limit (seller willing to trade at consensus price).
+    if (isBoundaryBook) {
+      // Get current Gamma price for this token from the signal engine price cache.
+      // pending.signal.marketId is set at order creation.
+      const cachedGamma = this.signalEngine?._priceCache?.get(pending.signal?.marketId);
+      const gammaPrice = cachedGamma?.smoothedPrice ?? null;
+      if (gammaPrice == null) {
+        this._log('INFO', `📊 [PAPER] Boundary book — no Gamma price cached for ${pending.signal?.marketId?.slice(0,12)}, waiting`);
+        return;
+      }
+      // For BUY orders: token price we're buying (YES or NO)
+      const tokenGammaPrice = pending.direction === 'NO' ? (1 - gammaPrice) : gammaPrice;
+
+      // Adverse selection: Gamma moved significantly against our limit — cancel.
+      if (tokenGammaPrice > pending.limitPrice + ADVERSE_TICKS * TICK) {
+        this._log('WARN', `🚫 [PAPER] Boundary adverse: limit=${pending.limitPrice.toFixed(2)} gammaToken=${tokenGammaPrice.toFixed(3)} (+${((tokenGammaPrice - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling`);
+        this._pendingOrders.delete(orderId);
+        return;
+      }
+
+      const atPrice = tokenGammaPrice <= pending.limitPrice;
+      if (atPrice) {
+        pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
+      } else {
+        pending.fillConfirmTicks = 0;
+      }
+      this._log('INFO', `📊 [PAPER] Boundary fill check (Gamma): limit=${pending.limitPrice.toFixed(2)} gammaToken=${tokenGammaPrice.toFixed(3)} confirmTicks=${pending.fillConfirmTicks}/2`);
+
+      if (pending.fillConfirmTicks >= 2) {
+        const fillPrice = pending.limitPrice;
+        this._log('INFO', `✅ [PAPER] Boundary fill confirmed @ ${fillPrice.toFixed(2)} (Gamma proxy) — ${pending.direction} market ${pending.signal?.marketId?.slice(0,12)}`);
+        await this._recordFilledTrade(orderId, pending, fillPrice);
+        this._pendingOrders.delete(orderId);
+      }
       return;
     }
 
