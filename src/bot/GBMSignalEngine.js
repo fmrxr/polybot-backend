@@ -526,6 +526,7 @@ class GBMSignalEngine {
           entryPrice: entryPrice,
           fillProb: fillProb,
           tokenId: tokenId,
+          noTokenId: noTokenId || null,
           orderBook: orderBook,
           microstructure: micro,
           costs: costs,

@@ -425,24 +425,27 @@ class BotInstance {
       return;
     }
 
-    // Limit price: passive buy just inside the spread — at most at mid, ideally
-    // 1 tick above bestBid so the order rests in the book waiting for a seller.
-    // NEVER post above mid (= crossing the spread = immediate fill at ask price,
-    // which is what was happening when ceil()+TICK pushed the price above mid).
+    // Limit price: 1 tick below the current token mid price.
+    // signal.orderBook is always the YES token book. For NO trades we must fetch
+    // the NO token book — using the YES book for a NO order gives the wrong price
+    // (~0.48 YES price instead of the actual NO token price).
     //
-    // If bestBid is 0.01 (boundary-only book), fall back to mid - 2 ticks so we
-    // don't post at 0.02 which also won't fill against any real liquidity.
-    //
-    // Floor rounding: Math.floor ensures we never round up past mid.
-    const bestBid = ob?.bestBid ?? 0;
-    const mid = ob?.midPrice ?? lastTradePrice;
-    const rawLimit = bestBid <= TICK
-      ? mid - 2 * TICK                       // boundary book fallback
-      : bestBid + TICK;                       // 1 tick above best bid
-    const limitPrice = Math.min(
-      mid,                                    // hard ceiling: never above mid
-      Math.floor(rawLimit * 100) / 100        // floor-round to 2dp (not Math.round)
-    );
+    // lastTradePrice is already direction-adjusted (NO: 1-yesPrice, YES: yesPrice).
+    // We use it as fallback when the live book fetch fails or returns a boundary book.
+    let tokenMid = lastTradePrice;
+    if (direction === 'NO' && signal.noTokenId) {
+      try {
+        const noOb = await this.polymarket.getOrderBook(signal.noTokenId);
+        const noSpread = noOb?.bestAsk != null && noOb?.bestBid != null ? noOb.bestAsk - noOb.bestBid : 1;
+        if (noOb?.midPrice != null && noSpread < 0.90) tokenMid = noOb.midPrice;
+      } catch (_) {}
+    } else if (direction === 'YES' && ob?.midPrice != null) {
+      const yesSpread = ob?.bestAsk != null && ob?.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
+      if (yesSpread < 0.90) tokenMid = ob.midPrice;
+    }
+
+    // Place 1 tick below mid — passive resting order, never crosses the spread.
+    const limitPrice = parseFloat(Math.max(0.01, tokenMid - TICK).toFixed(2));
 
     this._log('INFO', `📊 ${direction} "${market.question?.slice(0,40)}" — ref=${lastTradePrice.toFixed(4)} limit=${limitPrice.toFixed(2)} size=$${tradeSize.toFixed(2)} kelly=${(kellyFraction*100).toFixed(1)}% EV=${evAdj.toFixed(2)}%`);
 
