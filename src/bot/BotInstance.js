@@ -607,7 +607,7 @@ class BotInstance {
       if (pending.fillConfirmTicks >= 2) {
         const fillPrice = pending.limitPrice;
         this._log('INFO', `✅ [PAPER] Boundary fill confirmed @ ${fillPrice.toFixed(2)} (Gamma proxy) — ${pending.direction} market ${pending.signal?.marketId?.slice(0,12)}`);
-        await this._recordFilledTrade(orderId, pending, fillPrice);
+        await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
         this._pendingOrders.delete(orderId);
       }
       return;
