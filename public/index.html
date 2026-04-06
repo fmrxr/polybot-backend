@@ -1463,6 +1463,7 @@
           document.getElementById('lpInterval').value='10'; document.getElementById('lpIntervalVal').textContent='10s';
           document.getElementById('lpMaxSize').value='10'; document.getElementById('lpMaxSizeVal').textContent='$10';
           document.getElementById('lpGate3').checked=true;
+          document.getElementById('gate3Enabled').checked=true;
         })()" style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;font-weight:600;">RESET</button>
       </div>
       <div class="panel-body" style="padding:10px 14px;display:flex;flex-direction:column;gap:10px;">
@@ -2603,7 +2604,6 @@
     if (settings.adverse_ticks) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
     if (settings.gate2_ev_floor) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
-    if (settings.gate3_enabled !== undefined) document.getElementById('gate3Enabled').checked = settings.gate3_enabled;
     _syncLabParamsFromSettings(settings);
     if (settings.claude_model) document.getElementById('claudeModel').value = settings.claude_model;
     if (settings.claude_auto_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.claude_auto_analysis;
@@ -2624,7 +2624,13 @@
     if (el('sdGate3E')    && settings.gate3_min_delta) el('sdGate3E').textContent   = parseFloat(settings.gate3_min_delta).toFixed(3);
     if (el('sdBtcThresh') && settings.gate3_min_delta) el('sdBtcThresh').textContent = parseFloat(settings.gate3_min_delta).toFixed(3) + '%';
     if (el('sdStaleLag')  && settings.stale_lag_seconds) el('sdStaleLag').textContent = settings.stale_lag_seconds + 's'; // includes trailing 's'
-    if (el('sdGate3Disabled')) el('sdGate3Disabled').style.display = settings.gate3_enabled === false ? 'inline' : 'none';
+    // Sync both gate3 checkboxes so they always agree with the DB value
+    const g3enabled = settings.gate3_enabled !== false;
+    const g3checkbox = document.getElementById('gate3Enabled');
+    const g3lab      = document.getElementById('lpGate3');
+    if (g3checkbox) g3checkbox.checked = g3enabled;
+    if (g3lab)      g3lab.checked      = g3enabled;
+    if (el('sdGate3Disabled')) el('sdGate3Disabled').style.display = g3enabled ? 'none' : 'inline';
     if (settings.require_whale_convergence !== undefined) {
       const wc = el('requireWhaleConvergence');
       if (wc) wc.checked = settings.require_whale_convergence;
@@ -3528,7 +3534,7 @@
     if (s.kelly_cap != null)      { set('lpKelly', parseFloat(s.kelly_cap)*100); setLabel('lpKellyVal', Math.round(parseFloat(s.kelly_cap)*100) + '%'); }
     if (s.snipe_timer_seconds != null) { set('lpInterval', s.snipe_timer_seconds); setLabel('lpIntervalVal', s.snipe_timer_seconds + 's'); }
     if (s.max_trade_size != null) { set('lpMaxSize', s.max_trade_size); setLabel('lpMaxSizeVal', '$' + s.max_trade_size); }
-    if (s.gate3_enabled != null)  { const el = document.getElementById('lpGate3'); if (el) el.checked = s.gate3_enabled !== false; }
+    // gate3_enabled synced in loadSettingsIntoForms alongside sdGate3Disabled badge
   }
   // ═══════════════════════════════════════════════════════════════════════
 
