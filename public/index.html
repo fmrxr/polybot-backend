@@ -1242,10 +1242,10 @@
       <div class="form-group">
         <label>Order Timeout</label>
         <div class="slider-container">
-          <input type="range" id="orderTimeout" min="5" max="30" step="1" value="10" onchange="updateSliderValue('orderTimeout')">
-          <span class="slider-value" id="orderTimeoutValue">10s</span>
+          <input type="range" id="orderTimeout" min="10" max="120" step="5" value="60" onchange="updateSliderValue('orderTimeout')">
+          <span class="slider-value" id="orderTimeoutValue">60s</span>
         </div>
-        <div class="form-hint">Cancel unfilled GTC limit orders after this many seconds (5–10s for 5-min markets)</div>
+        <div class="form-hint">Max time to hold a resting limit order. Bot also cancels automatically when &lt;30s remains in the market window — set 60s for 5-min binary markets</div>
       </div>
       <div class="form-group">
         <label>Adverse Selection Tolerance (ticks)</label>
@@ -2660,7 +2660,7 @@
     else if (id === 'minEdge')         span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
     else if (id === 'gate3MinDelta')   span.textContent = parseFloat(v).toFixed(3)+'%';
     else if (id.includes('Threshold')) span.textContent = parseFloat(v).toFixed(2);
-    else if (id.includes('Timing'))  span.textContent = v+'s';
+    else if (id.includes('Timing') || id.includes('Timeout')) span.textContent = v+'s';
     else if (id.includes('Cap'))     span.textContent = (parseFloat(v)*100).toFixed(0)+'%';
     else                             span.textContent = v;
   }

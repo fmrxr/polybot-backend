@@ -490,19 +490,36 @@ class BotInstance {
   async _monitorPendingOrders() {
     if (this._pendingOrders.size === 0) return;
 
-    const ORDER_TIMEOUT_MS = (parseInt(this.settings.order_timeout_sec) || 10) * 1000;
+    const CONFIGURED_TIMEOUT_MS = (parseInt(this.settings.order_timeout_sec) || 60) * 1000;
     const TICK = 0.01;
     const ADVERSE_TICKS = parseInt(this.settings.adverse_ticks) || 2;
 
     for (const [orderId, pending] of this._pendingOrders) {
       const age = Date.now() - pending.placedAt;
 
-      // ── Timeout: cancel if resting too long ──────────────────────────────
-      if (age > ORDER_TIMEOUT_MS) {
+      // ── Timeout: cancel based on market time remaining, not wall clock alone ──
+      // On 5-min binary markets, CLOB liquidity is thin for the first 2-3 minutes
+      // then builds as expiry approaches. A 10s timeout cancels before any real
+      // liquidity appears. Instead: hold up to the configured timeout OR until
+      // the market has < 30s remaining (no time to fill before resolution).
+      //
+      // Effective timeout = min(configuredTimeout, timeUntilMarketExpiry - 30s)
+      // This means: on a fresh 5-min market, hold up to 60s (or configured value).
+      // With <30s left, cancel immediately if still unfilled — won't resolve in time.
+      const marketRemainingSec = this._getMarketRemaining(pending.market?.id || pending.market?.condition_id);
+      const marketExpiryBufferMs = 30 * 1000; // cancel 30s before expiry regardless
+      const effectiveTimeoutMs = marketRemainingSec != null
+        ? Math.min(CONFIGURED_TIMEOUT_MS, Math.max(0, marketRemainingSec * 1000 - marketExpiryBufferMs))
+        : CONFIGURED_TIMEOUT_MS;
+
+      if (age > effectiveTimeoutMs) {
         if (!pending.isPaper) {
           try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
         }
-        this._log('WARN', `⏱️ Order ${orderId.slice(0,12)}... timed out after ${(age/1000).toFixed(1)}s — unfilled, discarded`);
+        const reason = marketRemainingSec != null && marketRemainingSec < 35
+          ? `market expires in ${Math.round(marketRemainingSec)}s`
+          : `timeout after ${(age/1000).toFixed(0)}s`;
+        this._log('WARN', `⏱️ Order ${orderId.slice(0,12)}... cancelled — ${reason}`);
         this._pendingOrders.delete(orderId);
         continue;
       }
