@@ -12,6 +12,8 @@ class BotInstance {
   constructor(userId, settings) {
     this.userId = userId;
     this.settings = settings;
+    // Use email prefix as label (e.g. "mereeffet" from "mereeffet@gmail.com")
+    this.userLabel = settings.email ? settings.email.split('@')[0] : `user${userId}`;
     this.isRunning = false;
     this.loopInterval = null;
 
@@ -140,7 +142,7 @@ class BotInstance {
       try {
         await pool.query('UPDATE bot_settings SET is_active = false WHERE user_id = $1', [this.userId]);
       } catch (err) {
-        console.error(`[Bot ${this.userId}] DB update failed on stop:`, err.message);
+        console.error(`[${this.userLabel}] DB update failed on stop:`, err.message);
       }
     }
 
@@ -1215,7 +1217,7 @@ class BotInstance {
 
   _log(level, message) {
     const entry = { timestamp: new Date().toISOString(), level, message, userId: this.userId };
-    console.log(`[Bot ${this.userId}] [${level}] ${message}`);
+    console.log(`[${this.userLabel}] [${level}] ${message}`);
     this.decisionLog.push(entry);
     if (this.decisionLog.length > this.maxLogEntries) this.decisionLog.shift();
   }

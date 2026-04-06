@@ -8,7 +8,10 @@ router.post('/start', authMiddleware, async (req, res) => {
   try {
     const botManager = req.app.locals.botManager;
 
-    const settings = await pool.query('SELECT * FROM bot_settings WHERE user_id = $1', [req.userId]);
+    const settings = await pool.query(
+      'SELECT bs.*, u.email FROM bot_settings bs JOIN users u ON u.id = bs.user_id WHERE bs.user_id = $1',
+      [req.userId]
+    );
     if (settings.rows.length === 0) {
       return res.status(404).json({ error: 'Bot settings not found' });
     }
