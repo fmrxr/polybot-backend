@@ -159,7 +159,15 @@ class PolymarketFeed {
       if (res.ok) {
         const markets = await res.json();
         if (Array.isArray(markets) && markets.length > 0) {
-          const btc = markets.filter(m => /btc|bitcoin/i.test((m.question || m.slug || '').trim()));
+          // Only 5-min BTC up/down markets — must match slug pattern or question.
+          // "on April 6, 5PM ET?" markets have btc in other fields but are not 5-min markets.
+          const btc = markets.filter(m => {
+            const q = (m.question || '').toLowerCase();
+            const slug = (m.slug || '').toLowerCase();
+            const isBtcUpDown = (q.includes('bitcoin') || q.includes('btc')) && q.includes('up or down');
+            const isBtcSlug = slug.startsWith('btc-updown-5m-');
+            return isBtcUpDown || isBtcSlug;
+          });
           console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) in next 30 min`);
           for (const m of btc) {
             const norm = _normalise(m);
