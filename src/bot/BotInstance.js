@@ -773,6 +773,18 @@ class BotInstance {
           trade._cachedLivePrice = livePrice;
         }
 
+        // Fallback: if signal skipped this market, use the price cache from the signal engine.
+        // This keeps position management live even when gate filters block the signal.
+        if (!livePrice && this.signalEngine?._priceCache?.has(trade.market_id)) {
+          const cached = this.signalEngine._priceCache.get(trade.market_id);
+          if (cached?.smoothedPrice != null) {
+            const cachedYes = cached.smoothedPrice;
+            livePrice    = trade.direction === 'NO' ? (1 - cachedYes) : cachedYes;
+            rawLivePrice = livePrice;
+            trade._cachedLivePrice = livePrice;
+          }
+        }
+
         if (!livePrice) {
           // No price from signal this tick (signal returned SKIP with yesPrice=null).
           // Check for expired market before giving up.
