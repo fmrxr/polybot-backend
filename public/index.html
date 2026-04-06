@@ -1299,264 +1299,6 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ SETTINGS PAGE -->
-<div id="settings" class="page">
-  <div class="page-title"><span>▸</span> CONFIGURATION</div>
-
-  <div class="tabs">
-    <button class="tab active" onclick="switchSettingsTab('strategy', this)">Strategy</button>
-    <button class="tab"        onclick="switchSettingsTab('risk', this)">Risk</button>
-    <button class="tab"        onclick="switchSettingsTab('advanced', this)">Advanced</button>
-  </div>
-
-  <!-- TAB: STRATEGY -->
-  <div id="strategy" class="tab-content active">
-    <div class="form-section">
-      <div class="form-section-title">Gate Thresholds</div>
-      <div class="form-group">
-        <label>Gate 1: Microstructure Confidence</label>
-        <div class="slider-container">
-          <input type="range" id="gate1Threshold" min="0.10" max="0.90" step="0.01" value="0.45" onchange="updateSliderValue('gate1Threshold')">
-          <span class="slider-value" id="gate1ThresholdValue">0.45</span>
-        </div>
-        <div class="form-hint">Informational only — Gate 2 EV is the real filter</div>
-      </div>
-      <div class="form-group">
-        <label>Gate 2: EV Hard Floor</label>
-        <div class="slider-container">
-          <input type="range" id="gate2Floor" min="0.5" max="20" step="0.5" value="3" onchange="updateSliderValue('gate2Floor')" oninput="updateSliderValue('gate2Floor'); var l=document.getElementById('lpG2'); if(l){l.value=this.value;document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%';}">
-          <span class="slider-value" id="gate2FloorValue">3%</span>
-        </div>
-        <div class="form-hint">Minimum EV% required to trade — lower = more trades, higher = higher quality</div>
-      </div>
-      <div class="form-group">
-        <label><input type="checkbox" id="gate3Enabled" checked onchange="updateSetting()"> Gate 3: BTC Momentum Direction Confirmation</label>
-      </div>
-      <div class="form-group">
-        <label>Min Kelly Edge (trade entry threshold)</label>
-        <div class="slider-container">
-          <input type="range" id="minEdge" min="0.01" max="0.20" step="0.01" value="0.05" onchange="updateSliderValue('minEdge')">
-          <span class="slider-value" id="minEdgeValue">5%</span>
-        </div>
-        <div class="form-hint">Minimum Kelly edge (modelProb − marketProb) required to enter — filters low-edge trades</div>
-      </div>
-      <div class="form-group">
-        <label>Gate 3: Min BTC Δ (momentum threshold)</label>
-        <div class="slider-container">
-          <input type="range" id="gate3MinDelta" min="0.005" max="0.20" step="0.005" value="0.05" onchange="updateSliderValue('gate3MinDelta')">
-          <span class="slider-value" id="gate3MinDeltaValue">0.050%</span>
-        </div>
-        <div class="form-hint">Min 30s BTC % move for Gate 3 direction confirmation — independent of Kelly sizing</div>
-      </div>
-      <div class="form-group">
-        <label>Signal Interval</label>
-        <div class="slider-container">
-          <input type="range" id="snipeTiming" min="5" max="60" step="5" value="10" onchange="updateSliderValue('snipeTiming')">
-          <span class="slider-value" id="snipeTimingValue">10s</span>
-        </div>
-        <div class="form-hint">Seconds between signal evaluations (10s recommended)</div>
-      </div>
-    </div>
-
-    <div class="form-section">
-      <div class="form-section-title">Order Execution</div>
-      <div class="form-group">
-        <label>Order Timeout</label>
-        <div class="slider-container">
-          <input type="range" id="orderTimeout" min="10" max="120" step="5" value="60" onchange="updateSliderValue('orderTimeout')">
-          <span class="slider-value" id="orderTimeoutValue">60s</span>
-        </div>
-        <div class="form-hint">Max time to hold a resting limit order. Bot also cancels automatically when &lt;30s remains in the market window — set 60s for 5-min binary markets</div>
-      </div>
-      <div class="form-group">
-        <label>Adverse Selection Tolerance (ticks)</label>
-        <div class="slider-container">
-          <input type="range" id="adverseTicks" min="1" max="15" step="1" value="8" onchange="updateSliderValue('adverseTicks')">
-          <span class="slider-value" id="adverseTicksValue">8</span>
-        </div>
-        <div class="form-hint">Cancel BUY if market drops this many ticks below limit price while order rests</div>
-      </div>
-      <div style="padding:8px 10px;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);font-size:11px;color:var(--text-muted);line-height:1.5;margin-bottom:8px;">
-        Orders rest as GTC limits at <span style="color:var(--amber);">lastTradePrice + 1 tick</span>.
-        Paper orders use stochastic fill simulation — fills are <strong style="color:var(--yellow);">NOT guaranteed</strong>.
-        Live orders poll CLOB status until filled, timed-out, or adverse-selection-cancelled.
-      </div>
-    </div>
-
-    <div class="form-section">
-      <div class="form-section-title">Flip &amp; EV Exit</div>
-      <div class="form-group">
-        <label>Flip Threshold (%)</label>
-        <div class="slider-container">
-          <input type="range" id="flipThreshold" min="2" max="15" step="0.5" value="5" onchange="updateSliderValue('flipThreshold')">
-          <span class="slider-value" id="flipThresholdValue">5%</span>
-        </div>
-        <div class="form-hint">Min EV gain required to flip an open position. Escalates +1% per recent flip. BTC noise creates ~3-4% EV swings — 5% filters most of it.</div>
-      </div>
-      <div class="form-group">
-        <label>EV Decay Exit Ratio</label>
-        <div class="slider-container">
-          <input type="range" id="evDecayRatio" min="0.2" max="0.9" step="0.05" value="0.5" onchange="updateSliderValue('evDecayRatio')">
-          <span class="slider-value" id="evDecayRatioValue">0.50</span>
-        </div>
-        <div class="form-hint">Exit when current EV drops below this fraction of the peak EV seen for the market. 0.5 = exit when EV halves from peak.</div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:4px;">
-        <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
-        <button class="secondary" onclick="resetSettingsToDefaults('strategy')" style="flex:0 0 auto;">Reset</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- TAB: RISK -->
-  <div id="risk" class="tab-content">
-    <div class="form-section">
-      <div class="form-section-title">Position Sizing Mode</div>
-      <div class="form-group">
-        <div style="display:flex;gap:12px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="radio" name="kellyMode" id="kellyModeManual" value="manual" checked onchange="onKellyModeChange()">
-            <span><strong>Manual</strong> — you set kelly cap &amp; max size</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="radio" name="kellyMode" id="kellyModeAdaptive" value="adaptive" onchange="onKellyModeChange()">
-            <span><strong>Adaptive</strong> — computed from trade stats</span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Adaptive recommendation panel (shown only in adaptive mode) -->
-      <div id="adaptiveKellyPanel" style="display:none;background:rgba(0,232,122,0.06);border:1px solid var(--green);border-radius:6px;padding:12px;margin-bottom:12px;">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">ADAPTIVE KELLY RECOMMENDATION</div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;">
-          <div style="text-align:center;">
-            <div style="font-size:18px;font-weight:700;color:var(--green);" id="akWinRate">—</div>
-            <div style="font-size:10px;color:var(--text-muted);">Win Rate</div>
-          </div>
-          <div style="text-align:center;">
-            <div style="font-size:18px;font-weight:700;color:var(--cyan);" id="akEdge">—</div>
-            <div style="font-size:10px;color:var(--text-muted);">Avg W/L Ratio</div>
-          </div>
-          <div style="text-align:center;">
-            <div style="font-size:18px;font-weight:700;color:var(--yellow);" id="akRecommended">—</div>
-            <div style="font-size:10px;color:var(--text-muted);">Half-Kelly Cap</div>
-          </div>
-        </div>
-        <div style="font-size:10px;color:var(--text-muted);" id="akFormula">—</div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" id="akSampleSize"></div>
-        <button class="secondary" style="margin-top:8px;font-size:11px;padding:4px 10px;" onclick="loadAdaptiveKellyStats()">Recalculate</button>
-      </div>
-
-      <!-- Manual controls (visible in both modes; in adaptive mode they show the computed cap as read-only) -->
-      <div class="form-group">
-        <label>Kelly Cap <span id="kellyCapModeHint" style="font-size:10px;color:var(--text-muted);">(manual)</span></label>
-        <div class="slider-container">
-          <input type="range" id="kellyCap" min="0.05" max="0.25" step="0.01" value="0.10" onchange="updateSliderValue('kellyCap')">
-          <span class="slider-value" id="kellyCapValue">10%</span>
-        </div>
-        <div class="form-hint" id="kellyCapHint">Fractional Kelly cap — 10% recommended for Phase A</div>
-      </div>
-      <div class="form-group">
-        <label>Max Trade Size (USD)</label>
-        <input type="number" id="maxTradeSize" value="5" min="1" max="500" step="1">
-        <div class="form-hint">Hard dollar cap per trade — Kelly fraction is applied to balance then capped here</div>
-      </div>
-      <div class="form-group">
-        <label>Max Daily Loss (USD)</label>
-        <input type="number" id="maxDailyLoss" value="50" min="10" max="500" step="10">
-      </div>
-      <div style="display:flex;gap:8px;margin-top:4px;">
-        <button class="primary" onclick="saveRiskSettings()" style="flex:1;">Save Risk Settings</button>
-        <button class="secondary" onclick="resetSettingsToDefaults('risk')" style="flex:0 0 auto;">Reset</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- TAB: ADVANCED -->
-  <div id="advanced" class="tab-content">
-    <!-- Paper Trading -->
-    <div class="form-section section-paper">
-      <div class="form-section-title" style="color:var(--green);">Paper Trading Mode</div>
-      <div class="form-group">
-        <label><input type="checkbox" id="paperTradingEnabled" checked onchange="onPaperTradingToggle()"> Paper Trading (uncheck = LIVE real money)</label>
-      </div>
-      <div class="form-group" id="paperBalanceSection">
-        <label>Paper Balance</label>
-        <div style="display:flex;gap:8px;">
-          <input type="text" id="paperBalanceDisplay" value="Loading..." disabled style="flex:1;">
-          <button class="secondary" onclick="resetPaperBalance()">Reset</button>
-        </div>
-      </div>
-      <div id="tradingModeNotice" style="padding:10px 12px;background:rgba(0,232,122,0.08);border:1px solid var(--green);color:var(--green);font-size:11px;">
-        Paper trading ACTIVE — all trades are simulated, no real money
-      </div>
-    </div>
-
-    <!-- Chainlink -->
-    <div class="form-section section-chain">
-      <div class="form-section-title" style="color:var(--cyan);">Chainlink RPC Config</div>
-      <div class="form-group">
-        <label>RPC Endpoint (optional)</label>
-        <input type="url" id="chainlinkRpc" placeholder="https://..." onchange="updateSetting()">
-        <div class="form-hint">Leave blank to use default public nodes</div>
-      </div>
-      <button class="secondary" onclick="testChainlinkConnection()">Test Connection</button>
-    </div>
-
-    <!-- Claude AI -->
-    <div class="form-section section-claude">
-      <div class="form-section-title" style="color:var(--purple);">Claude AI Configuration</div>
-      <div class="form-group">
-        <label><input type="checkbox" id="claudeEnabled" checked onchange="updateClaudeSetting()"> Enable Claude AI Analysis</label>
-      </div>
-      <div class="form-group">
-        <label>Claude API Key</label>
-        <input type="password" id="claudeApiKey" placeholder="sk-ant-..." onchange="updateClaudeSetting()">
-        <div class="form-hint">Anthropic API key — stored encrypted</div>
-      </div>
-      <div class="form-group">
-        <label>Model</label>
-        <select id="claudeModel" onchange="updateClaudeSetting()">
-          <option value="claude-opus-4-6">Claude Opus 4.6 (Best)</option>
-          <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
-          <option value="claude-haiku-4-5-20251001">Claude Haiku (Fast)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label><input type="checkbox" id="autoClaudeAnalysis" onchange="updateClaudeSetting()"> Auto-analyze every 50 trades</label>
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:10px;">
-        <button class="secondary" onclick="testClaudeConnection()" style="flex:1;">Test Connection</button>
-        <button class="primary"   onclick="saveClaudeSettings()"  style="flex:1;">Save</button>
-      </div>
-      <div style="padding:8px 10px;border:1px solid var(--purple);font-size:11px;color:var(--purple);">
-        <span id="claudeStatus">API Key not configured</span>
-      </div>
-    </div>
-
-    <!-- Polymarket Wallet -->
-    <div class="form-section section-poly">
-      <div class="form-section-title" style="color:var(--yellow);">Polymarket Wallet</div>
-      <div class="form-group">
-        <label>Wallet Address</label>
-        <input type="text" id="polymarketWallet" placeholder="0x..." onchange="updateSetting()">
-      </div>
-      <button class="secondary" onclick="testPolymarketConnection()" style="width:100%;margin-bottom:10px;">Test &amp; Fetch Balance</button>
-      <div style="padding:8px 10px;border:1px solid var(--yellow);font-size:11px;color:var(--yellow);">
-        USDC Balance: <span id="polymarketBalance">Not connected</span>
-      </div>
-    </div>
-
-    <!-- Whale -->
-    <div class="form-section">
-      <div class="form-group">
-        <label><input type="checkbox" id="requireWhaleConvergence" onchange="updateSetting()"> Require Whale Convergence</label>
-        <div class="form-hint">Only trade if copy targets are trading in same direction</div>
-      </div>
-      <button class="primary" onclick="saveAdvancedSettings()" style="width:100%;">Save Advanced Settings</button>
-    </div>
-  </div>
-</div>
-
 <!-- ═══════════════════════════════════════════════ LAB PAGE ══ -->
 <div id="lab" class="page">
   <div class="page-title"><span>⚗</span> LAB &amp; SETTINGS</div>
@@ -2232,21 +1974,25 @@
 
       await loadBotStatus();
       await loadDashboard();
-      await loadGateStats();
-      await loadSignals();
       await loadTrades();
       await loadClaudeAnalysis();
-      loadSettingsFromAPI(); // populate strategy description panel on startup
+      loadSettingsFromAPI();
 
-      setInterval(async () => { await loadBotStatus(); await loadSignals(); await loadDashboard(); }, 10000);
-      setInterval(loadGateStats, 30000);
-      // Auto-refresh trades every 10s when trades tab is active
+      setInterval(async () => { await loadBotStatus(); await loadDashboard(); }, 10000);
+
+      // Trades page: refresh trades + signals tab content when active
       setInterval(() => {
-        if (document.getElementById('trades')?.classList.contains('active')) loadTrades();
+        if (!document.getElementById('trades')?.classList.contains('active')) return;
+        const tradTab = document.getElementById('tabTrades');
+        const sigTab  = document.getElementById('tabSignals');
+        if (tradTab?.classList.contains('active')) loadTrades();
+        if (sigTab?.classList.contains('active'))  { loadGateStats(); loadSignals(); }
       }, 10000);
-      // Auto-refresh lab every 30s when lab tab is active
+
+      // Lab page: refresh performance tab when active
       setInterval(() => {
-        if (document.getElementById('lab')?.classList.contains('active')) loadLab();
+        if (document.getElementById('lab')?.classList.contains('active') &&
+            document.getElementById('labPerf')?.classList.contains('active')) loadLab();
       }, 30000);
 
       // Start real-time SSE stream for live market viewer
