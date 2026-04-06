@@ -191,11 +191,6 @@ class GBMSignalEngine {
           continue;
         }
 
-        // CLOB liquidity guard: if we fell back to Gamma, there is no real order book
-        // to execute against. Mark it explicitly — BotInstance will skip execution.
-        // The signal is still valuable for monitoring; only execution is blocked.
-        const hasClobLiquidity = priceSource === 'clob';
-
         // Rough seconds-remaining estimate — used for adaptive smoothing alpha.
         // Full remaining calc happens later in the gate pipeline; this is only
         // needed to pick the right alpha before we proceed.
@@ -559,7 +554,6 @@ class GBMSignalEngine {
           rawPrice: rawYesPrice,
           noPrice: 1 - yesPrice,
           priceSource: priceSource,
-          hasClobLiquidity: hasClobLiquidity,
           timestamp: Date.now()
         };
       }
