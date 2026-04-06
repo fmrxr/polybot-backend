@@ -363,15 +363,28 @@ class GBMSignalEngine {
           continue;
         }
 
-        // DEPTH FLOOR: avoid dead order books (< 100 USDC total depth)
+        // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 books have enormous totalDepth
+        // (50000+ USDC in ghost resting orders) but zero real liquidity. Spread is
+        // the correct signal — a 90%+ spread means no real market participants.
+        // fillProb must be 0 here regardless of depth.
+        if (spread >= 0.90) {
+          log.reason = `Boundary book: spread=${(spread*100).toFixed(0)}% — no real liquidity`;
+          continue;
+        }
+
+        // DEPTH FLOOR: avoid thin real books (< 100 USDC total depth)
         const totalDepth = orderBook.totalDepth || 0;
         if (totalDepth < 100) {
           log.reason = `Thin book: depth=${totalDepth.toFixed(0)} USDC < 100 min`;
           continue;
         }
 
-        // Fill probability for Kelly sizing (does NOT gate the trade — only sizes it)
-        const fillProb = Math.min(1.0, totalDepth / 500);
+        // Fill probability: spread-adjusted depth score.
+        // totalDepth on a tight (1-2%) book of 500 USDC = 100% fill confidence.
+        // Same depth on a 50% spread book = much lower — wide spread means
+        // resting orders are far from mid and won't fill a passive limit.
+        const spreadPenalty = Math.max(0, 1 - spread * 5); // 10% spread → 0.5, 20% → 0
+        const fillProb = Math.min(1.0, (totalDepth / 500) * spreadPenalty);
 
         // Evaluate BOTH sides — check EV directly against floor (no fillProb penalty)
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
@@ -387,7 +400,7 @@ class GBMSignalEngine {
 
         // Separate fill quality gate: don't enter if book is too thin to fill reliably
         if (fillProb < 0.25) {
-          log.reason = `Low fill probability: ${(fillProb*100).toFixed(0)}% (depth=${totalDepth.toFixed(0)})`;
+          log.reason = `Low fill probability: ${(fillProb*100).toFixed(0)}% (depth=${totalDepth.toFixed(0)} spread=${(spread*100).toFixed(0)}%)`;
           continue;
         }
 
