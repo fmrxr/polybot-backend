@@ -807,7 +807,10 @@
   <div class="panel" id="pendingOrdersPanel" style="display:none;">
     <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
       <span class="panel-title">⏳ Pending Orders</span>
-      <span style="font-size:10px;color:var(--yellow);letter-spacing:1px;">RESTING — AWAITING FILL</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:10px;color:var(--yellow);letter-spacing:1px;">RESTING — AWAITING FILL</span>
+        <button class="secondary" onclick="cancelAllPending()" style="font-size:10px;padding:3px 10px;color:var(--red);">✕ Cancel All</button>
+      </div>
     </div>
     <div class="panel-body" id="pendingOrdersList" style="padding:0;"></div>
   </div>
@@ -2071,6 +2074,18 @@
       }
 
     } catch (err) { console.error('Load status error:', err); }
+  }
+
+  async function cancelAllPending() {
+    const token = localStorage.getItem('token');
+    try {
+      const r = await fetch((window.API_BASE||'')+'/api/bot/cancel-pending', {
+        method: 'POST', headers: { 'Authorization': 'Bearer ' + token }
+      });
+      const d = await r.json();
+      alert(d.message || 'Done');
+      loadStatus();
+    } catch (e) { alert('Error: ' + e.message); }
   }
 
   async function loadDashboard() {

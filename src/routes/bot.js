@@ -26,6 +26,20 @@ router.post('/start', authMiddleware, async (req, res) => {
   }
 });
 
+// --- Cancel all pending orders (in-memory) ---
+router.post('/cancel-pending', authMiddleware, async (req, res) => {
+  try {
+    const botManager = req.app.locals.botManager;
+    const bot = botManager.bots?.get(req.userId);
+    if (!bot) return res.json({ cancelled: 0, message: 'Bot not running' });
+    const count = bot._pendingOrders?.size || 0;
+    bot._pendingOrders?.clear();
+    res.json({ cancelled: count, message: `Cancelled ${count} pending order(s)` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Stop Signal Bot ---
 router.post('/stop', authMiddleware, async (req, res) => {
   try {
