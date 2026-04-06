@@ -551,8 +551,6 @@ class BotInstance {
     const bestAsk = ob.bestAsk;
     if (bestAsk == null || bestAsk <= 0) return;
 
-    pending.lastCheckedPrice = bestAsk;
-
     // Adverse selection: ask moved significantly above our limit — cancel.
     if (bestAsk > pending.limitPrice + ADVERSE_TICKS * TICK) {
       this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} (+${((bestAsk - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling`);
@@ -560,15 +558,22 @@ class BotInstance {
       return;
     }
 
-    // Strict price-crossing fill: only fill when a real seller has offered at or
-    // below our limit. No randomness — if the market moved to our price, we fill.
-    const filled = bestAsk <= pending.limitPrice;
-    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} spread=${(spread*100).toFixed(0)}% filled=${filled}`);
+    const atPrice = bestAsk <= pending.limitPrice;
 
-    if (filled) {
-      // Fill price = our limit (passive order gets price improvement when ask < limit).
+    // Require 2 consecutive ticks at-or-below limit before filling.
+    // A single tick at our price could be a momentary print that bounces back —
+    // persistence confirms real liquidity crossed our level, not a 1-tick artifact.
+    if (atPrice) {
+      pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
+    } else {
+      pending.fillConfirmTicks = 0; // reset — price moved back above limit
+    }
+
+    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} spread=${(spread*100).toFixed(0)}% confirmTicks=${pending.fillConfirmTicks}/2`);
+
+    if (pending.fillConfirmTicks >= 2) {
       const fillPrice = parseFloat(pending.limitPrice.toFixed(2));
-      this._log('INFO', `✅ [PAPER] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} (bestAsk=${bestAsk.toFixed(3)})`);
+      this._log('INFO', `✅ [PAPER] Filled (2-tick confirm): ${pending.direction} @ ${fillPrice.toFixed(4)} (bestAsk=${bestAsk.toFixed(3)})`);
       await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
       this._pendingOrders.delete(orderId);
     }

@@ -422,15 +422,15 @@ class GBMSignalEngine {
         // current tick against itself — a single observation always appears flat
         // or decaying, blocking valid signals on the first pass.
         // ==========================================
-        if (this.evEngine.isEVDecaying(marketId)) {
-          log.gates.evTrend = { status: 'DECAYING', passed: false };
-          continue;
-        }
-
-        // Also require positive EV velocity (EV must be rising, not just above floor)
+        // EV trend filter: only block if EV is actively collapsing, not just ticking down.
+        // Two conditions must BOTH be true to skip:
+        //   1. isEVDecaying: velocity<0 AND acceleration<=0 (sustained deceleration)
+        //   2. evVelocity drop exceeds absolute floor of 1.0% — prevents blocking a
+        //      22%→21.9% move (noise) while still catching 10%→5%→2% collapse.
         const evVelocity = this.evEngine.getEVVelocity(marketId);
-        if (evVelocity < 0) {
-          log.gates.evTrend = { status: 'FALLING', velocity: evVelocity, passed: false };
+        const EV_VELOCITY_FLOOR = -1.0; // must drop >1% per tick to count as falling
+        if (this.evEngine.isEVDecaying(marketId) && evVelocity < EV_VELOCITY_FLOOR) {
+          log.gates.evTrend = { status: 'DECAYING', velocity: evVelocity, passed: false };
           continue;
         }
 
