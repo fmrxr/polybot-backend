@@ -526,7 +526,7 @@ if (!clobAvailable) {
 
     const CONFIGURED_TIMEOUT_MS = (parseInt(this.settings.order_timeout_sec) || 60) * 1000;
     const TICK = 0.01;
-    const ADVERSE_TICKS = parseInt(this.settings.adverse_ticks) || 2;
+    const ADVERSE_TICKS = parseInt(this.settings.adverse_ticks) || 8;
 
     for (const [orderId, pending] of this._pendingOrders) {
       const age = Date.now() - pending.placedAt;
