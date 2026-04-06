@@ -603,11 +603,9 @@
     <div class="logo">AXIOM</div>
     <ul class="nav-links">
       <li><a onclick="showPage('dashboard', this)" class="nav-link active">Dashboard</a></li>
-      <li><a onclick="showPage('signals', this)"   class="nav-link">Signals</a></li>
       <li><a onclick="showPage('trades', this)"    class="nav-link">Trades</a></li>
       <li><a onclick="showPage('lab', this)"       class="nav-link">⚗ Lab</a></li>
       <li><a onclick="showPage('claude', this)"    class="nav-link">Claude AI</a></li>
-      <li><a onclick="showPage('settings', this)"  class="nav-link">Settings</a></li>
       <li id="adminNavItem" style="display:none"><a onclick="showPage('admin', this)" class="nav-link" style="color:var(--amber);">⚙ Admin</a></li>
     </ul>
     <div class="nav-right">
@@ -882,9 +880,130 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ SIGNALS PAGE -->
-<div id="signals" class="page">
-  <div class="page-title"><span>▸</span> SIGNAL MONITOR — GATE ANALYSIS</div>
+<!-- keep signals div for JS compatibility but hidden -->
+<div id="signals" style="display:none;"></div>
+
+<!-- ═══════════════════════════════════════════════════════ TRADES PAGE -->
+<div id="trades" class="page">
+  <div class="page-title"><span>▸</span> TRADES &amp; SIGNALS</div>
+
+  <div class="tabs" style="margin-bottom:14px;">
+    <button class="tab active" onclick="switchTradesTab('tabTrades', this)">Trades</button>
+    <button class="tab"        onclick="switchTradesTab('tabSignals', this)">Signals</button>
+  </div>
+
+  <!-- ── TAB: TRADES ── -->
+  <div id="tabTrades" class="tab-content active">
+
+  <!-- P&L Statement bar -->
+  <div id="tradeSummaryBar" class="grid-4col">
+    <div class="panel" style="margin:0;border-color:rgba(0,232,122,0.3);">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Revenue (Wins)</div>
+        <div style="font-size:20px;font-weight:700;color:var(--green);" id="tsGrossWins">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsWinsCount">— trades</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;border-color:rgba(255,77,77,0.3);">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Costs (Losses)</div>
+        <div style="font-size:20px;font-weight:700;color:var(--red);" id="tsGrossLosses">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsLossesCount">— trades</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Net P&L</div>
+        <div style="font-size:20px;font-weight:700;" id="tsTotalPnl">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsTotalTrades">— trades</div>
+      </div>
+    </div>
+    <div class="panel" style="margin:0;">
+      <div class="panel-body" style="padding:12px 14px;">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Win Rate</div>
+        <div style="font-size:20px;font-weight:700;" id="tsWinRate">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsExpectancy">— /trade</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Advanced Metrics -->
+  <div id="proMetricsCard" class="panel" style="margin-bottom:12px;">
+    <div class="panel-header" style="cursor:pointer;" onclick="toggleMetricsExpand()">
+      <span class="panel-title">Advanced Metrics</span>
+      <span id="metricsChevron" style="font-size:11px;color:var(--text-muted);">▼</span>
+    </div>
+    <div id="metricsBody" class="panel-body">
+      <div class="pro-metrics-grid">
+        <div class="pro-metric"><div class="pro-metric-label">Sharpe Ratio</div><div class="pro-metric-val" id="metricSharpe">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Max Drawdown</div><div class="pro-metric-val" id="metricDrawdown" style="color:var(--red);">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Expectancy</div><div class="pro-metric-val" id="metricExpectancy">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Profit Factor</div><div class="pro-metric-val" id="metricProfitFactor">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Win Streak</div><div class="pro-metric-val" id="metricWinStreak" style="color:var(--green);">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Loss Streak</div><div class="pro-metric-val" id="metricLossStreak" style="color:var(--red);">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Avg Win</div><div class="pro-metric-val" id="metricAvgWin" style="color:var(--green);">—</div></div>
+        <div class="pro-metric"><div class="pro-metric-label">Avg Loss</div><div class="pro-metric-val" id="metricAvgLoss" style="color:var(--red);">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+      <button id="filterAll"   class="tab active" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('all')">All</button>
+      <button id="filterToday" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('today')">Today</button>
+      <button id="filterOpen"  class="tab" style="font-size:11px;padding:5px 12px;color:var(--yellow);" onclick="setTradeFilter('open')">⬤ Live</button>
+      <button id="filterWin"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('win')">Wins</button>
+      <button id="filterLoss"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('loss')">Losses</button>
+      <button id="filterYes"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('yes')">YES</button>
+      <button id="filterNo"    class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('no')">NO</button>
+    </div>
+    <input id="tradeSearch" type="text" placeholder="Search market…" oninput="renderTrades(window._lastTradeData)"
+      style="flex:1;min-width:120px;padding:5px 10px;font-size:12px;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;">
+    <span id="tradeCount" style="font-size:11px;color:var(--text-muted);white-space:nowrap;"></span>
+  </div>
+
+  <div id="tradesCards"></div>
+  <div class="pagination" id="tradesPagination"></div>
+
+  <!-- Decision Stream -->
+  <div class="panel" style="margin-top:16px;">
+    <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <span class="panel-title">Decision Stream</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <select id="dsFilter" onchange="loadDecisionStream()" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:3px 8px;font-size:11px;">
+          <option value="all">All</option>
+          <option value="TRADE">TRADE</option>
+          <option value="SKIP">SKIP</option>
+        </select>
+        <button class="secondary" onclick="loadDecisionStream()" style="font-size:10px;padding:3px 10px;">↻</button>
+      </div>
+    </div>
+    <div class="panel-body" style="padding:0;overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="background:var(--bg2);color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-size:10px;">
+            <th style="padding:7px 10px;text-align:left;white-space:nowrap;">Time</th>
+            <th style="padding:7px 10px;text-align:center;">Dir</th>
+            <th style="padding:7px 10px;text-align:center;">Filter</th>
+            <th style="padding:7px 10px;text-align:right;">Lag</th>
+            <th style="padding:7px 10px;text-align:right;">EV adj</th>
+            <th style="padding:7px 10px;text-align:right;">Spread</th>
+            <th style="padding:7px 10px;text-align:center;">Verdict</th>
+            <th style="padding:7px 10px;text-align:left;">Reason</th>
+          </tr>
+        </thead>
+        <tbody id="dsBody">
+          <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  </div><!-- /tabTrades -->
+
+  <!-- ── TAB: SIGNALS ── -->
+  <div id="tabSignals" class="tab-content">
 
   <!-- Summary strip -->
   <div class="stat-strip" style="grid-template-columns:repeat(6,1fr);">
@@ -895,6 +1014,122 @@
     <div class="stat-cell"><div class="stat-label">Avg Spread</div><div class="stat-val" id="smAvgSpread">—</div></div>
     <div class="stat-cell"><div class="stat-label">Last Signal</div><div class="stat-val" style="font-size:14px;" id="smLastSignal">—</div></div>
   </div>
+
+  <!-- Gate cards -->
+  <div class="gates-grid" style="grid-template-columns:repeat(4,1fr);">
+    <div class="gate-card" style="border-top:2px solid var(--purple);">
+      <div class="gate-title" style="color:var(--purple)">Pre-Filters A/B/C</div>
+      <div class="gate-stat"><span class="gate-stat-label">A: Lag stale (&gt;<span id="sdStaleLag">20s</span>)</span><span class="gate-stat-value" id="sfLagCount">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">B: Chase (&gt;8%)</span><span class="gate-stat-value" id="sfChaseCount">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">C: EV decaying</span><span class="gate-stat-value" id="sfEvTrendCount">—</span></div>
+      <div class="gate-stat" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span class="gate-stat-label">Avg Lag Age</span><span class="gate-stat-value" id="sfAvgLag">—</span></div>
+    </div>
+    <div class="gate-card" style="border-top:2px solid var(--cyan);">
+      <div class="gate-title gate1">Gate 1: Microstructure</div>
+      <div class="gate-stat"><span class="gate-stat-label">Confidence</span><span class="gate-stat-value" id="gate1Conf">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">Pass Rate</span><span class="gate-stat-value" id="gate1Rate">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">Fails (G1 + G1.5)</span><span class="gate-stat-value" id="sfGate1Count">—</span></div>
+      <div class="gate-stat" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span class="gate-stat-label">Last detected</span><span class="gate-stat-value" id="gate1Last">—</span></div>
+    </div>
+    <div class="gate-card" style="border-top:2px solid var(--green);">
+      <div class="gate-title gate2">Gate 2: EV + Cost</div>
+      <div class="gate-stat"><span class="gate-stat-label">EV_adjusted avg</span><span class="gate-stat-value" id="smGate2EV">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">Pass Rate</span><span class="gate-stat-value" id="gate2Rate">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">Fails (G2/2.5)</span><span class="gate-stat-value" id="sfGate2Count">—</span></div>
+    </div>
+    <div class="gate-card" style="border-top:2px solid var(--yellow);">
+      <div class="gate-title gate3">Gate 3: BTC Momentum</div>
+      <div class="gate-stat"><span class="gate-stat-label">EMA pass rate</span><span class="gate-stat-value" id="gate3Rate">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">Fails (G3)</span><span class="gate-stat-value" id="sfGate3Count">—</span></div>
+      <div class="gate-stat"><span class="gate-stat-label">Trades executed</span><span class="gate-stat-value" id="smTrades2">—</span></div>
+      <div class="gate-stat" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span class="gate-stat-label">Trade rate</span><span class="gate-stat-value" id="gate2_pass_rate_label">—</span></div>
+    </div>
+  </div>
+
+  <!-- Skip Breakdown -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Skip Breakdown (24h)</span></div>
+    <div class="panel-body" id="skipBreakdownBars">
+      <div style="color:var(--text-muted);text-align:center;font-size:12px;">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Live Market Viewer -->
+  <div class="panel" id="liveMarketPanel">
+    <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <span class="panel-title">Live Market Feed</span>
+      <span id="liveStreamStatus" style="font-size:10px;letter-spacing:1.5px;color:var(--text-muted);">● DISCONNECTED</span>
+    </div>
+    <div class="panel-body" style="padding:0;">
+      <div id="liveMarketHeader" style="padding:12px 16px;border-bottom:1px solid var(--border);display:none;">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">
+          <span style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);">Market</span>
+          <span id="lvMarketQ" style="color:var(--text-hi);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">—</span>
+          <span id="lvWindowTimer" style="color:var(--amber);font-size:13px;font-weight:600;white-space:nowrap;">—</span>
+        </div>
+      </div>
+      <div class="grid-5col" style="gap:0;margin-bottom:0;border-bottom:1px solid var(--border);">
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">BTC Price</div>
+          <div id="lvBTCPrice" style="font-size:18px;font-weight:700;color:var(--text-hi);">—</div>
+        </div>
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">BTC Δ 30s</div>
+          <div id="lvBTCDelta" style="font-size:18px;font-weight:700;">—</div>
+        </div>
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">YES Price</div>
+          <div id="lvYesPrice" style="font-size:18px;font-weight:700;color:var(--green);">—</div>
+        </div>
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">NO Price</div>
+          <div id="lvNoPrice" style="font-size:18px;font-weight:700;color:var(--red);">—</div>
+        </div>
+        <div style="padding:12px 16px;">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">EV_adj</div>
+          <div id="lvEV" style="font-size:18px;font-weight:700;">—</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:0;align-items:center;padding:10px 16px;">
+        <div style="flex:1;">
+          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">EV History</div>
+          <svg id="lvEVChart" width="100%" height="32" style="display:block;overflow:visible;">
+            <polyline id="lvEVLine" fill="none" stroke="var(--green)" stroke-width="1.5" points=""/>
+            <line id="lvEVZero" x1="0" y1="16" x2="100%" y2="16" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+          </svg>
+        </div>
+        <div style="display:flex;gap:20px;margin-left:20px;flex-shrink:0;">
+          <div style="text-align:center;">
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">OB Imbal</div>
+            <div id="lvImbalance" style="font-size:13px;font-weight:600;color:var(--cyan);">—</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Flips</div>
+            <div id="lvFlips" style="font-size:13px;font-weight:600;color:var(--amber);">—</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Balance</div>
+            <div id="lvBalance" style="font-size:13px;font-weight:600;color:var(--text-hi);">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Signal stream -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Decision Stream</span></div>
+    <div class="signals-container" style="border:none;margin:0;">
+      <div class="signals-header" style="grid-template-columns:80px 50px 80px 60px 70px 70px 65px 1fr;">
+        <span>Time</span><span>Dir</span><span>Filter</span><span>Lag</span><span>EV_adj</span><span>Spread</span><span>Verdict</span><span>Reason</span>
+      </div>
+      <div class="signals-list" id="signalStream">
+        <div style="color:var(--text-muted);text-align:center;padding:20px;font-size:12px;">No signals yet</div>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /tabSignals -->
 
   <!-- Gate cards -->
   <div class="gates-grid" style="grid-template-columns:repeat(4,1fr);">
@@ -1012,121 +1247,6 @@
       <div class="signals-list" id="signalStream">
         <div style="color:var(--text-muted);text-align:center;padding:20px;font-size:12px;">No signals yet</div>
       </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════ TRADES PAGE -->
-<div id="trades" class="page">
-  <div class="page-title"><span>▸</span> TRADE HISTORY</div>
-
-  <!-- P&L Statement bar -->
-  <div id="tradeSummaryBar" class="grid-4col">
-    <!-- Revenue -->
-    <div class="panel" style="margin:0;border-color:rgba(0,232,122,0.3);">
-      <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Revenue (Wins)</div>
-        <div style="font-size:20px;font-weight:700;color:var(--green);" id="tsGrossWins">—</div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsWinsCount">— trades</div>
-      </div>
-    </div>
-    <!-- Costs -->
-    <div class="panel" style="margin:0;border-color:rgba(255,77,77,0.3);">
-      <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Costs (Losses)</div>
-        <div style="font-size:20px;font-weight:700;color:var(--red);" id="tsGrossLosses">—</div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsLossesCount">— trades</div>
-      </div>
-    </div>
-    <!-- Net P&L -->
-    <div class="panel" style="margin:0;">
-      <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Net P&L</div>
-        <div style="font-size:20px;font-weight:700;" id="tsTotalPnl">—</div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsTotalTrades">— trades</div>
-      </div>
-    </div>
-    <!-- Win Rate -->
-    <div class="panel" style="margin:0;">
-      <div class="panel-body" style="padding:12px 14px;">
-        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Win Rate</div>
-        <div style="font-size:20px;font-weight:700;" id="tsWinRate">—</div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;" id="tsExpectancy">— /trade</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Performance metrics (full row) -->
-  <div id="proMetricsCard" class="panel" style="margin-bottom:12px;">
-    <div class="panel-header" style="cursor:pointer;" onclick="toggleMetricsExpand()">
-      <span class="panel-title">Advanced Metrics</span>
-      <span id="metricsChevron" style="font-size:11px;color:var(--text-muted);">▼</span>
-    </div>
-    <div id="metricsBody" class="panel-body">
-      <div class="pro-metrics-grid">
-        <div class="pro-metric"><div class="pro-metric-label">Sharpe Ratio</div><div class="pro-metric-val" id="metricSharpe">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Max Drawdown</div><div class="pro-metric-val" id="metricDrawdown" style="color:var(--red);">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Expectancy</div><div class="pro-metric-val" id="metricExpectancy">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Profit Factor</div><div class="pro-metric-val" id="metricProfitFactor">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Win Streak</div><div class="pro-metric-val" id="metricWinStreak" style="color:var(--green);">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Loss Streak</div><div class="pro-metric-val" id="metricLossStreak" style="color:var(--red);">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Avg Win</div><div class="pro-metric-val" id="metricAvgWin" style="color:var(--green);">—</div></div>
-        <div class="pro-metric"><div class="pro-metric-label">Avg Loss</div><div class="pro-metric-val" id="metricAvgLoss" style="color:var(--red);">—</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Filters + search -->
-  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-    <div style="display:flex;gap:4px;flex-wrap:wrap;">
-      <button id="filterAll"   class="tab active" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('all')">All</button>
-      <button id="filterToday" class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('today')">Today</button>
-      <button id="filterOpen"  class="tab" style="font-size:11px;padding:5px 12px;color:var(--yellow);" onclick="setTradeFilter('open')">⬤ Live</button>
-      <button id="filterWin"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('win')">Wins</button>
-      <button id="filterLoss"  class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('loss')">Losses</button>
-      <button id="filterYes"   class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('yes')">YES</button>
-      <button id="filterNo"    class="tab" style="font-size:11px;padding:5px 12px;" onclick="setTradeFilter('no')">NO</button>
-    </div>
-    <input id="tradeSearch" type="text" placeholder="Search market…" oninput="renderTrades(window._lastTradeData)"
-      style="flex:1;min-width:120px;padding:5px 10px;font-size:12px;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;">
-    <span id="tradeCount" style="font-size:11px;color:var(--text-muted);white-space:nowrap;"></span>
-  </div>
-
-  <!-- Trade cards -->
-  <div id="tradesCards"></div>
-  <div class="pagination" id="tradesPagination"></div>
-
-  <!-- Decision Stream -->
-  <div class="panel" style="margin-top:16px;">
-    <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
-      <span class="panel-title">Decision Stream</span>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <select id="dsFilter" onchange="loadDecisionStream()" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:3px 8px;font-size:11px;">
-          <option value="all">All</option>
-          <option value="TRADE">TRADE</option>
-          <option value="SKIP">SKIP</option>
-        </select>
-        <button class="secondary" onclick="loadDecisionStream()" style="font-size:10px;padding:3px 10px;">↻</button>
-      </div>
-    </div>
-    <div class="panel-body" style="padding:0;overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;font-size:11px;">
-        <thead>
-          <tr style="background:var(--bg2);color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-size:10px;">
-            <th style="padding:7px 10px;text-align:left;white-space:nowrap;">Time</th>
-            <th style="padding:7px 10px;text-align:center;">Dir</th>
-            <th style="padding:7px 10px;text-align:center;">Filter</th>
-            <th style="padding:7px 10px;text-align:right;">Lag</th>
-            <th style="padding:7px 10px;text-align:right;">EV adj</th>
-            <th style="padding:7px 10px;text-align:right;">Spread</th>
-            <th style="padding:7px 10px;text-align:center;">Verdict</th>
-            <th style="padding:7px 10px;text-align:left;">Reason</th>
-          </tr>
-        </thead>
-        <tbody id="dsBody">
-          <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted);">Loading…</td></tr>
-        </tbody>
-      </table>
     </div>
   </div>
 </div>
@@ -1439,7 +1559,18 @@
 
 <!-- ═══════════════════════════════════════════════ LAB PAGE ══ -->
 <div id="lab" class="page">
-  <div class="page-title"><span>⚗</span> PAPER LAB — Strategy Testing</div>
+  <div class="page-title"><span>⚗</span> LAB &amp; SETTINGS</div>
+
+  <!-- Top tabs: Lab / Strategy / Risk / Advanced -->
+  <div class="tabs" style="margin-bottom:14px;">
+    <button class="tab active" onclick="switchLabTab('labPerf', this)">Performance</button>
+    <button class="tab"        onclick="switchLabTab('labStrategy', this)">Strategy</button>
+    <button class="tab"        onclick="switchLabTab('labRisk', this)">Risk</button>
+    <button class="tab"        onclick="switchLabTab('labAdvanced', this)">Advanced</button>
+  </div>
+
+  <!-- ── TAB: PERFORMANCE ── -->
+  <div id="labPerf" class="tab-content active">
 
   <!-- Controls row -->
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
@@ -1654,6 +1785,247 @@
       <div id="labNoTrades" style="text-align:center;color:var(--text-muted);font-size:12px;padding:20px;">No closed trades in selected period</div>
     </div>
   </div>
+
+  </div><!-- /labPerf tab -->
+
+  <!-- ── TAB: STRATEGY ── -->
+  <div id="labStrategy" class="tab-content">
+    <div class="form-section">
+      <div class="form-section-title">Gate Thresholds</div>
+      <div class="form-group">
+        <label>Gate 1: Microstructure Confidence</label>
+        <div class="slider-container">
+          <input type="range" id="gate1Threshold" min="0.10" max="0.90" step="0.01" value="0.45" onchange="updateSliderValue('gate1Threshold')">
+          <span class="slider-value" id="gate1ThresholdValue">0.45</span>
+        </div>
+        <div class="form-hint">Informational only — Gate 2 EV is the real filter</div>
+      </div>
+      <div class="form-group">
+        <label>Gate 2: EV Hard Floor</label>
+        <div class="slider-container">
+          <input type="range" id="gate2Floor" min="0.5" max="20" step="0.5" value="3" onchange="updateSliderValue('gate2Floor')" oninput="updateSliderValue('gate2Floor'); var l=document.getElementById('lpG2'); if(l){l.value=this.value;document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%';}">
+          <span class="slider-value" id="gate2FloorValue">3%</span>
+        </div>
+        <div class="form-hint">Minimum EV% required to trade — lower = more trades, higher = higher quality</div>
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" id="gate3Enabled" checked onchange="updateSetting()"> Gate 3: BTC Momentum Direction Confirmation</label>
+      </div>
+      <div class="form-group">
+        <label>Min Kelly Edge (trade entry threshold)</label>
+        <div class="slider-container">
+          <input type="range" id="minEdge" min="0.01" max="0.20" step="0.01" value="0.05" onchange="updateSliderValue('minEdge')">
+          <span class="slider-value" id="minEdgeValue">5%</span>
+        </div>
+        <div class="form-hint">Minimum Kelly edge (modelProb − marketProb) required to enter</div>
+      </div>
+      <div class="form-group">
+        <label>Gate 3: Min BTC Δ (momentum threshold)</label>
+        <div class="slider-container">
+          <input type="range" id="gate3MinDelta" min="0.005" max="0.20" step="0.005" value="0.05" onchange="updateSliderValue('gate3MinDelta')">
+          <span class="slider-value" id="gate3MinDeltaValue">0.050%</span>
+        </div>
+        <div class="form-hint">Min 30s BTC % move for Gate 3 direction confirmation</div>
+      </div>
+      <div class="form-group">
+        <label>Signal Interval</label>
+        <div class="slider-container">
+          <input type="range" id="snipeTiming" min="5" max="60" step="5" value="10" onchange="updateSliderValue('snipeTiming')">
+          <span class="slider-value" id="snipeTimingValue">10s</span>
+        </div>
+        <div class="form-hint">Seconds between signal evaluations (10s recommended)</div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">Order Execution</div>
+      <div class="form-group">
+        <label>Order Timeout</label>
+        <div class="slider-container">
+          <input type="range" id="orderTimeout" min="10" max="120" step="5" value="60" onchange="updateSliderValue('orderTimeout')">
+          <span class="slider-value" id="orderTimeoutValue">60s</span>
+        </div>
+        <div class="form-hint">Max time to hold a resting limit order before cancellation</div>
+      </div>
+      <div class="form-group">
+        <label>Adverse Selection Tolerance (ticks)</label>
+        <div class="slider-container">
+          <input type="range" id="adverseTicks" min="1" max="15" step="1" value="8" onchange="updateSliderValue('adverseTicks')">
+          <span class="slider-value" id="adverseTicksValue">8</span>
+        </div>
+        <div class="form-hint">Cancel BUY if market drops this many ticks below limit price while order rests</div>
+      </div>
+      <div style="padding:8px 10px;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);font-size:11px;color:var(--text-muted);line-height:1.5;margin-bottom:8px;">
+        Orders rest as GTC limits at <span style="color:var(--amber);">lastTradePrice + 1 tick</span>.
+        Paper orders use stochastic fill simulation — fills are <strong style="color:var(--yellow);">NOT guaranteed</strong>.
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">Flip &amp; EV Exit</div>
+      <div class="form-group">
+        <label>Flip Threshold (%)</label>
+        <div class="slider-container">
+          <input type="range" id="flipThreshold" min="2" max="15" step="0.5" value="5" onchange="updateSliderValue('flipThreshold')">
+          <span class="slider-value" id="flipThresholdValue">5%</span>
+        </div>
+        <div class="form-hint">Min EV gain required to flip an open position. 5% filters BTC noise (~3-4% EV swings).</div>
+      </div>
+      <div class="form-group">
+        <label>EV Decay Exit Ratio</label>
+        <div class="slider-container">
+          <input type="range" id="evDecayRatio" min="0.2" max="0.9" step="0.05" value="0.5" onchange="updateSliderValue('evDecayRatio')">
+          <span class="slider-value" id="evDecayRatioValue">0.50</span>
+        </div>
+        <div class="form-hint">Exit when current EV drops below this fraction of peak EV. 0.5 = exit when EV halves.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px;">
+        <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
+        <button class="secondary" onclick="resetSettingsToDefaults('strategy')" style="flex:0 0 auto;">Reset</button>
+      </div>
+    </div>
+  </div><!-- /labStrategy tab -->
+
+  <!-- ── TAB: RISK ── -->
+  <div id="labRisk" class="tab-content">
+    <div class="form-section">
+      <div class="form-section-title">Position Sizing Mode</div>
+      <div class="form-group">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="kellyMode" id="kellyModeManual" value="manual" checked onchange="onKellyModeChange()">
+            <span><strong>Manual</strong> — you set kelly cap &amp; max size</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="kellyMode" id="kellyModeAdaptive" value="adaptive" onchange="onKellyModeChange()">
+            <span><strong>Adaptive</strong> — computed from trade stats</span>
+          </label>
+        </div>
+      </div>
+      <div id="adaptiveKellyPanel" style="display:none;background:rgba(0,232,122,0.06);border:1px solid var(--green);border-radius:6px;padding:12px;margin-bottom:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">ADAPTIVE KELLY RECOMMENDATION</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;">
+          <div style="text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--green);" id="akWinRate">—</div>
+            <div style="font-size:10px;color:var(--text-muted);">Win Rate</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--cyan);" id="akEdge">—</div>
+            <div style="font-size:10px;color:var(--text-muted);">Avg W/L Ratio</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--yellow);" id="akRecommended">—</div>
+            <div style="font-size:10px;color:var(--text-muted);">Half-Kelly Cap</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);" id="akFormula">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" id="akSampleSize"></div>
+        <button class="secondary" style="margin-top:8px;font-size:11px;padding:4px 10px;" onclick="loadAdaptiveKellyStats()">Recalculate</button>
+      </div>
+      <div class="form-group">
+        <label>Kelly Cap <span id="kellyCapModeHint" style="font-size:10px;color:var(--text-muted);">(manual)</span></label>
+        <div class="slider-container">
+          <input type="range" id="kellyCap" min="0.05" max="0.25" step="0.01" value="0.10" onchange="updateSliderValue('kellyCap')">
+          <span class="slider-value" id="kellyCapValue">10%</span>
+        </div>
+        <div class="form-hint" id="kellyCapHint">Fractional Kelly cap — 10% recommended for Phase A</div>
+      </div>
+      <div class="form-group">
+        <label>Max Trade Size (USD)</label>
+        <input type="number" id="maxTradeSize" value="5" min="1" max="500" step="1">
+        <div class="form-hint">Hard dollar cap per trade — Kelly fraction applied to balance then capped here</div>
+      </div>
+      <div class="form-group">
+        <label>Max Daily Loss (USD)</label>
+        <input type="number" id="maxDailyLoss" value="50" min="10" max="500" step="10">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px;">
+        <button class="primary" onclick="saveRiskSettings()" style="flex:1;">Save Risk Settings</button>
+        <button class="secondary" onclick="resetSettingsToDefaults('risk')" style="flex:0 0 auto;">Reset</button>
+      </div>
+    </div>
+  </div><!-- /labRisk tab -->
+
+  <!-- ── TAB: ADVANCED ── -->
+  <div id="labAdvanced" class="tab-content">
+    <div class="form-section section-paper">
+      <div class="form-section-title" style="color:var(--green);">Paper Trading Mode</div>
+      <div class="form-group">
+        <label><input type="checkbox" id="paperTradingEnabled" checked onchange="onPaperTradingToggle()"> Paper Trading (uncheck = LIVE real money)</label>
+      </div>
+      <div class="form-group" id="paperBalanceSection">
+        <label>Paper Balance</label>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="paperBalanceDisplay" value="Loading..." disabled style="flex:1;">
+          <button class="secondary" onclick="resetPaperBalance()">Reset</button>
+        </div>
+      </div>
+      <div id="tradingModeNotice" style="padding:10px 12px;background:rgba(0,232,122,0.08);border:1px solid var(--green);color:var(--green);font-size:11px;">
+        Paper trading ACTIVE — all trades are simulated, no real money
+      </div>
+    </div>
+
+    <div class="form-section section-chain">
+      <div class="form-section-title" style="color:var(--cyan);">Chainlink RPC Config</div>
+      <div class="form-group">
+        <label>RPC Endpoint (optional)</label>
+        <input type="url" id="chainlinkRpc" placeholder="https://..." onchange="updateSetting()">
+        <div class="form-hint">Leave blank to use default public nodes</div>
+      </div>
+      <button class="secondary" onclick="testChainlinkConnection()">Test Connection</button>
+    </div>
+
+    <div class="form-section section-claude">
+      <div class="form-section-title" style="color:var(--purple);">Claude AI Configuration</div>
+      <div class="form-group">
+        <label><input type="checkbox" id="claudeEnabled" checked onchange="updateClaudeSetting()"> Enable Claude AI Analysis</label>
+      </div>
+      <div class="form-group">
+        <label>Claude API Key</label>
+        <input type="password" id="claudeApiKey" placeholder="sk-ant-..." onchange="updateClaudeSetting()">
+        <div class="form-hint">Anthropic API key — stored encrypted</div>
+      </div>
+      <div class="form-group">
+        <label>Model</label>
+        <select id="claudeModel" onchange="updateClaudeSetting()">
+          <option value="claude-opus-4-6">Claude Opus 4.6 (Best)</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku (Fast)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" id="autoClaudeAnalysis" onchange="updateClaudeSetting()"> Auto-analyze every 50 trades</label>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;">
+        <button class="secondary" onclick="testClaudeConnection()" style="flex:1;">Test Connection</button>
+        <button class="primary"   onclick="saveClaudeSettings()"  style="flex:1;">Save</button>
+      </div>
+      <div style="padding:8px 10px;border:1px solid var(--purple);font-size:11px;color:var(--purple);">
+        <span id="claudeStatus">API Key not configured</span>
+      </div>
+    </div>
+
+    <div class="form-section section-poly">
+      <div class="form-section-title" style="color:var(--yellow);">Polymarket Wallet</div>
+      <div class="form-group">
+        <label>Wallet Address</label>
+        <input type="text" id="polymarketWallet" placeholder="0x..." onchange="updateSetting()">
+      </div>
+      <button class="secondary" onclick="testPolymarketConnection()" style="width:100%;margin-bottom:10px;">Test &amp; Fetch Balance</button>
+      <div style="padding:8px 10px;border:1px solid var(--yellow);font-size:11px;color:var(--yellow);">
+        USDC Balance: <span id="polymarketBalance">Not connected</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-group">
+        <label><input type="checkbox" id="requireWhaleConvergence" onchange="updateSetting()"> Require Whale Convergence</label>
+        <div class="form-hint">Only trade if copy targets are trading in same direction</div>
+      </div>
+      <button class="primary" onclick="saveAdvancedSettings()" style="width:100%;">Save Advanced Settings</button>
+    </div>
+  </div><!-- /labAdvanced tab -->
+
 </div>
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 
@@ -1902,12 +2274,28 @@
       });
     }
     if (pageId === 'claude') loadClaudeAnalysis();
-    if (pageId === 'trades') { setTradeFilter('all'); loadTrades(); }
-    if (pageId === 'signals') { loadGateStats(); loadSignals(); }
-    if (pageId === 'lab') loadLab();
+    if (pageId === 'trades') { setTradeFilter('all'); loadTrades(); loadDecisionStream(); }
+    if (pageId === 'lab') { loadLab(); loadSettingsFromAPI(); }
     if (pageId === 'settings') loadSettingsFromAPI();
     if (pageId === 'dashboard') loadDashboard();
     if (pageId === 'admin') loadAdmin();
+  }
+
+  function switchTradesTab(tabId, clickedEl) {
+    document.querySelectorAll('#trades .tab-content').forEach(t => t.classList.remove('active'));
+    document.getElementById(tabId)?.classList.add('active');
+    document.querySelectorAll('#trades .tabs .tab').forEach(t => t.classList.remove('active'));
+    if (clickedEl) clickedEl.classList.add('active');
+    if (tabId === 'tabTrades') { setTradeFilter('all'); loadTrades(); }
+    if (tabId === 'tabSignals') { loadGateStats(); loadSignals(); }
+  }
+
+  function switchLabTab(tabId, clickedEl) {
+    document.querySelectorAll('#lab .tab-content').forEach(t => t.classList.remove('active'));
+    document.getElementById(tabId)?.classList.add('active');
+    document.querySelectorAll('#lab .tab').forEach(t => t.classList.remove('active'));
+    if (clickedEl) clickedEl.classList.add('active');
+    if (tabId === 'labPerf') loadLab();
   }
 
   function switchSettingsTab(tabId, clickedEl) {
@@ -3886,13 +4274,31 @@
         <td style="padding:8px 6px;">${u.trade_count||0}</td>
         <td style="padding:8px 6px;">${wr.toFixed(1)}%</td>
         <td style="padding:8px 6px;color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-        <td style="padding:8px 6px;">
+        <td style="padding:8px 6px;display:flex;gap:4px;flex-wrap:wrap;">
           <button onclick="adminToggleBot(${u.id}, ${botActive})" style="padding:3px 8px;font-size:10px;font-family:var(--font);background:${botActive?'var(--red-dim)':'var(--green-dim)'};color:${botActive?'var(--red)':'var(--green)'};border:1px solid ${botActive?'var(--red)':'var(--green)'};border-radius:3px;cursor:pointer;">
             ${botActive?'Stop':'Start'}
           </button>
+          <select onchange="adminSetRole(${u.id}, this.value)" style="font-size:10px;font-family:var(--font);background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:2px 4px;cursor:pointer;">
+            <option value="user" ${u.role==='user'||!u.role?'selected':''}>user</option>
+            <option value="admin" ${u.role==='admin'?'selected':''}>admin</option>
+            <option value="viewer" ${u.role==='viewer'?'selected':''}>viewer</option>
+          </select>
         </td>
       </tr>`;
     }).join('');
+  }
+
+  async function adminSetRole(userId, role) {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch((window.API_BASE||'')+`/api/admin/users/${userId}/role`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role })
+      });
+      if (res.ok) { showAlert(`Role set to ${role} for user ${userId}`, 'success'); loadAdmin(); }
+      else { const d = await res.json(); showAlert(d.error || 'Failed to set role', 'error'); }
+    } catch (err) { showAlert('Request failed', 'error'); }
   }
 
   async function adminToggleBot(userId, currentlyActive) {

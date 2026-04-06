@@ -128,6 +128,24 @@ router.post('/users/:id/toggle-bot', async (req, res) => {
   }
 });
 
+// POST /api/admin/users/:id/role — Set user role
+router.post('/users/:id/role', async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.id);
+    const { role } = req.body;
+    const allowed = ['user', 'admin', 'viewer'];
+    if (!allowed.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+
+    const isAdmin = role === 'admin';
+    await pool.query('UPDATE users SET role = $1, is_admin = $2 WHERE id = $3', [role, isAdmin, targetId]);
+    await logAdminAction(req.userId, 'SET_ROLE', targetId, { role });
+    res.json({ success: true, role });
+  } catch (err) {
+    console.error('Set role error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/admin/trades — All trades across all users (paginated)
 router.get('/trades', async (req, res) => {
   try {
