@@ -175,11 +175,15 @@ class GBMSignalEngine {
           console.log(`[Gamma] outcomePrices=${JSON.stringify(op)}`);
           const gammaYes = op ? parseFloat(op[0]) : NaN;
           const gammaNo  = op ? parseFloat(op[1]) : NaN;
-          if (!isNaN(gammaYes) && gammaYes > 0.05 && gammaYes < 0.95) {
+          // Reject only prices that are exactly at the CLOB boundary mid (≈0.5 artifact).
+          // Valid Gamma prices range 0.01–0.99 and include near-resolved markets (0.95+, 0.05-).
+          // Old threshold > 0.05 && < 0.95 was rejecting 0.955, 0.965, 0.98 — all real prices.
+          const isValidGammaPrice = (p) => !isNaN(p) && p > 0.01 && p < 0.99 && Math.abs(p - 0.5) > 0.001;
+          if (isValidGammaPrice(gammaYes)) {
             rawYesPrice = gammaYes;
             priceSource = 'gamma';
             console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma outcomePrices: yesPrice=${rawYesPrice.toFixed(3)}`);
-          } else if (!isNaN(gammaNo) && gammaNo > 0.05 && gammaNo < 0.95) {
+          } else if (isValidGammaPrice(gammaNo)) {
             rawYesPrice = 1 - gammaNo;
             priceSource = 'gamma';
             console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma NO price: noPrice=${gammaNo.toFixed(3)} yesPrice=${rawYesPrice.toFixed(3)}`);
@@ -392,6 +396,7 @@ class GBMSignalEngine {
         // the correct signal — a 90%+ spread means no real market participants.
         // fillProb must be 0 here regardless of depth.
         if (spread >= 0.90) {
+          log.gates.boundaryBook = { spread, passed: false };
           log.reason = `Boundary book: spread=${(spread*100).toFixed(0)}% — no real liquidity`;
           continue;
         }
