@@ -521,38 +521,51 @@ class BotInstance {
   // Using signal.yesPrice (from the current tick's evaluate() call) ensures the
   // fill simulation reflects the same price that every other component sees.
   async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
-    const sig = pending.signal;
-    // Use the latest signal price if available; fall back to stored referencePrice
-    // (covers the case where the current tick's signal had no yesPrice / was SKIP).
-    const currentYesPrice = sig?.yesPrice ?? pending.referencePrice;
-    const currentNoPrice  = sig?.noPrice  ?? (pending.referencePrice ? 1 - pending.referencePrice : null);
-    const currentPrice = pending.direction === 'NO' ? currentNoPrice : currentYesPrice;
-    if (!currentPrice) return;
+    // Fetch the live CLOB order book for the token we want to buy.
+    // This is the ONLY valid price source — pending.signal.yesPrice is stale
+    // (captured at order creation, never updated) and must not be used here.
+    let ob;
+    try {
+      ob = await this.polymarket.getOrderBook(pending.tokenId);
+    } catch (_) {}
 
-    pending.lastCheckedPrice = currentPrice;
+    // No book data — skip this tick, try again next cycle.
+    if (!ob) return;
 
-    // Adverse selection: market moved significantly against our limit.
-    if (currentPrice < pending.limitPrice - ADVERSE_TICKS * TICK) {
-      this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} (-${((pending.limitPrice - currentPrice)/TICK).toFixed(0)} ticks) — cancelling`);
+    // Boundary-only books (bid=0.01/ask=0.99, spread≥90%) have no real liquidity.
+    // A real seller would never fill at our limit against ghost resting orders.
+    // Simulating fills here would produce fake trades at impossible prices.
+    const spread = ob.bestAsk != null && ob.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
+    if (spread >= 0.90) {
+      this._log('INFO', `📊 [PAPER] Boundary book (spread=${(spread*100).toFixed(0)}%) — no real liquidity, skipping fill check`);
+      return;
+    }
+
+    // bestAsk is the lowest price any seller is willing to accept right now.
+    // A passive buy limit fills when a seller drops their ask to our limit price
+    // (i.e. bestAsk <= limitPrice). Using bestAsk directly from Polymarket CLOB
+    // is the correct simulation — all math comes from real market data.
+    const bestAsk = ob.bestAsk;
+    if (bestAsk == null || bestAsk <= 0) return;
+
+    pending.lastCheckedPrice = bestAsk;
+
+    // Adverse selection: ask moved significantly above our limit — cancel.
+    if (bestAsk > pending.limitPrice + ADVERSE_TICKS * TICK) {
+      this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} (+${((bestAsk - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling`);
       this._pendingOrders.delete(orderId);
       return;
     }
 
-    // Fill condition: market price came down to (or below) our limit — we get filled.
-    // Add a stochastic component: even when at our price, fill probability < 100%
-    // to simulate queue position and partial depth.
-    const timeSincePlaced = Date.now() - pending.placedAt;
-    const atOrBelowLimit = currentPrice <= pending.limitPrice;
-    const dist = Math.max(0, currentPrice - pending.limitPrice); // 0 when at/below limit
-    const distanceFactor = atOrBelowLimit ? 1.0 : Math.max(0.05, 1 - dist / (3 * TICK));
-    const timeFactor = Math.min(0.3, timeSincePlaced / 8000 * 0.3);
-    const fillProb = Math.min(0.95, distanceFactor * 0.65 + timeFactor);
+    // Strict price-crossing fill: only fill when a real seller has offered at or
+    // below our limit. No randomness — if the market moved to our price, we fill.
+    const filled = bestAsk <= pending.limitPrice;
+    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} spread=${(spread*100).toFixed(0)}% filled=${filled}`);
 
-    this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} atLimit=${atOrBelowLimit} prob=${(fillProb*100).toFixed(0)}% age=${(timeSincePlaced/1000).toFixed(1)}s`);
-
-    if (Math.random() < fillProb) {
-      const fillPrice = parseFloat(Math.min(pending.limitPrice, currentPrice).toFixed(2));
-      this._log('INFO', `✅ [PAPER] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} (market=${currentPrice.toFixed(3)})`);
+    if (filled) {
+      // Fill price = our limit (passive order gets price improvement when ask < limit).
+      const fillPrice = parseFloat(pending.limitPrice.toFixed(2));
+      this._log('INFO', `✅ [PAPER] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} (bestAsk=${bestAsk.toFixed(3)})`);
       await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
       this._pendingOrders.delete(orderId);
     }
