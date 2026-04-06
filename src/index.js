@@ -61,9 +61,13 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// --- Root ---
+// --- Serve frontend static files ---
+const path = require('path');
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// --- Root: serve dashboard (SPA fallback) ---
 app.get('/', (req, res) => {
-  res.json({ message: 'PolyBot Backend v1.0 — REAL EDGE MODE', status: 'running' });
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
 // --- Auto-restart active bots on deploy ---
