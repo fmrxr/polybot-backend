@@ -50,9 +50,11 @@ app.use('/api/trades', require('./routes/trades'));
 app.use('/api/admin', require('./routes/admin'));
 
 // --- Health Check ---
+let _dbReady = false;
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
+    db: _dbReady ? 'ready' : 'initializing',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     activeBots: botManager.getActiveCount()
@@ -115,16 +117,24 @@ const autoRestartBots = async () => {
 // --- Start Server ---
 const startServer = async () => {
   try {
-    await initDB();
-    console.log('[DB] Connected and initialized');
-
+    // Start HTTP server immediately so Railway healthcheck passes
     const server = app.listen(PORT, () => {
       console.log(`[Server] PolyBot backend running on port ${PORT}`);
       console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`[Server] CORS origins: ${allowedOrigins.join(', ')}`);
     });
 
-    // Auto-restart after short delay to let server settle
+    // Init DB after server is up (healthcheck won't fail while DB connects)
+    try {
+      await initDB();
+      _dbReady = true;
+      console.log('[DB] Connected and initialized');
+    } catch (dbErr) {
+      console.error('[DB] Init failed:', dbErr.message);
+      // Don't exit — let the server stay up so Railway doesn't retry-loop
+    }
+
+    // Auto-restart bots after DB is ready
     setTimeout(autoRestartBots, 3000);
 
     // --- Graceful Shutdown ---
@@ -165,7 +175,7 @@ const startServer = async () => {
     process.on('SIGINT', () => shutdown('SIGINT'));
 
   } catch (err) {
-    console.error('[Server] Failed to start:', err.message);
+    console.error('[Server] Fatal startup error:', err.message);
     process.exit(1);
   }
 };
