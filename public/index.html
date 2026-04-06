@@ -730,7 +730,7 @@
 
         <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;margin:10px 0 6px;">SIZING</div>
         <div style="font-size:11px;color:var(--text-hi);line-height:1.6;">
-          Kelly criterion · cap <span id="sdKellyCap" style="color:var(--cyan);">—</span> · max $<span id="sdMaxSize" style="color:var(--cyan);">—</span> · max daily loss $<span id="sdMaxLoss" style="color:var(--cyan);">—</span>
+          Kelly criterion · <span id="sdKellyMode" style="color:var(--yellow);text-transform:uppercase;font-size:10px;">manual</span> · cap <span id="sdKellyCap" style="color:var(--cyan);">—</span> · max $<span id="sdMaxSize" style="color:var(--cyan);">—</span> · max daily loss $<span id="sdMaxLoss" style="color:var(--cyan);">—</span>
         </div>
       </div>
       <!-- Right col: gate pipeline -->
@@ -1270,19 +1270,55 @@
   <!-- TAB: RISK -->
   <div id="risk" class="tab-content">
     <div class="form-section">
-      <div class="form-section-title">Position Sizing</div>
+      <div class="form-section-title">Position Sizing Mode</div>
       <div class="form-group">
-        <label>Kelly Cap</label>
+        <div style="display:flex;gap:12px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="kellyMode" id="kellyModeManual" value="manual" checked onchange="onKellyModeChange()">
+            <span><strong>Manual</strong> — you set kelly cap &amp; max size</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="kellyMode" id="kellyModeAdaptive" value="adaptive" onchange="onKellyModeChange()">
+            <span><strong>Adaptive</strong> — computed from trade stats</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Adaptive recommendation panel (shown only in adaptive mode) -->
+      <div id="adaptiveKellyPanel" style="display:none;background:rgba(0,232,122,0.06);border:1px solid var(--green);border-radius:6px;padding:12px;margin-bottom:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">ADAPTIVE KELLY RECOMMENDATION</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;">
+          <div style="text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--green);" id="akWinRate">—</div>
+            <div style="font-size:10px;color:var(--text-muted);">Win Rate</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--cyan);" id="akEdge">—</div>
+            <div style="font-size:10px;color:var(--text-muted);">Avg W/L Ratio</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--yellow);" id="akRecommended">—</div>
+            <div style="font-size:10px;color:var(--text-muted);">Half-Kelly Cap</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);" id="akFormula">—</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" id="akSampleSize"></div>
+        <button class="secondary" style="margin-top:8px;font-size:11px;padding:4px 10px;" onclick="loadAdaptiveKellyStats()">Recalculate</button>
+      </div>
+
+      <!-- Manual controls (visible in both modes; in adaptive mode they show the computed cap as read-only) -->
+      <div class="form-group">
+        <label>Kelly Cap <span id="kellyCapModeHint" style="font-size:10px;color:var(--text-muted);">(manual)</span></label>
         <div class="slider-container">
           <input type="range" id="kellyCap" min="0.05" max="0.25" step="0.01" value="0.10" onchange="updateSliderValue('kellyCap')">
           <span class="slider-value" id="kellyCapValue">10%</span>
         </div>
-        <div class="form-hint">Fractional Kelly cap — 10% recommended for Phase A</div>
+        <div class="form-hint" id="kellyCapHint">Fractional Kelly cap — 10% recommended for Phase A</div>
       </div>
       <div class="form-group">
         <label>Max Trade Size (USD)</label>
-        <input type="number" id="maxTradeSize" value="20" min="20" max="500" step="10">
-        <div class="form-hint">Hard cap on single trade size</div>
+        <input type="number" id="maxTradeSize" value="5" min="1" max="500" step="1">
+        <div class="form-hint">Hard dollar cap per trade — Kelly fraction is applied to balance then capped here</div>
       </div>
       <div class="form-group">
         <label>Max Daily Loss (USD)</label>
@@ -2581,7 +2617,12 @@
   }
 
   function loadSettingsIntoForms(settings) {
-    if (settings.kelly_cap) document.getElementById('kellyCap').value = settings.kelly_cap;
+    // Kelly mode toggle
+    const kellyMode = settings.kelly_mode || 'manual';
+    const modeRadio = document.getElementById(kellyMode === 'adaptive' ? 'kellyModeAdaptive' : 'kellyModeManual');
+    if (modeRadio) { modeRadio.checked = true; onKellyModeChange(); }
+
+    if (settings.kelly_cap) { document.getElementById('kellyCap').value = settings.kelly_cap; updateSliderValue('kellyCap'); }
     if (settings.max_trade_size) document.getElementById('maxTradeSize').value = settings.max_trade_size;
     if (settings.max_daily_loss) document.getElementById('maxDailyLoss').value = settings.max_daily_loss;
     if (settings.paper_trading !== undefined) {
@@ -2617,6 +2658,7 @@
     }
     // Populate strategy description panel
     const el = id => document.getElementById(id);
+    if (el('sdKellyMode')) el('sdKellyMode').textContent = settings.kelly_mode || 'manual';
     if (el('sdKellyCap') && settings.kelly_cap)    el('sdKellyCap').textContent = (parseFloat(settings.kelly_cap)*100).toFixed(0) + '%';
     if (el('sdMaxSize')  && settings.max_trade_size) el('sdMaxSize').textContent  = parseFloat(settings.max_trade_size).toFixed(0);
     if (el('sdMaxLoss')  && settings.max_daily_loss) el('sdMaxLoss').textContent  = parseFloat(settings.max_daily_loss).toFixed(0);
@@ -2738,7 +2780,9 @@
 
   async function saveRiskSettings() {
     const token = localStorage.getItem('token');
+    const kellyMode = document.querySelector('input[name="kellyMode"]:checked')?.value || 'manual';
     const settings = {
+      kelly_mode: kellyMode,
       kelly_cap: parseFloat(document.getElementById('kellyCap').value),
       max_trade_size: parseFloat(document.getElementById('maxTradeSize').value),
       max_daily_loss: parseFloat(document.getElementById('maxDailyLoss').value)
@@ -2754,6 +2798,60 @@
     } catch (err) { showAlert('Error saving settings', 'error'); }
   }
 
+  function onKellyModeChange() {
+    const mode = document.querySelector('input[name="kellyMode"]:checked')?.value || 'manual';
+    const panel = document.getElementById('adaptiveKellyPanel');
+    const hint = document.getElementById('kellyCapModeHint');
+    const capHint = document.getElementById('kellyCapHint');
+    const slider = document.getElementById('kellyCap');
+    if (mode === 'adaptive') {
+      panel.style.display = 'block';
+      hint.textContent = '(set by adaptive — manual override below)';
+      capHint.textContent = 'In adaptive mode the bot uses the computed Half-Kelly cap. This slider is ignored.';
+      slider.style.opacity = '0.4';
+      loadAdaptiveKellyStats();
+    } else {
+      panel.style.display = 'none';
+      hint.textContent = '(manual)';
+      capHint.textContent = 'Fractional Kelly cap — 10% recommended for Phase A';
+      slider.style.opacity = '1';
+    }
+  }
+
+  async function loadAdaptiveKellyStats() {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch((window.API_BASE||'')+'/api/trades/stats', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const s = await res.json();
+      if (!s.total_trades || s.total_trades < 10) {
+        document.getElementById('akFormula').textContent = 'Need at least 10 closed trades for adaptive mode.';
+        document.getElementById('akWinRate').textContent = '—';
+        document.getElementById('akEdge').textContent = '—';
+        document.getElementById('akRecommended').textContent = '—';
+        document.getElementById('akSampleSize').textContent = `${s.total_trades || 0} trades in history`;
+        return;
+      }
+      const winRate = s.win_rate / 100;
+      const avgWin = s.avg_win || 0;
+      const avgLoss = s.avg_loss || 1;
+      const b = avgLoss > 0 ? avgWin / avgLoss : 0;
+      const fullKelly = b > 0 ? (winRate * b - (1 - winRate)) / b : 0;
+      const halfKelly = Math.min(Math.max(fullKelly * 0.5, fullKelly > 0 ? 0.05 : 0), 0.25);
+
+      document.getElementById('akWinRate').textContent = s.win_rate.toFixed(1) + '%';
+      document.getElementById('akEdge').textContent = b.toFixed(2) + 'x';
+      document.getElementById('akRecommended').textContent = fullKelly > 0 ? (halfKelly * 100).toFixed(1) + '%' : 'N/A';
+      document.getElementById('akFormula').textContent =
+        `Full Kelly = (${(winRate*100).toFixed(1)}% × ${b.toFixed(2)} − ${((1-winRate)*100).toFixed(1)}%) ÷ ${b.toFixed(2)} = ${(fullKelly*100).toFixed(1)}% → Half-Kelly = ${(halfKelly*100).toFixed(1)}%`;
+      document.getElementById('akSampleSize').textContent = `Based on ${s.total_trades} trades (last 50 used for computation)`;
+    } catch (e) {
+      document.getElementById('akFormula').textContent = 'Failed to load trade stats.';
+    }
+  }
+
   function resetSettingsToDefaults(tab) {
     const DEFAULTS = {
       strategy: {
@@ -2765,8 +2863,9 @@
 
       },
       risk: {
+        kellyMode: 'manual',
         kellyCap: 0.10,
-        maxTradeSize: 20,
+        maxTradeSize: 5,
         maxDailyLoss: 50
       }
     };
@@ -2779,6 +2878,7 @@
       document.getElementById('minEdge').value = d.minEdge; updateSliderValue('minEdge');
       document.getElementById('snipeTiming').value = d.snipeTiming; updateSliderValue('snipeTiming');
     } else if (tab === 'risk') {
+      document.getElementById('kellyModeManual').checked = true; onKellyModeChange();
       document.getElementById('kellyCap').value = d.kellyCap; updateSliderValue('kellyCap');
       document.getElementById('maxTradeSize').value = d.maxTradeSize;
       document.getElementById('maxDailyLoss').value = d.maxDailyLoss;

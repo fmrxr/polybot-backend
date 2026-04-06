@@ -399,7 +399,15 @@ class BotInstance {
     const b = (1 / lastTradePrice) - 1;
     let kellyFraction = b > 0 ? Math.max(0, (mProb * b - (1 - mProb)) / b) : 0;
 
-    const kellyCap = parseFloat(this.settings.kelly_cap) || 0.25;
+    // Adaptive mode: recompute kelly cap from recent trade statistics
+    let kellyCap = parseFloat(this.settings.kelly_cap) || 0.10;
+    if (this.settings.kelly_mode === 'adaptive') {
+      const adaptiveKelly = await this._computeAdaptiveKelly();
+      if (adaptiveKelly !== null) {
+        kellyCap = adaptiveKelly;
+        this._log('INFO', `[Kelly] Adaptive mode: cap=${(kellyCap*100).toFixed(1)}% (from trade stats)`);
+      }
+    }
     kellyFraction = Math.min(kellyFraction, kellyCap);
     kellyFraction *= (fillProb || 1.0); // scale by expected fill probability from signal
 
@@ -408,14 +416,14 @@ class BotInstance {
       return;
     }
 
-    const MAX_TRADE_DOLLARS = 5.00;
+    const maxTradeDollars = Math.max(1, parseFloat(this.settings.max_trade_size) || 5.00);
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
     if (!balance || isNaN(balance) || balance <= 0) {
       this._log('WARN', `Invalid balance=${balance} — skipping`);
       return;
     }
 
-    const tradeSize = Math.min(parseFloat((balance * kellyFraction).toFixed(2)), MAX_TRADE_DOLLARS);
+    const tradeSize = Math.min(parseFloat((balance * kellyFraction).toFixed(2)), maxTradeDollars);
     if (tradeSize < 1) {
       this._log('WARN', `[SKIP] Trade size $${tradeSize.toFixed(2)} < $1 minimum`);
       return;
@@ -1119,6 +1127,54 @@ class BotInstance {
       this._log('ERROR', `Live balance fetch failed: ${err.message}`);
     }
     return 0;
+  }
+
+  // ==========================================
+  // ADAPTIVE KELLY
+  // ==========================================
+
+  // Compute optimal kelly fraction from last N closed trades.
+  // Uses half-Kelly with a 25% hard cap for safety.
+  // Returns null if insufficient trade history (< 10 trades).
+  async _computeAdaptiveKelly() {
+    try {
+      const result = await pool.query(`
+        SELECT pnl, result, trade_size
+        FROM trades
+        WHERE user_id = $1 AND result IN ('WIN', 'LOSS') AND pnl IS NOT NULL AND trade_size IS NOT NULL
+        ORDER BY closed_at DESC LIMIT 50
+      `, [this.userId]);
+
+      const trades = result.rows;
+      if (trades.length < 10) return null; // not enough data
+
+      const wins = trades.filter(t => t.result === 'WIN');
+      const losses = trades.filter(t => t.result === 'LOSS');
+      const winRate = wins.length / trades.length;
+
+      const avgWin = wins.length > 0
+        ? wins.reduce((s, t) => s + Math.abs(parseFloat(t.pnl)) / parseFloat(t.trade_size), 0) / wins.length
+        : 0;
+      const avgLoss = losses.length > 0
+        ? losses.reduce((s, t) => s + Math.abs(parseFloat(t.pnl)) / parseFloat(t.trade_size), 0) / losses.length
+        : 1;
+
+      if (avgLoss === 0 || avgWin === 0) return null;
+
+      // Full Kelly: W/L - (1-W) where W=winRate, b=avgWin/avgLoss
+      const b = avgWin / avgLoss;
+      const fullKelly = (winRate * b - (1 - winRate)) / b;
+
+      if (fullKelly <= 0) return 0.05; // losing strategy → minimum sizing
+
+      // Half-Kelly for safety, capped at 25%
+      const halfKelly = Math.min(fullKelly * 0.5, 0.25);
+      // Floor at 5% — always allocate something if kelly is positive
+      return Math.max(halfKelly, 0.05);
+    } catch (err) {
+      this._log('WARN', `Adaptive kelly computation failed: ${err.message}`);
+      return null;
+    }
   }
 
   // ==========================================

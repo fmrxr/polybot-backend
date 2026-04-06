@@ -215,7 +215,8 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS market_prob_min DECIMAL(5,3) DEFAULT 0.10,
         ADD COLUMN IF NOT EXISTS market_prob_max DECIMAL(5,3) DEFAULT 0.90,
         ADD COLUMN IF NOT EXISTS claude_model VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false;
+        ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS kelly_mode VARCHAR(10) DEFAULT 'manual';
 
       ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),
