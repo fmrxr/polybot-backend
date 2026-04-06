@@ -1078,7 +1078,10 @@
           <div id="lvBTCDelta" style="font-size:18px;font-weight:700;">—</div>
         </div>
         <div style="padding:12px 16px;border-right:1px solid var(--border);">
-          <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">YES Price</div>
+          <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;">
+            <span style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);">YES Price</span>
+            <span id="lvPriceSource" style="font-size:9px;color:var(--amber);letter-spacing:0.5px;"></span>
+          </div>
           <div id="lvYesPrice" style="font-size:18px;font-weight:700;color:var(--green);">—</div>
         </div>
         <div style="padding:12px 16px;border-right:1px solid var(--border);">
@@ -3416,27 +3419,29 @@
       if (hdr) hdr.style.display = '';
       const q = el('lvMarketQ'); if (q) q.textContent = mkt.question || '—';
 
-      // YES price — show ask price (what you pay to buy on Polymarket), fall back to mid
+      // YES price — prefer Gamma when CLOB is boundary-only (bid=0.01/ask=0.99 = no real liquidity)
+      // Gamma outcomePrices reflect actual last-traded consensus, not resting orders.
+      const srcEl = el('lvPriceSource');
+      if (srcEl) srcEl.textContent = mkt.isBoundary ? 'GAMMA' : 'CLOB';
       const yesEl = el('lvYesPrice');
       if (yesEl) {
-        const yesAsk = mkt.yesAsk ?? mkt.yesPrice;
-        if (yesAsk != null) {
-          yesEl.textContent = parseFloat(yesAsk).toFixed(3);
-          yesEl.style.color = yesAsk > 0.52 ? 'var(--green)' : yesAsk < 0.48 ? 'var(--red)' : 'var(--text-muted)';
+        const displayYes = mkt.isBoundary
+          ? (mkt.gammaYes ?? mkt.yesPrice)   // Gamma is real; CLOB ask=0.99 is fake
+          : (mkt.yesAsk ?? mkt.yesPrice);    // Real CLOB — use ask (buy price)
+        if (displayYes != null) {
+          yesEl.textContent = parseFloat(displayYes).toFixed(3);
+          yesEl.style.color = displayYes > 0.52 ? 'var(--green)' : displayYes < 0.48 ? 'var(--red)' : 'var(--text-muted)';
         } else { yesEl.textContent = '—'; }
       }
-      // NO price — show ask price. Near resolution the NO book collapses to boundary
-      // (bid=0.01/ask=0.99) so fall back to 1-yesAsk which is more meaningful.
+      // NO price — same logic
       const noEl = el('lvNoPrice');
       if (noEl) {
-        const rawNoAsk = mkt.noAsk ?? mkt.noPrice;
-        // If noAsk == 0.99 while yesAsk is also near 0.99, both books are boundary — use complement
-        const noAsk = (rawNoAsk != null && Math.abs(rawNoAsk - (mkt.yesAsk ?? 0.5)) < 0.05)
-          ? (mkt.yesAsk != null ? 1 - mkt.yesAsk : rawNoAsk)
-          : (rawNoAsk ?? (mkt.yesAsk != null ? 1 - mkt.yesAsk : null));
-        if (noAsk != null) {
-          noEl.textContent = parseFloat(noAsk).toFixed(3);
-          noEl.style.color = parseFloat(noAsk) > 0.52 ? 'var(--green)' : parseFloat(noAsk) < 0.48 ? 'var(--red)' : 'var(--text-muted)';
+        const displayNo = mkt.isBoundary
+          ? (mkt.gammaNo ?? mkt.noPrice ?? (mkt.gammaYes != null ? 1 - mkt.gammaYes : null))
+          : (mkt.noAsk   ?? mkt.noPrice ?? (mkt.yesAsk   != null ? 1 - mkt.yesAsk  : null));
+        if (displayNo != null) {
+          noEl.textContent = parseFloat(displayNo).toFixed(3);
+          noEl.style.color = parseFloat(displayNo) > 0.52 ? 'var(--green)' : parseFloat(displayNo) < 0.48 ? 'var(--red)' : 'var(--text-muted)';
         } else { noEl.textContent = '—'; }
       }
 

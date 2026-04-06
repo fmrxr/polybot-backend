@@ -1348,23 +1348,43 @@ class BotInstance {
         const noId   = m.tokens?.[1]?.token_id || clobIds[1];
         const yesBook = yesId ? this._lastOrderBooks[yesId] : null;
         const noBook  = noId  ? this._lastOrderBooks[noId]  : null;
+
+        // Gamma outcomePrices — real market consensus even when CLOB is boundary-only
+        let op = m.outcomePrices;
+        if (typeof op === 'string') { try { op = JSON.parse(op); } catch (_) { op = null; } }
+        const gammaYes = op ? parseFloat(op[0]) : null;
+        const gammaNo  = op ? parseFloat(op[1]) : null;
+
+        const clobSpread = yesBook?.spread ?? null;
+        const isBoundary = clobSpread == null || clobSpread >= 0.90;
+
         // yesBid/yesAsk are the actual Polymarket order book prices (match what UI shows)
-        // yesPrice (mid) is used internally for Kelly; display uses ask (buy price)
+        // If CLOB is boundary-only, fall back to Gamma price for display
         return {
-          id:        m.id || m.condition_id,
-          question:  m.question,
-          endIso:    m.end_date_iso,
-          startIso:  m.start_date_iso,
-          yesPrice:  yesBook?.midPrice  ?? null,
-          noPrice:   noBook?.midPrice   ?? null,
-          yesBid:    yesBook?.bestBid   ?? null,
-          yesAsk:    yesBook?.bestAsk   ?? null,
-          noBid:     noBook?.bestBid    ?? null,
-          noAsk:     noBook?.bestAsk    ?? null,
-          spread:    yesBook?.spread    ?? null,
-          bidDepth:  yesBook?.bidDepth  ?? null,
-          askDepth:  yesBook?.askDepth  ?? null,
+          id:         m.id || m.condition_id,
+          question:   m.question,
+          endIso:     m.end_date_iso,
+          startIso:   m.start_date_iso,
+          yesPrice:   isBoundary ? (gammaYes ?? yesBook?.midPrice ?? null) : (yesBook?.midPrice ?? null),
+          noPrice:    isBoundary ? (gammaNo  ?? noBook?.midPrice  ?? null) : (noBook?.midPrice  ?? null),
+          yesBid:     yesBook?.bestBid   ?? null,
+          yesAsk:     yesBook?.bestAsk   ?? null,
+          noBid:      noBook?.bestBid    ?? null,
+          noAsk:      noBook?.bestAsk    ?? null,
+          spread:     clobSpread,
+          bidDepth:   yesBook?.bidDepth  ?? null,
+          askDepth:   yesBook?.askDepth  ?? null,
+          isBoundary,
+          gammaYes,
+          gammaNo,
         };
+      });
+
+      // Sort markets: most interesting first (furthest from 0.5 = most resolved/active)
+      markets.sort((a, b) => {
+        const aPrice = a.yesPrice ?? 0.5;
+        const bPrice = b.yesPrice ?? 0.5;
+        return Math.abs(bPrice - 0.5) - Math.abs(aPrice - 0.5);
       });
 
       // EV stats per market from signal engine
