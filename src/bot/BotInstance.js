@@ -179,27 +179,6 @@ class BotInstance {
       // --- Manage open positions (EV-based exits + flips) — uses signal.yesPrice ---
       await this._manageOpenPositions(signal);
 
-// 2. Boundary book check
-const isBoundary =
-  bestBid == null ||
-  bestAsk == null ||
-  bestBid <= 0.01 ||
-  bestAsk >= 0.99;
-
-if (isBoundary) {
-  return {
-    verdict: 'SKIP',
-    reason: 'boundary_book',
-  };
-}
-
-// 3. No CLOB = no trade
-if (!clobAvailable) {
-  return {
-    verdict: 'SKIP',
-    reason: 'no_executable_liquidity',
-  };
-}
       // --- Directional exposure check ---
       const overexposed = await this._checkDirectionalExposure(signal.direction);
       if (overexposed) return;
