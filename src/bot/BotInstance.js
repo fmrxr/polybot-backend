@@ -1242,13 +1242,15 @@ class BotInstance {
       // Gate failure code mapping — includes all known pre-filters and gates
       let gateFailed = null;
       if (signal.verdict === 'SKIP') {
-        if (gates.btcFlat    && !gates.btcFlat.passed)    gateFailed = 0.1;
-        else if (gates.freshness && !gates.freshness.passed)  gateFailed = 0.2;
-        else if (gates.chase && !gates.chase.passed)          gateFailed = 0.3;
-        else if (gates.evTrend && !gates.evTrend.passed)      gateFailed = 0.4;
-        else if (gates.gate1 && !gates.gate1.passed)          gateFailed = 1;
-        else if (gates.gate2 && !gates.gate2.passed)          gateFailed = 2;
-        else if (gates.gate3 && !gates.gate3.passed)          gateFailed = 3;
+        if (gates.btcFlat        && !gates.btcFlat.passed)        gateFailed = 0.1;
+        else if (gates.freshness     && !gates.freshness.passed)      gateFailed = 0.2;
+        else if (gates.chase         && !gates.chase.passed)          gateFailed = 0.3;
+        else if (gates.evTrend       && !gates.evTrend.passed)        gateFailed = 0.4;
+        else if (gates.scenarioFilter && !gates.scenarioFilter.passed) gateFailed = 0.6;
+        else if (gates.boundaryBook  && !gates.boundaryBook.passed)   gateFailed = 0.7;
+        else if (gates.gate1         && !gates.gate1.passed)          gateFailed = 1;
+        else if (gates.gate2         && !gates.gate2.passed)          gateFailed = 2;
+        else if (gates.gate3         && !gates.gate3.passed)          gateFailed = 3;
       }
 
       const evAdjLogged  = signal.evAdj     ?? gates.gate2?.evReal ?? null;
