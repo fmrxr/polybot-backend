@@ -670,14 +670,15 @@ class BotInstance {
     }
 
     await pool.query(`
-      INSERT INTO trades (user_id, session_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'open', 'signal', $9, $10, $11, $12, $13)
+      INSERT INTO trades (user_id, session_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score, scenario)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'open', 'signal', $9, $10, $11, $12, $13, $14)
     `, [
       this.userId, this.sessionId || null, marketId, market?.question, tokenId, direction,
       fillPrice, fillDollars, confidence, evAdj,
       signal.log?.gates?.gate1?.confidence || 0,
       signal.log?.gates?.gate2?.bestEV || 0,
-      signal.log?.gates?.gate3?.emaEdge || 0
+      signal.log?.gates?.gate3?.emaEdge || 0,
+      signal.log?.scenario || null
     ]);
 
     this._recordSlippage(pending.referencePrice, fillPrice);
@@ -1264,8 +1265,8 @@ class BotInstance {
       });
 
       await pool.query(`
-        INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct, scenario)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       `, [
         this.userId,
         signal.market?.id || signal.marketId || null,
@@ -1282,7 +1283,8 @@ class BotInstance {
         gates.gate3?.passed ?? false,
         gateFailed,
         lagLogged,
-        spreadLogged
+        spreadLogged,
+        signal.log?.scenario || null
       ]);
     } catch (err) {
       console.error('[SignalLog ERROR]', {

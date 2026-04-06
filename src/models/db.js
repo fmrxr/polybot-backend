@@ -226,7 +226,11 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),
         ADD COLUMN IF NOT EXISTS lag_age_sec   INTEGER,
         ADD COLUMN IF NOT EXISTS spread_pct    DECIMAL(10,4),
-        ADD COLUMN IF NOT EXISTS session_id    INTEGER;
+        ADD COLUMN IF NOT EXISTS session_id    INTEGER,
+        ADD COLUMN IF NOT EXISTS scenario      VARCHAR(32);
+
+      ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS scenario      VARCHAR(32);
 
       ALTER TABLE copy_targets
         ADD COLUMN IF NOT EXISTS min_confirmations INTEGER DEFAULT 1;
