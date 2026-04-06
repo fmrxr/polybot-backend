@@ -2641,7 +2641,7 @@
     if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
     if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
     if (settings.gate3_min_delta) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
-    if (settings.snipe_before_close_sec) { document.getElementById('snipeTiming').value = settings.snipe_before_close_sec; updateSliderValue('snipeTiming'); }
+    if (settings.snipe_timer_seconds) { document.getElementById('snipeTiming').value = settings.snipe_timer_seconds; updateSliderValue('snipeTiming'); }
     if (settings.order_timeout_sec) { document.getElementById('orderTimeout').value = settings.order_timeout_sec; updateSliderValue('orderTimeout'); }
     if (settings.adverse_ticks) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
@@ -2763,7 +2763,7 @@
       gate3_enabled: document.getElementById('gate3Enabled').checked,
       min_edge: parseFloat(document.getElementById('minEdge').value),
       gate3_min_delta: parseFloat(document.getElementById('gate3MinDelta')?.value || '0.05'),
-      snipe_before_close_sec: parseInt(document.getElementById('snipeTiming').value),
+      snipe_timer_seconds: parseInt(document.getElementById('snipeTiming').value),
       order_timeout_sec: parseInt(document.getElementById('orderTimeout').value),
       adverse_ticks: parseInt(document.getElementById('adverseTicks').value)
     };
@@ -3615,7 +3615,7 @@
           gate2_ev_floor: g2,
           gate3_min_delta: mom,
           kelly_cap: kelly,
-          snipe_before_close_sec: snipe,
+          snipe_timer_seconds: snipe,
           max_trade_size: maxSz,
           gate3_enabled: g3
         })
