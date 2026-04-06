@@ -177,10 +177,10 @@ class GBMSignalEngine {
           const gammaNo  = op ? parseFloat(op[1]) : NaN;
           // Reject only prices that are exactly at the CLOB boundary mid (≈0.5 artifact).
           // Valid Gamma prices range 0.01–0.99 and include near-resolved markets (0.95+, 0.05-).
-          // Old threshold > 0.05 && < 0.95 was rejecting 0.955, 0.965, 0.98 — all real prices.
-          // Reject near-resolved markets (≥0.93 or ≤0.07) — no real edge, just resolution noise.
+          // Reject near-resolved markets (≥0.88 or ≤0.12) — Kelly/EV math degrades, no real edge left.
+          // 0.93 was too lenient — markets at 0.925 still generated TRADE signals with pending orders.
           // Also reject exact 0.5 artifacts from boundary CLOB mid.
-          const isValidGammaPrice = (p) => !isNaN(p) && p > 0.07 && p < 0.93 && Math.abs(p - 0.5) > 0.001;
+          const isValidGammaPrice = (p) => !isNaN(p) && p > 0.12 && p < 0.88 && Math.abs(p - 0.5) > 0.001;
           if (isValidGammaPrice(gammaYes)) {
             rawYesPrice = gammaYes;
             priceSource = 'gamma';

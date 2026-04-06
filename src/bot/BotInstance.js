@@ -365,8 +365,10 @@ class BotInstance {
       return;
     }
 
-    // ── 2. Prevent duplicate pending orders for the same token ───────────────
-    const alreadyPending = [...this._pendingOrders.values()].some(o => o.tokenId === tokenId);
+    // ── 2. Prevent duplicate pending orders for the same token OR same market ──
+    const alreadyPending = [...this._pendingOrders.values()].some(
+      o => o.tokenId === tokenId || (marketId && o.signal?.marketId === marketId)
+    );
     if (alreadyPending) {
       this._log('INFO', `[SKIP] Pending order already exists for token ${tokenId?.slice(0,12)}... — skipping duplicate`);
       return;
@@ -1266,9 +1268,7 @@ class BotInstance {
       console.error('[SignalLog ERROR] Missing userId — cannot persist signal');
       return;
     }
-    // Skip logging "No market passed all gates" summary SKIPs — they have no
-    // direction/ev/spread data and flood the decision stream with useless rows.
-    if (signal.log?.reason === 'No market passed all gates') return;
+    // Write all signals including summary SKIPs — the decision stream needs live data.
 
     try {
       const gates = signal.log?.gates || {};
