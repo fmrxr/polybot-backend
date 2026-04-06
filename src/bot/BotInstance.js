@@ -735,12 +735,28 @@ class BotInstance {
           // No price from signal this tick (signal returned SKIP with yesPrice=null).
           // Check for expired market before giving up.
           if (tradeAgeMin >= 5.5) {
-            const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id)
-              ?? parseFloat(trade.entry_price);
-            this._log('INFO', `⏱️ Market expired — trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min, resolvedAt=${resolvedAt.toFixed(3)}`);
-            await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
-            this.evEngine.clearMarket(trade.market_id);
-            this.signalEngine.clearMarket(trade.market_id);
+            const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id);
+            if (resolvedAt !== null) {
+              // Gamma confirmed resolution outcome (clear 1.0 or 0.0)
+              this._log('INFO', `⏱️ Market expired — trade #${trade.id} age=${tradeAgeMin.toFixed(1)}min, resolvedAt=${resolvedAt.toFixed(3)}`);
+              await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
+              this.evEngine.clearMarket(trade.market_id);
+              this.signalEngine.clearMarket(trade.market_id);
+            } else {
+              // Gamma ambiguous (UMA challenge period / outcomePrices=[0.5,0.5]).
+              // Fall back to last cached live price rather than entry price (which gives $0 P&L).
+              // Wait up to 7min for resolution to finalise before forcing close.
+              const fallback = trade._cachedLivePrice ?? null;
+              if (tradeAgeMin >= 7.0) {
+                const closePrice = fallback ?? parseFloat(trade.entry_price);
+                this._log('WARN', `⏱️ Force-closing trade #${trade.id} at ${closePrice.toFixed(3)} (Gamma unresolved at ${tradeAgeMin.toFixed(1)}min, fallback=${fallback != null ? 'cached' : 'entry'})`);
+                await this._closePosition(trade, closePrice, 'MARKET_RESOLVED_TIMEOUT');
+                this.evEngine.clearMarket(trade.market_id);
+                this.signalEngine.clearMarket(trade.market_id);
+              } else {
+                this._log('WARN', `⏳ Waiting for Gamma resolution on trade #${trade.id} (age=${tradeAgeMin.toFixed(1)}min)`);
+              }
+            }
           } else {
             this._log('WARN', `No price in signal for trade #${trade.id} (age=${tradeAgeMin.toFixed(1)}min) — holding`);
           }
