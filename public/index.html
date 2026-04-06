@@ -1870,7 +1870,7 @@
         if (!document.getElementById('trades')?.classList.contains('active')) return;
         const tradTab = document.getElementById('tabTrades');
         const sigTab  = document.getElementById('tabSignals');
-        if (tradTab?.classList.contains('active')) loadTrades();
+        if (tradTab?.classList.contains('active')) { loadTrades(); loadDecisionStream(); }
         if (sigTab?.classList.contains('active'))  { loadGateStats(); loadSignals(); }
       }, 10000);
 
