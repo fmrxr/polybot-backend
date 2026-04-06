@@ -303,12 +303,20 @@ class GBMSignalEngine {
         const scenario = this._classifyScenario(btcDelta);
         log.scenario = scenario.type;
 
-        // Scenario 3: Range Chop — NO TRADE
-        // Scenario 7: Late Entry (chase already handled by pre-filter B, but catch residual)
+        // Scenario 3: Range Chop — NO TRADE (unless Gamma already priced a big move)
         // Scenario 10: News Spike — chaotic, no structure
-        if (scenario.noTrade) {
+        // Exception: if Gamma displacement ≥ 5% from 0.5, the market has priced a
+        // directional outcome based on earlier BTC move. Gamma IS the signal — skip
+        // RANGE_CHOP only. NEWS_SPIKE remains blocked (chaotic fills, no structure).
+        const gammaDisplacementPct = Math.abs(yesPrice - 0.5);
+        const gammaOverridesChop = scenario.type === 'RANGE_CHOP' && gammaDisplacementPct >= 0.05;
+        if (scenario.noTrade && !gammaOverridesChop) {
           log.gates.scenarioFilter = { type: scenario.type, passed: false };
           continue;
+        }
+        if (gammaOverridesChop) {
+          log.scenario = 'RANGE_CHOP_GAMMA_OVERRIDE';
+          log.gates.scenarioFilter = { type: scenario.type, passed: true, note: `Gamma disp=${gammaDisplacementPct.toFixed(3)} ≥ 0.05` };
         }
 
         // Skip flat-BTC windows — no directional signal means EV ≈ -cost only.
