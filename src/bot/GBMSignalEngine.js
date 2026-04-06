@@ -291,10 +291,25 @@ class GBMSignalEngine {
         // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(60); // % change over 60s (wider window catches moves that quieted in last 30s)
 
+        // ==========================================
+        // SCENARIO CLASSIFICATION
+        // Classify BTC market regime from priceHistory before any gate runs.
+        // Used to: block No-Edge zones, boost Lag/Momentum scenarios, detect fake breakouts.
+        // ==========================================
+        const scenario = this._classifyScenario(btcDelta);
+        log.scenario = scenario.type;
+
+        // Scenario 3: Range Chop — NO TRADE
+        // Scenario 7: Late Entry (chase already handled by pre-filter B, but catch residual)
+        // Scenario 10: News Spike — chaotic, no structure
+        if (scenario.noTrade) {
+          log.gates.scenarioFilter = { type: scenario.type, passed: false };
+          continue;
+        }
+
         // Skip flat-BTC windows — no directional signal means EV ≈ -cost only.
         // Exception: if Gamma price is already meaningfully off 0.5 (|yesPrice - 0.5| > 0.01),
         // the market has priced a directional move we may still have edge on.
-        // Threshold lowered 0.02 → 0.01: yesPrice=0.485 is 1.5% off fair value — real edge.
         const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.01;
         if (Math.abs(btcDelta) < 0.02 && !gammaPriceSignificant) {
           log.gates.btcFlat = { btcDelta, yesPrice, passed: false };
@@ -306,12 +321,11 @@ class GBMSignalEngine {
         const microEdge = micro.confidence * 0.10; // up to 10% from order book
 
         // lagBonus is NOT added to modelProb — it's an execution signal, not a probability estimate
-        // Lag means faster execution priority, not higher probability
         const hasLag = micro.hasMarketLag;
 
         const totalEdge = btcEdge + microEdge;
 
-        const bullish = btcDelta > 0.015;  // require ≥0.015% 30s move (~$13 on $90k BTC)
+        const bullish = btcDelta > 0.015;
         const bearish = btcDelta < -0.015;
 
         // When BTC is flat but Gamma has already priced a directional move (yesPrice ≠ 0.5),
@@ -405,7 +419,19 @@ class GBMSignalEngine {
         // Early window (< 60s in): largest mispricings, lower threshold
         if (elapsed < 60) evFloor *= 0.7;
 
-        // Lag detected: high-priority execution, ease floor slightly
+        // Scenario 9: Cross-Market Lag — strongest edge, ease floor significantly
+        if (scenario.type === 'LAG_EDGE') evFloor *= 0.65;
+
+        // Scenario 1: Momentum Breakout — confirmed continuation, ease floor
+        else if (scenario.type === 'MOMENTUM_BREAKOUT') evFloor *= 0.80;
+
+        // Scenario 4: Volatility Expansion — trade with direction but require more conviction
+        else if (scenario.type === 'VOLATILITY_EXPANSION') evFloor *= 0.90;
+
+        // Scenario 2: Fake Breakout — price already reversed, tighten floor (only trade if EV is very clear)
+        else if (scenario.type === 'FAKE_BREAKOUT') evFloor *= 1.50;
+
+        // Lag detected (microstructure): high-priority execution, ease floor slightly
         if (hasLag && elapsed < 60) evFloor *= 0.8;
 
         // Separate fill quality gate: don't enter if book is too thin to fill reliably
@@ -510,20 +536,26 @@ class GBMSignalEngine {
         const entryPrice = direction === 'YES' ? yesPrice : (1 - yesPrice);
         const tokenId = direction === 'YES' ? yesTokenId : (noTokenId || yesTokenId);
 
-        // Signal quality confidence — replaces pure microstructure score.
-        // Must reflect actual outcome predictors, not just order book health.
-        const momentumScore   = Math.min(Math.abs(btcDelta) / 0.10, 1.0);          // normalize to 0.10%
-        const evScore         = Math.min(Math.max(0, evAnalysis.bestEV) / 15.0, 1.0); // normalize to 15% EV
-        const convictionScore = Math.abs(modelProb - 0.5) * 2;                     // 0→1
-        const timeScore       = Math.min(remaining / 240, 1.0);                    // full score ≥4 min left
+        // Signal quality confidence — reflects actual outcome predictors.
+        const momentumScore   = Math.min(Math.abs(btcDelta) / 0.10, 1.0);
+        const evScore         = Math.min(Math.max(0, evAnalysis.bestEV) / 15.0, 1.0);
+        const convictionScore = Math.abs(modelProb - 0.5) * 2;
+        const timeScore       = Math.min(remaining / 240, 1.0);
         const microScore      = micro.confidence || 0;
-        const signalConfidence = parseFloat((
+        let rawConfidence =
           momentumScore   * 0.45 +
           evScore         * 0.30 +
           convictionScore * 0.15 +
           timeScore       * 0.05 +
-          microScore      * 0.05
-        ).toFixed(3));
+          microScore      * 0.05;
+
+        // Scenario confidence adjustments
+        if (scenario.type === 'LAG_EDGE')           rawConfidence = Math.min(1.0, rawConfidence * 1.20); // +20% on best edge
+        if (scenario.type === 'MOMENTUM_BREAKOUT')  rawConfidence = Math.min(1.0, rawConfidence * 1.10); // +10%
+        if (scenario.type === 'FAKE_BREAKOUT')      rawConfidence *= 0.70; // -30% on unreliable setup
+        if (scenario.type === 'MEAN_REVERSION')     rawConfidence *= 0.85; // -15% on counter-trend
+
+        const signalConfidence = parseFloat(rawConfidence.toFixed(3));
 
         // Confidence gate — skip if signal quality is too low (noise, not edge)
         if (signalConfidence < 0.20) {
@@ -538,7 +570,8 @@ class GBMSignalEngine {
           verdict: 'TRADE',
           market: market,
           marketId: marketId,
-          direction: direction,        // 'YES' or 'NO'
+          direction: direction,
+          scenario: scenario.type,
           confidence: signalConfidence,
           evRaw: direction === 'YES' ? evAnalysis.evYes + (costs.spread + costs.estimatedSlippage + costs.fees) * 100 : evAnalysis.evNo + (costs.spread + costs.estimatedSlippage + costs.fees) * 100,
           evAdj: evAnalysis.bestEV,
@@ -581,6 +614,116 @@ class GBMSignalEngine {
       log.reason = `Evaluation error: ${err.message}`;
       return { verdict: 'ERROR', log, marketId: null, market: null, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
     }
+  }
+
+  /**
+   * Classify the current BTC market regime into one of 10 scenarios.
+   * Uses priceHistory (120 ticks, ~2 min) to detect structure.
+   *
+   * Returns: { type, noTrade, description }
+   *
+   * Scenarios mapped:
+   *   MOMENTUM_BREAKOUT   — Scenario 1: strong push, no wick rejection
+   *   FAKE_BREAKOUT       — Scenario 2: broke level then instantly reversed
+   *   RANGE_CHOP          — Scenario 3: price stuck, no momentum → NO TRADE
+   *   VOLATILITY_EXPANSION— Scenario 4: tight consolidation → sudden breakout
+   *   WHALE_ABSORPTION    — Scenario 5: price refusing to move despite pressure
+   *   MEAN_REVERSION      — Scenario 6: overextension, momentum slowing
+   *   LATE_ENTRY          — Scenario 7: move already happened → NO TRADE (handled by chase filter upstream)
+   *   MOMENTUM_FADE       — Scenario 8: trend weakening, smaller candles
+   *   LAG_EDGE            — Scenario 9: Binance leads, Polymarket lags → best edge
+   *   NEWS_SPIKE          — Scenario 10: instant chaotic spike → NO TRADE
+   *   NORMAL              — no special regime, standard gate pipeline applies
+   */
+  _classifyScenario(btcDelta) {
+    const history = this.binance?.priceHistory;
+    if (!history || history.length < 10) return { type: 'NORMAL', noTrade: false };
+
+    const recent = history.slice(-30);  // last 30 ticks (~30s)
+    const prices = recent.map(h => h.price);
+    const latest = prices[prices.length - 1];
+
+    // Volatility: std deviation of last 30 ticks
+    const mean = prices.reduce((s, p) => s + p, 0) / prices.length;
+    const variance = prices.reduce((s, p) => s + Math.pow(p - mean, 2), 0) / prices.length;
+    const stdDev = Math.sqrt(variance);
+    const relStdDev = stdDev / mean; // normalised
+
+    // Max range over last 30 ticks
+    const hi = Math.max(...prices);
+    const lo = Math.min(...prices);
+    const range = (hi - lo) / mean;
+
+    // Wick ratio: |high - close| / total range — proxy for rejection wick
+    const open30 = prices[0];
+    const bodySize = Math.abs(latest - open30) / mean;
+    const upperWick = hi > Math.max(latest, open30) ? (hi - Math.max(latest, open30)) / mean : 0;
+    const lowerWick = lo < Math.min(latest, open30) ? (Math.min(latest, open30) - lo) / mean : 0;
+    const wickRatio = bodySize > 0 ? Math.max(upperWick, lowerWick) / (bodySize + 0.0001) : 0;
+
+    // Velocity trend: compare first half vs second half delta
+    const half = Math.floor(prices.length / 2);
+    const firstHalfDelta = (prices[half] - prices[0]) / prices[0] * 100;
+    const secondHalfDelta = (prices[prices.length - 1] - prices[half]) / prices[half] * 100;
+    const fadingMomentum = Math.abs(secondHalfDelta) < Math.abs(firstHalfDelta) * 0.5;
+
+    // Lag scenario: microstructure detects Polymarket lagging Binance
+    // Checked externally — passed as btcDelta being strong with freshness passing
+    const absbtcDelta = Math.abs(btcDelta);
+
+    // Scenario 10: NEWS SPIKE — instant large chaotic move
+    // >0.15% in 30s AND large wicks (chaotic) OR very high volatility
+    if (absbtcDelta > 0.15 && (wickRatio > 1.5 || relStdDev > 0.0015)) {
+      return { type: 'NEWS_SPIKE', noTrade: true, description: `Chaotic spike: Δ${btcDelta.toFixed(3)}% wick=${wickRatio.toFixed(2)} vol=${relStdDev.toFixed(5)}` };
+    }
+
+    // Scenario 3: RANGE CHOP — very low range, no direction
+    // <0.03% range in 30s AND btcDelta small
+    if (range < 0.0003 && absbtcDelta < 0.02) {
+      return { type: 'RANGE_CHOP', noTrade: true, description: `Range chop: range=${(range*100).toFixed(4)}% Δ=${btcDelta.toFixed(3)}%` };
+    }
+
+    // Scenario 2: FAKE BREAKOUT — broke out then reversed with rejection wick
+    // Large initial move but now reversing, significant wick against direction
+    const reversing = (btcDelta > 0 && secondHalfDelta < -0.01) ||
+                      (btcDelta < 0 && secondHalfDelta > 0.01);
+    if (reversing && wickRatio > 1.2 && absbtcDelta > 0.04) {
+      return { type: 'FAKE_BREAKOUT', noTrade: false, description: `Fake breakout: reversal detected wick=${wickRatio.toFixed(2)} 2ndΔ=${secondHalfDelta.toFixed(3)}%` };
+    }
+
+    // Scenario 9: LAG EDGE — strong BTC move + microstructure lag (best edge)
+    // Detected upstream by hasLag; here we just check BTC is strongly directional
+    if (absbtcDelta > 0.05 && !fadingMomentum && wickRatio < 0.8) {
+      return { type: 'LAG_EDGE', noTrade: false, description: `Lag edge candidate: Δ=${btcDelta.toFixed(3)}% clean momentum` };
+    }
+
+    // Scenario 1: MOMENTUM BREAKOUT — strong clean directional move, low wicks
+    if (absbtcDelta > 0.03 && wickRatio < 0.6 && !fadingMomentum) {
+      return { type: 'MOMENTUM_BREAKOUT', noTrade: false, description: `Momentum breakout: Δ=${btcDelta.toFixed(3)}% wick=${wickRatio.toFixed(2)}` };
+    }
+
+    // Scenario 4: VOLATILITY EXPANSION — was compressed, now expanding
+    const prevRange = history.length >= 60
+      ? (() => { const p = history.slice(-60, -30).map(h => h.price); return (Math.max(...p) - Math.min(...p)) / p[0]; })()
+      : range;
+    if (range > prevRange * 2.0 && absbtcDelta > 0.02) {
+      return { type: 'VOLATILITY_EXPANSION', noTrade: false, description: `Vol expansion: range=${(range*100).toFixed(4)}% vs prev=${(prevRange*100).toFixed(4)}%` };
+    }
+
+    // Scenario 8: MOMENTUM FADE — trend losing strength
+    if (fadingMomentum && absbtcDelta > 0.02) {
+      return { type: 'MOMENTUM_FADE', noTrade: false, description: `Momentum fade: 1stΔ=${firstHalfDelta.toFixed(3)}% → 2ndΔ=${secondHalfDelta.toFixed(3)}%` };
+    }
+
+    // Scenario 6: MEAN REVERSION — overextended, wicks forming
+    if (absbtcDelta > 0.08 && wickRatio > 0.9) {
+      return { type: 'MEAN_REVERSION', noTrade: false, description: `Mean reversion setup: Δ=${btcDelta.toFixed(3)}% wick=${wickRatio.toFixed(2)}` };
+    }
+
+    // Scenario 5: WHALE ABSORPTION — price barely moving despite BTC pressure (handled by low btcDelta + micro)
+    // Falls through to NORMAL — microstructure engine detects whale patterns separately
+
+    return { type: 'NORMAL', noTrade: false };
   }
 
   /**
