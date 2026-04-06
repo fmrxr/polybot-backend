@@ -181,6 +181,9 @@ class BotInstance {
       // --- Manage open positions (EV-based exits + flips) — uses signal.yesPrice ---
       await this._manageOpenPositions(signal);
 
+      // Only proceed to execution on a real TRADE signal
+      if (signal.verdict !== 'TRADE') return;
+
       // --- Directional exposure check ---
       const overexposed = await this._checkDirectionalExposure(signal.direction);
       if (overexposed) return;
