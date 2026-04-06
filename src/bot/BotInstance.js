@@ -179,11 +179,19 @@ class BotInstance {
       // --- Manage open positions (EV-based exits + flips) — uses signal.yesPrice ---
       await this._manageOpenPositions(signal);
 
-      if (signal.verdict !== 'TRADE') return;
-
       // --- Directional exposure check ---
       const overexposed = await this._checkDirectionalExposure(signal.direction);
       if (overexposed) return;
+
+      // --- Guard: skip execution if no real CLOB liquidity ---
+      // Gamma-only price means both CLOB books were boundary (bid=0.01/ask=0.99).
+      // Paper fill simulation reads the live CLOB bestAsk — it will either find a
+      // boundary book (spread ≥ 90% → skipped) or instantly adverse-select cancel.
+      // Blocking here avoids polluting pending orders with unfillable entries.
+      if (signal.hasClobLiquidity === false || signal.priceSource === 'gamma') {
+        this._log('INFO', `[SKIP] Gamma-only price — no real CLOB liquidity to fill against (priceSource=${signal.priceSource})`);
+        return;
+      }
 
       // --- Check if we should flip an existing position ---
       const flipped = await this._checkForFlip(signal);
@@ -507,7 +515,12 @@ class BotInstance {
 
     const CONFIGURED_TIMEOUT_MS = (parseInt(this.settings.order_timeout_sec) || 60) * 1000;
     const TICK = 0.01;
-    const ADVERSE_TICKS = parseInt(this.settings.adverse_ticks) || 2;
+    // Adverse-selection tolerance: how many ticks above our limit the ask can move
+    // before we cancel to avoid a bad fill. 2 ticks was too tight — on real Polymarket
+    // books even a 2–3% spread puts the ask 2-3 ticks above our passive limit price
+    // (which is mid - 1 tick). 8 ticks = 8¢ on a token priced at ~$0.50, which is a
+    // meaningful adverse move without cancelling valid resting orders prematurely.
+    const ADVERSE_TICKS = parseInt(this.settings.adverse_ticks) || 8;
 
     for (const [orderId, pending] of this._pendingOrders) {
       const age = Date.now() - pending.placedAt;
@@ -556,9 +569,9 @@ class BotInstance {
   // Using signal.yesPrice (from the current tick's evaluate() call) ensures the
   // fill simulation reflects the same price that every other component sees.
   async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
-    // Fetch the live CLOB order book for the token we want to buy.
-    // This is the ONLY valid price source — pending.signal.yesPrice is stale
-    // (captured at order creation, never updated) and must not be used here.
+    // Fetch the live CLOB order book for the EXACT token we placed the order on.
+    // For YES trades this is the YES token book; for NO trades it's the NO token book.
+    // Using the YES book for a NO order gives wrong prices (0.48 instead of 0.52).
     let ob;
     try {
       ob = await this.polymarket.getOrderBook(pending.tokenId);
@@ -966,13 +979,17 @@ class BotInstance {
 
   async _startSession() {
     try {
-      // 1. Close any lingering open trades from a previous session
+      // 1. Close any lingering open trades from a previous session that are truly stale
+      // (older than 10 min — these are from a crashed session, not a quick restart).
+      // Do NOT zero out trades < 10 min old: a quick restart during an active position
+      // would produce pnl=0 and corrupt win-rate stats.
       const lingering = await pool.query(
-        "UPDATE trades SET status='closed', close_reason='SESSION_RESET', exit_price=entry_price, pnl=0, result='LOSS', closed_at=NOW() WHERE user_id=$1 AND status='open' RETURNING id",
+        `UPDATE trades SET status='closed', close_reason='SESSION_RESET', exit_price=entry_price, pnl=0, result='LOSS', closed_at=NOW()
+         WHERE user_id=$1 AND status='open' AND created_at < NOW() - INTERVAL '10 minutes' RETURNING id`,
         [this.userId]
       );
       if (lingering.rowCount > 0) {
-        this._log('INFO', `🔄 Session reset: closed ${lingering.rowCount} lingering trade(s) from previous session`);
+        this._log('INFO', `🔄 Session reset: closed ${lingering.rowCount} stale trade(s) from previous session (>10 min old)`);
       }
 
       // 2. Clear in-memory state
