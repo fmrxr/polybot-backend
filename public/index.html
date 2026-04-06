@@ -1203,7 +1203,7 @@
       <div class="form-group">
         <label>Gate 2: EV Hard Floor</label>
         <div class="slider-container">
-          <input type="range" id="gate2Floor" min="0.5" max="20" step="0.5" value="3" onchange="updateSliderValue('gate2Floor')">
+          <input type="range" id="gate2Floor" min="0.5" max="20" step="0.5" value="3" onchange="updateSliderValue('gate2Floor')" oninput="updateSliderValue('gate2Floor'); var l=document.getElementById('lpG2'); if(l){l.value=this.value;document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%';}">
           <span class="slider-value" id="gate2FloorValue">3%</span>
         </div>
         <div class="form-hint">Minimum EV% required to trade — lower = more trades, higher = higher quality</div>
@@ -1456,8 +1456,9 @@
         <span>Strategy Parameters</span>
         <button onclick="saveLabSettings()" style="font-size:10px;padding:3px 10px;background:var(--amber);border:none;color:#000;cursor:pointer;font-weight:700;">APPLY</button>
         <button onclick="(function(){
-          var d={'lpG2':'1.5','lpMom':'0.065','lpKelly':'5','lpInterval':'10','lpMaxSize':'10'};
-          document.getElementById('lpG2').value='1.5'; document.getElementById('lpG2Val').textContent='1.5%';
+          var d={'lpG2':'3','lpMom':'0.065','lpKelly':'5','lpInterval':'10','lpMaxSize':'10'};
+          document.getElementById('lpG2').value='3'; document.getElementById('lpG2Val').textContent='3.0%';
+          var gf=document.getElementById('gate2Floor'); if(gf){gf.value='3';updateSliderValue('gate2Floor');}
           document.getElementById('lpMom').value='0.065'; document.getElementById('lpMomVal').textContent='0.065%';
           document.getElementById('lpKelly').value='5'; document.getElementById('lpKellyVal').textContent='5%';
           document.getElementById('lpInterval').value='10'; document.getElementById('lpIntervalVal').textContent='10s';
@@ -1472,8 +1473,8 @@
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
             <span>EV Floor (Gate 2)</span><span id="lpG2Val" style="color:var(--amber);">1.5%</span>
           </div>
-          <input type="range" id="lpG2" min="0.5" max="10" step="0.5" value="1.5"
-            oninput="document.getElementById('lpG2Val').textContent=this.value+'%'"
+          <input type="range" id="lpG2" min="0.5" max="20" step="0.5" value="1.5"
+            oninput="document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%'; var s=document.getElementById('gate2Floor'); if(s){s.value=this.value;updateSliderValue('gate2Floor');}"
             style="width:100%;accent-color:var(--amber);">
           <div style="font-size:10px;color:var(--text-muted);">Lower = more trades, higher = fewer but cleaner</div>
         </div>
@@ -3498,7 +3499,8 @@
 
   async function saveLabSettings() {
     const token = localStorage.getItem('token');
-    const g2    = parseFloat(document.getElementById('lpG2').value);
+    // Always read from the canonical Settings slider — lpG2 is kept in sync via oninput
+    const g2    = parseFloat(document.getElementById('gate2Floor')?.value || document.getElementById('lpG2').value);
     const mom   = parseFloat(document.getElementById('lpMom').value);
     const kelly = parseFloat(document.getElementById('lpKelly').value) / 100;
     const snipe = parseInt(document.getElementById('lpInterval').value);
