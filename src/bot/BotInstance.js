@@ -709,7 +709,7 @@ class BotInstance {
 
         // Near-resolution detection: token price approaching 0 or 1 = market settling
         if (livePrice >= 0.92 || livePrice <= 0.08) {
-          const resolvedAt = livePrice >= 0.92 ? 0.99 : 0.01;
+          const resolvedAt = livePrice >= 0.92 ? 1.0 : 0.0;
           this._log('INFO', `🏁 Near-resolution detected: price=${livePrice.toFixed(3)} — closing trade #${trade.id} at ${resolvedAt}`);
           await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
           this.evEngine.clearMarket(trade.market_id);
@@ -813,7 +813,11 @@ class BotInstance {
       const entryPrice = parseFloat(trade.entry_price);
       // trade_size is the authoritative column; fall back to legacy 'size' column
       const tradeSize = parseFloat(trade.trade_size ?? trade.size);
-      const effectiveExit = parseFloat(exitPrice) || entryPrice;
+      // Do NOT use || fallback — exitPrice=0.0 (NO-win) is falsy and would fall back
+      // to entryPrice, producing $0 P&L on every NO winner. Use null-coalescing only.
+      const effectiveExit = exitPrice != null && isFinite(parseFloat(exitPrice))
+        ? parseFloat(exitPrice)
+        : entryPrice;
 
       // Guard: if any value is NaN the PnL calc produces garbage — mark as broken close
       if (!isFinite(entryPrice) || !isFinite(tradeSize) || tradeSize <= 0 || !isFinite(effectiveExit)) {
@@ -825,10 +829,11 @@ class BotInstance {
         return;
       }
 
-      // Binary market PnL: we always buy the token (YES or NO) at entryPrice.
-      // token_id stores the exact token bought, getLiveTokenPrice returns that token's price.
-      // So the formula is always (exit - entry) * shares, regardless of direction.
-      const pnl = (effectiveExit - entryPrice) * tradeSize / entryPrice;
+      // Binary market PnL: we spent tradeSize dollars to buy (tradeSize/entryPrice) shares.
+      // At exit each share is worth exitPrice (1.0=win, 0.0=loss, or intermediate for EV exits).
+      // PnL = proceeds - cost = (shares * exitPrice) - tradeSize
+      const shares = tradeSize / entryPrice;
+      const pnl = shares * effectiveExit - tradeSize;
 
       if (!isFinite(pnl) || isNaN(pnl)) {
         this._log('ERROR', `Invalid PnL=${pnl} (entry=${entryPrice}, exit=${effectiveExit}, size=${tradeSize}) — skipping close`);
@@ -880,17 +885,17 @@ class BotInstance {
       // Only trust a clear winner: 1.0 = YES won, 0.0 = NO won
       // Avoid 0.5/0.5 which means UMA hasn't resolved yet (challenge period)
       if (yesPrice0 >= 0.9) {
-        // YES won
+        // YES won — YES token resolves to 1.0, NO token to 0.0
         const isYesToken = clobIds?.[0] === tokenId;
         const isNoToken  = clobIds?.[1] === tokenId;
-        if (isYesToken) return 0.99;
-        if (isNoToken)  return 0.01;
+        if (isYesToken) return 1.0;
+        if (isNoToken)  return 0.0;
       } else if (yesPrice0 <= 0.1) {
-        // NO won
+        // NO won — NO token resolves to 1.0, YES token to 0.0
         const isYesToken = clobIds?.[0] === tokenId;
         const isNoToken  = clobIds?.[1] === tokenId;
-        if (isYesToken) return 0.01;
-        if (isNoToken)  return 0.99;
+        if (isYesToken) return 0.0;
+        if (isNoToken)  return 1.0;
       }
       return null; // ambiguous or not yet resolved
     } catch (err) {
