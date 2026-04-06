@@ -214,7 +214,12 @@ class GBMSignalEngine {
         const alpha = this._adaptiveAlpha(roughRemaining);
         console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} alpha=${alpha} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
 
-        const spread = orderBook.spread || (yesBook?.spread) || 0;
+        // When priceSource='gamma', both CLOB books were boundary-only (spread≥90%).
+        // orderBook.spread is null in that case, making the || chain collapse to 0
+        // and bypassing the boundary-book guard below. Force spread=1 so the guard
+        // fires and we don't produce TRADE verdicts with no real CLOB liquidity.
+        const rawSpread = orderBook.spread ?? (yesBook?.spread) ?? null;
+        const spread = priceSource === 'gamma' ? 1.0 : (rawSpread ?? 0);
 
         // ==========================================
         // PRE-FILTER A: Signal Freshness
