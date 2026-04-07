@@ -435,13 +435,19 @@ class BotInstance {
     // signal.yesPrice is the smoothed, sanity-checked price from GBMSignalEngine.
     // We never call getLastTradePrice() or Gamma here — that was the source of the
     // split-brain pricing bug (0.505 vs 0.700) and fake stop-losses from Gamma jumps.
-    const signalYesPrice = signal.yesPrice;
+    const signalYesPrice = signal.yesPrice; // EMA-smoothed — used for Kelly sizing
     if (!signalYesPrice || signalYesPrice <= 0.02 || signalYesPrice >= 0.98) {
       this._log('WARN', `[SKIP] Invalid signal.yesPrice=${signalYesPrice} — skipping`);
       return;
     }
-    // For Kelly: use the token we're buying (YES price for YES, NO price for NO)
+    // rawYesPrice = current Gamma price, unsmoothed — used for limit price calculation.
+    // EMA can lag 5-10 ticks on fast-moving markets, causing stale limit prices.
+    // Execution must be anchored to NOW, not the smoothed signal price.
+    const rawYesPrice = signal.rawPrice ?? signalYesPrice;
+    // For Kelly: smoothed price (stable sizing)
     const lastTradePrice = direction === 'NO' ? (1 - signalYesPrice) : signalYesPrice;
+    // For limit price: raw/current price (accurate execution)
+    const execYesPrice = direction === 'NO' ? (1 - rawYesPrice) : rawYesPrice;
 
     // ── 5. Tradeable range check (already covered above, kept for clarity) ───
     // (range check included in the guard above)
@@ -509,10 +515,10 @@ class BotInstance {
       }
     }
 
-    // Gamma fallback for boundary-book markets
+    // Gamma fallback for boundary-book markets — use raw/current price, not EMA
     if (limitPrice == null && signal.priceSource === 'gamma') {
-      limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, lastTradePrice + TICK)).toFixed(2));
-      this._log('INFO', `[gamma] Limit order at Gamma+1tick: ${limitPrice.toFixed(2)} (gamma=${lastTradePrice.toFixed(3)})`);
+      limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, execYesPrice + TICK)).toFixed(2));
+      this._log('INFO', `[gamma] Limit order at Gamma+1tick: ${limitPrice.toFixed(2)} (raw=${rawYesPrice.toFixed(3)} ema=${signalYesPrice.toFixed(3)})`);
     }
 
     if (limitPrice == null) {
@@ -526,7 +532,7 @@ class BotInstance {
     const placedAt = Date.now();
     const pendingBase = {
       tokenId, side: 'BUY', limitPrice,
-      referencePrice: lastTradePrice, // price when order was created — used for adverse-selection check
+      referencePrice: execYesPrice, // raw price at order creation — for slippage and adverse-selection
       dollarSize: tradeSize,
       direction, market, signal,
       placedAt,
@@ -862,19 +868,23 @@ class BotInstance {
           }
         }
 
-        // Fallback 2: Gamma API direct fetch — for markets that left the active discovery
-        // cache (e.g. expired market with still-open trade, or market not in current window).
+        // Fallback 2: Gamma API direct fetch — for markets not in current signal window.
         if (!livePrice && trade.market_id) {
-          const gp = await this.polymarket.getLivePriceFromGamma(trade.market_id, trade.token_id).catch(() => null);
-          if (gp != null) {
-            // getLivePriceFromGamma returns YES token price matched to tokenId
-            // For YES trades: token is YES → price is gp. For NO trades: price = gp (already NO token).
-            // But we want yesPrice for EV, so reconstruct:
-            // trade.token_id may be YES or NO token — getLivePriceFromGamma matches by tokenId
-            livePrice    = gp; // already direction-matched to token_id
-            rawLivePrice = gp;
-            trade._cachedLivePrice = livePrice;
-          }
+          try {
+            const gp = await this.polymarket.getLivePriceFromGamma(trade.market_id, trade.token_id);
+            if (gp != null) {
+              livePrice    = gp;
+              rawLivePrice = gp;
+              trade._cachedLivePrice = livePrice;
+            }
+          } catch (_) {}
+        }
+
+        // Fallback 3: last known price from cache — prevents src=null on ticks where
+        // Gamma API is slow or market just left discovery window.
+        if (!livePrice && trade._cachedLivePrice != null) {
+          livePrice    = trade._cachedLivePrice;
+          rawLivePrice = livePrice;
         }
 
         if (!livePrice) {
