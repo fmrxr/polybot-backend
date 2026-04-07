@@ -408,6 +408,25 @@ class GBMSignalEngine {
         // For 5-min markets (300s): lateWindowSec=600 always covers the full window → always pass.
         // For 15-min+ markets: skip the middle unless in the first earlyWindowSec.
         // Configurable via settings.early_window_sec / late_window_sec (defaults: 100 / 600).
+        // Hard filter: only trade 5-min markets (240–320s duration). Longer markets
+        // (15-min, hourly) have different dynamics and dilute edge.
+        if (windowDuration > 320 || windowDuration < 240) {
+          log.reason = `Non-5min market: duration=${Math.round(windowDuration)}s — skip`;
+          continue;
+        }
+
+        // Skip pre-open markets (market hasn't started yet — elapsed < 0)
+        if (elapsed < 0) {
+          log.reason = `Pre-open: market starts in ${Math.round(-elapsed)}s — skip`;
+          continue;
+        }
+
+        // Skip expired markets
+        if (remaining <= 0) {
+          log.reason = `Expired: market ended ${Math.round(-remaining)}s ago — skip`;
+          continue;
+        }
+
         const earlyWindowSec = parseInt(this.settings?.early_window_sec ?? this.settings?.early_skip_sec) || 100;
         const lateWindowSec  = parseInt(this.settings?.late_window_sec  ?? this.settings?.late_skip_sec)  || 600;
         const inEarlyWindow  = elapsed  <= earlyWindowSec;
