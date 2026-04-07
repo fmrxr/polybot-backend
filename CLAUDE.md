@@ -75,9 +75,12 @@ Gates run in order; first failure = SKIP:
 - **Single source of truth for live price:** signal.yesPrice (smoothed) for decisions; signal.rawPrice for PnL marking
 - When signal is for a different market than the open position: use `_priceCache` (Fallback 1), then `getLivePriceFromGamma` (Fallback 2), then `_cachedLivePrice` (Fallback 3)
 - `livePriceSrc` in Holding logs shows which source was used: `signal`, `cache(gamma)`, `gamma_direct`, `cached_last`
-- **EV-driven flip:** closes losing position and opens opposite when EV gain > `flip_threshold` (default 4%)
-- **Flip guard:** only flip when PnL < 0 — never flip a winning position
+- **EV-driven flip:** closes losing position and opens opposite when EV gain > `flip_threshold` (default 5%). Dynamic: +1% escalation per recent flip in last 10 min to suppress whipsaw. Hard hysteresis floor: 6% (`FLIP_HYSTERESIS` constant)
+- **Flip guard:** only flip when PnL < 0 — never flip a winning position. Also requires BTC momentum to support new direction
 - Near-resolved filter: skip markets where `rawYesPrice ≥ 0.88 || rawYesPrice ≤ 0.12`
+- **One signal per tick:** the signal engine returns the first market that passes all gates and stops. Only one new position can open per tick — simultaneous multi-market entry is structurally impossible
+- **Directional exposure cap:** `_checkDirectionalExposure()` called each tick before execution — blocks new positions if net directional exposure ≥ 30% of balance in the same direction
+- **Lag detection (MicrostructureEngine):** compares 30s BTC % change vs 30s Polymarket token % change. `lagScore = |btcDelta - polyDelta| / |btcDelta|`. `hasMarketLag = latencyScore > 0.3`. When lag detected AND elapsed < 60s, EV floor eases ×0.80
 
 ## Session Lifecycle
 - Each bot start creates a new `trading_sessions` row
