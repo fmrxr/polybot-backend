@@ -114,6 +114,7 @@ class GBMSignalEngine {
       for (const market of markets) {
         lastMarket = market;
         const marketId = market.id || market.condition_id;
+        log.reason = ''; // reset per-market so stale reasons don't bleed across iterations
 
         // Gamma API returns clobTokenIds as a JSON string "[\"id1\",\"id2\"]" — must parse it
         // CLOB API returns tokens[].token_id — support both
@@ -252,6 +253,7 @@ class GBMSignalEngine {
         log.gates.freshness = { lagAge: lagAgeSeconds, max: maxLagAge, passed: lagAgeSeconds <= maxLagAge };
 
         if (lagAgeSeconds > maxLagAge) {
+          log.reason = `Stale BTC data: lag=${lagAgeSeconds.toFixed(1)}s > max=${maxLagAge}s`;
           continue;
         }
 
@@ -272,6 +274,7 @@ class GBMSignalEngine {
           const priceMove = Math.abs(yesPrice - prevPrice);
           if (priceMove > chaseThreshold) {
             log.gates.chase = { priceMove, threshold: chaseThreshold, passed: false };
+            log.reason = `Chase filter: price moved ${(priceMove*100).toFixed(1)}% > threshold ${(chaseThreshold*100).toFixed(1)}%`;
             continue;
           }
         }
@@ -331,6 +334,7 @@ class GBMSignalEngine {
         const gammaOverridesChop = scenario.type === 'RANGE_CHOP' && gammaDisplacementPct >= chopOverrideThreshold;
         if (scenario.noTrade && !gammaOverridesChop) {
           log.gates.scenarioFilter = { type: scenario.type, passed: false };
+          log.reason = `Scenario blocked: ${scenario.type}`;
           continue;
         }
         if (gammaOverridesChop) {
@@ -345,6 +349,7 @@ class GBMSignalEngine {
         const minBtcDelta = parseFloat(this.settings?.min_btc_delta) || 0.005;
         if (Math.abs(btcDelta) < minBtcDelta && !gammaPriceSignificant) {
           log.gates.btcFlat = { btcDelta, minBtcDelta, yesPrice, passed: false };
+          log.reason = `BTC flat: |delta|=${Math.abs(btcDelta).toFixed(3)}% < ${minBtcDelta}% and Gamma near 0.5`;
           continue;
         }
 
@@ -512,6 +517,7 @@ class GBMSignalEngine {
 
         if (evReal < evFloor) {
           log.gates.gate2.passed = false;
+          log.reason = `EV ${evReal.toFixed(2)}% below floor ${evFloor.toFixed(2)}%`;
           continue;
         }
 
@@ -538,6 +544,7 @@ class GBMSignalEngine {
         const EV_VELOCITY_FLOOR = -1.0 * evDecayRatio;
         if (this.evEngine.isEVDecaying(marketId) && evVelocity < EV_VELOCITY_FLOOR) {
           log.gates.evTrend = { status: 'DECAYING', velocity: evVelocity.toFixed(2), floor: EV_VELOCITY_FLOOR, passed: false };
+          log.reason = `EV collapsing: velocity=${evVelocity.toFixed(2)} < floor=${EV_VELOCITY_FLOOR}`;
           continue;
         }
 
@@ -574,10 +581,12 @@ class GBMSignalEngine {
             // Direction alignment: YES needs BTC rising, NO needs BTC falling
             if (direction === 'YES' && !isBullish) {
               log.gates.gate3 = { btcDelta, minDelta, direction, passed: false, reason: 'direction_mismatch' };
+              log.reason = `Gate3 direction mismatch: signal=YES but BTC falling (delta=${btcDelta.toFixed(3)}%)`;
               continue;
             }
             if (direction === 'NO' && isBullish) {
               log.gates.gate3 = { btcDelta, minDelta, direction, passed: false, reason: 'direction_mismatch' };
+              log.reason = `Gate3 direction mismatch: signal=NO but BTC rising (delta=${btcDelta.toFixed(3)}%)`;
               continue;
             }
           }
