@@ -1290,7 +1290,7 @@
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
             <span>EV Floor (Gate 2)</span><span id="lpG2Val" style="color:var(--amber);">1.5%</span>
           </div>
-          <input type="range" id="lpG2" min="0.5" max="20" step="0.5" value="1.5"
+          <input type="range" id="lpG2" min="0.1" max="5.0" step="0.1" value="0.5"
             oninput="document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%'; var s=document.getElementById('gate2Floor'); if(s){s.value=this.value;updateSliderValue('gate2Floor');}"
             style="width:100%;accent-color:var(--amber);">
           <div style="font-size:10px;color:var(--text-muted);">Lower = more trades, higher = fewer but cleaner</div>
@@ -1300,7 +1300,7 @@
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
             <span>BTC Momentum Threshold</span><span id="lpMomVal" style="color:var(--cyan);">0.015%</span>
           </div>
-          <input type="range" id="lpMom" min="0.005" max="0.10" step="0.005" value="0.015"
+          <input type="range" id="lpMom" min="0.001" max="0.05" step="0.001" value="0.010"
             oninput="document.getElementById('lpMomVal').textContent=parseFloat(this.value).toFixed(3)+'%'"
             style="width:100%;accent-color:var(--cyan);">
           <div style="font-size:10px;color:var(--text-muted);">Min 30s BTC move to trigger directional signal</div>
@@ -1433,10 +1433,10 @@
       <div class="form-group">
         <label>Gate 2: EV Hard Floor</label>
         <div class="slider-container">
-          <input type="range" id="gate2Floor" min="0.5" max="20" step="0.5" value="3" onchange="updateSliderValue('gate2Floor')" oninput="updateSliderValue('gate2Floor'); var l=document.getElementById('lpG2'); if(l){l.value=this.value;document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%';}">
-          <span class="slider-value" id="gate2FloorValue">3%</span>
+          <input type="range" id="gate2Floor" min="0.1" max="5.0" step="0.1" value="0.5" onchange="updateSliderValue('gate2Floor')" oninput="updateSliderValue('gate2Floor'); var l=document.getElementById('lpG2'); if(l){l.value=this.value;document.getElementById('lpG2Val').textContent=parseFloat(this.value).toFixed(1)+'%';}">
+          <span class="slider-value" id="gate2FloorValue">0.5%</span>
         </div>
-        <div class="form-hint">Minimum EV% required to trade — lower = more trades, higher = higher quality</div>
+        <div class="form-hint">Minimum EV% required to trade (0.2–1.5% recommended) — lower = more trades</div>
       </div>
       <div class="form-group">
         <label><input type="checkbox" id="gate3Enabled" checked onchange="updateSetting()"> Gate 3: BTC Momentum Direction Confirmation</label>
@@ -1452,18 +1452,26 @@
       <div class="form-group">
         <label>Gate 3: Min BTC Δ (momentum threshold)</label>
         <div class="slider-container">
-          <input type="range" id="gate3MinDelta" min="0.005" max="0.20" step="0.005" value="0.05" onchange="updateSliderValue('gate3MinDelta')">
-          <span class="slider-value" id="gate3MinDeltaValue">0.050%</span>
+          <input type="range" id="gate3MinDelta" min="0.001" max="0.05" step="0.001" value="0.01" onchange="updateSliderValue('gate3MinDelta')">
+          <span class="slider-value" id="gate3MinDeltaValue">0.010%</span>
         </div>
-        <div class="form-hint">Min 30s BTC % move for Gate 3 direction confirmation</div>
+        <div class="form-hint">Min 30s BTC % move for Gate 3 direction confirmation (0.005–0.02% recommended)</div>
+      </div>
+      <div class="form-group">
+        <label>Min BTC Flat Filter (btcFlat threshold)</label>
+        <div class="slider-container">
+          <input type="range" id="minBtcDelta" min="0.001" max="0.05" step="0.001" value="0.005" onchange="updateSliderValue('minBtcDelta')">
+          <span class="slider-value" id="minBtcDeltaValue">0.005%</span>
+        </div>
+        <div class="form-hint">Skip if BTC is completely flat below this threshold (unless Gamma displaced)</div>
       </div>
       <div class="form-group">
         <label>Signal Interval</label>
         <div class="slider-container">
-          <input type="range" id="snipeTiming" min="5" max="60" step="5" value="10" onchange="updateSliderValue('snipeTiming')">
-          <span class="slider-value" id="snipeTimingValue">10s</span>
+          <input type="range" id="snipeTiming" min="5" max="30" step="1" value="8" onchange="updateSliderValue('snipeTiming')">
+          <span class="slider-value" id="snipeTimingValue">8s</span>
         </div>
-        <div class="form-hint">Seconds between signal evaluations (10s recommended)</div>
+        <div class="form-hint">Seconds between signal evaluations (5–15s recommended)</div>
       </div>
     </div>
 
@@ -1504,10 +1512,26 @@
       <div class="form-group">
         <label>EV Decay Exit Ratio</label>
         <div class="slider-container">
-          <input type="range" id="evDecayRatio" min="0.2" max="0.9" step="0.05" value="0.5" onchange="updateSliderValue('evDecayRatio')">
-          <span class="slider-value" id="evDecayRatioValue">0.50</span>
+          <input type="range" id="evDecayRatio" min="0.5" max="5.0" step="0.1" value="2.0" onchange="updateSliderValue('evDecayRatio')">
+          <span class="slider-value" id="evDecayRatioValue">2.0</span>
         </div>
-        <div class="form-hint">Exit when current EV drops below this fraction of peak EV. 0.5 = exit when EV halves.</div>
+        <div class="form-hint">EV velocity floor multiplier (0.5–2.0 recommended) — higher = less blocking of oscillating signals</div>
+      </div>
+      <div class="form-group">
+        <label>Opening Window (seconds after market open)</label>
+        <div class="slider-container">
+          <input type="range" id="earlyWindowSec" min="30" max="300" step="10" value="100" onchange="updateSliderValue('earlyWindowSec')">
+          <span class="slider-value" id="earlyWindowSecValue">100s</span>
+        </div>
+        <div class="form-hint">Trade in the first N seconds after market opens — fresh mispricing window</div>
+      </div>
+      <div class="form-group">
+        <label>Closing Window (seconds before market close)</label>
+        <div class="slider-container">
+          <input type="range" id="lateWindowSec" min="60" max="900" step="30" value="600" onchange="updateSliderValue('lateWindowSec')">
+          <span class="slider-value" id="lateWindowSecValue">600s</span>
+        </div>
+        <div class="form-hint">Trade in the final N seconds before market closes — resolution momentum locked in</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:4px;">
         <button class="primary" onclick="saveStrategySettings()" style="flex:1;">Save Strategy Settings</button>
@@ -2813,14 +2837,17 @@
     }
     if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
     if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
-    if (settings.gate3_min_delta) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
+    if (settings.gate3_min_delta != null) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
+    if (settings.min_btc_delta != null) { const el = document.getElementById('minBtcDelta'); if (el) { el.value = settings.min_btc_delta; updateSliderValue('minBtcDelta'); } }
     if (settings.snipe_timer_seconds) { document.getElementById('snipeTiming').value = settings.snipe_timer_seconds; updateSliderValue('snipeTiming'); }
     if (settings.order_timeout_sec) { document.getElementById('orderTimeout').value = settings.order_timeout_sec; updateSliderValue('orderTimeout'); }
     if (settings.adverse_ticks != null) { document.getElementById('adverseTicks').value = settings.adverse_ticks; updateSliderValue('adverseTicks'); }
     if (settings.flip_threshold != null) { document.getElementById('flipThreshold').value = settings.flip_threshold; updateSliderValue('flipThreshold'); }
     if (settings.ev_decay_ratio != null) { document.getElementById('evDecayRatio').value = settings.ev_decay_ratio; updateSliderValue('evDecayRatio'); }
+    if (settings.early_window_sec != null) { const el = document.getElementById('earlyWindowSec'); if (el) { el.value = settings.early_window_sec; updateSliderValue('earlyWindowSec'); } }
+    if (settings.late_window_sec != null) { const el = document.getElementById('lateWindowSec'); if (el) { el.value = settings.late_window_sec; updateSliderValue('lateWindowSec'); } }
     if (settings.gate1_threshold) { document.getElementById('gate1Threshold').value = settings.gate1_threshold; updateSliderValue('gate1Threshold'); }
-    if (settings.gate2_ev_floor) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
+    if (settings.gate2_ev_floor != null) { document.getElementById('gate2Floor').value = settings.gate2_ev_floor; updateSliderValue('gate2Floor'); }
     _syncLabParamsFromSettings(settings);
     if (settings.claude_model) document.getElementById('claudeModel').value = settings.claude_model;
     if (settings.claude_auto_analysis !== undefined) document.getElementById('autoClaudeAnalysis').checked = settings.claude_auto_analysis;
@@ -2939,12 +2966,15 @@
       gate2_ev_floor: parseFloat(document.getElementById('gate2Floor').value),
       gate3_enabled: document.getElementById('gate3Enabled').checked,
       min_edge: parseFloat(document.getElementById('minEdge').value),
-      gate3_min_delta: parseFloat(document.getElementById('gate3MinDelta')?.value || '0.05'),
+      gate3_min_delta: parseFloat(document.getElementById('gate3MinDelta')?.value || '0.01'),
+      min_btc_delta: parseFloat(document.getElementById('minBtcDelta')?.value || '0.005'),
       snipe_timer_seconds: parseInt(document.getElementById('snipeTiming').value),
       order_timeout_sec: parseInt(document.getElementById('orderTimeout').value),
       adverse_ticks: parseInt(document.getElementById('adverseTicks').value),
       flip_threshold: parseFloat(document.getElementById('flipThreshold').value),
-      ev_decay_ratio: parseFloat(document.getElementById('evDecayRatio').value)
+      ev_decay_ratio: parseFloat(document.getElementById('evDecayRatio').value),
+      early_window_sec: parseInt(document.getElementById('earlyWindowSec')?.value || '100'),
+      late_window_sec: parseInt(document.getElementById('lateWindowSec')?.value || '600')
     };
     try {
       const res = await fetch((window.API_BASE||'')+'/api/user/settings', {

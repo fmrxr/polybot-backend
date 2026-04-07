@@ -184,6 +184,18 @@ class BotInstance {
       // Only proceed to execution on a real TRADE signal
       if (signal.verdict !== 'TRADE') return;
 
+      // --- 5-minute market duration filter ---
+      // Only trade BTC 5-min markets (240–320s window). Longer markets (15-min, 30-min)
+      // have different dynamics and dilute the edge this strategy is built for.
+      const mkt = signal.market;
+      if (mkt?.end_date_iso && mkt?.start_date_iso) {
+        const durSec = (new Date(mkt.end_date_iso).getTime() - new Date(mkt.start_date_iso).getTime()) / 1000;
+        if (durSec > 320 || durSec < 240) {
+          this._log('INFO', `[SKIP] Non-5min market (duration=${Math.round(durSec)}s) — only trade 5-min windows`);
+          return;
+        }
+      }
+
       // --- Directional exposure check ---
       const overexposed = await this._checkDirectionalExposure(signal.direction);
       if (overexposed) return;
