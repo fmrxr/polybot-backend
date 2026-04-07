@@ -105,7 +105,7 @@ router.post('/users/:id/toggle-bot', async (req, res) => {
     const newActive = !settings.rows[0].is_active;
     await pool.query('UPDATE bot_settings SET is_active = $1 WHERE user_id = $2', [newActive, targetId]);
 
-    const botManager = global.botManager;
+    const botManager = req.app.locals.botManager || global.botManager;
     if (newActive && botManager) {
       try {
         const botSettings = await pool.query(

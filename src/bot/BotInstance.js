@@ -1294,6 +1294,25 @@ class BotInstance {
         `UPDATE trades SET session_id=$1 WHERE user_id=$2 AND status='open' AND session_id IS DISTINCT FROM $1`,
         [this.sessionId, this.userId]
       );
+
+      // Dedup: if more than one open trade exists for the same market, close the extras.
+      // Keep the oldest (lowest id) — it has the most accurate entry price.
+      // Duplicates can accumulate when re-entrance guard wasn't in place.
+      const dups = await pool.query(`
+        SELECT market_id, COUNT(*) as cnt, MIN(id) as keep_id
+        FROM trades WHERE user_id=$1 AND status='open'
+        GROUP BY market_id HAVING COUNT(*) > 1
+      `, [this.userId]);
+      for (const row of dups.rows) {
+        const closed = await pool.query(
+          `UPDATE trades SET status='closed', close_reason='DUPLICATE_DEDUP', exit_price=entry_price, pnl=0, result=NULL, closed_at=NOW()
+           WHERE user_id=$1 AND status='open' AND market_id=$2 AND id != $3 RETURNING id`,
+          [this.userId, row.market_id, row.keep_id]
+        );
+        if (closed.rowCount > 0) {
+          this._log('WARN', `  🗑️ Deduped ${closed.rowCount} extra open position(s) in market ${row.market_id} — kept #${row.keep_id}`);
+        }
+      }
     } catch (err) {
       this._log('WARN', `Session start failed: ${err.message} — trades will have null session_id`);
       this.sessionId = null;
