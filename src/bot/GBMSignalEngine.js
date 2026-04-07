@@ -296,6 +296,8 @@ class GBMSignalEngine {
         //   3. Lag bonus when Polymarket visibly lags BTC
         // ==========================================
         const btcDelta = this.binance.getWindowDeltaScore(60); // % change over 60s (wider window catches moves that quieted in last 30s)
+        log.btcDelta = btcDelta;
+        log.yesPrice = yesPrice;
 
         // ==========================================
         // SCENARIO CLASSIFICATION
@@ -536,9 +538,11 @@ class GBMSignalEngine {
         //   2. evVelocity drop exceeds absolute floor of 1.0% — prevents blocking a
         //      22%→21.9% move (noise) while still catching 10%→5%→2% collapse.
         const evVelocity = this.evEngine.getEVVelocity(marketId);
-        // Only block if EV is collapsing rapidly (>3% drop per tick) — prevents blocking
-        // oscillating signals. evDecayRatio from settings further controls sensitivity.
-        const evDecayRatio = parseFloat(this.settings?.ev_decay_ratio) || 2.0;
+        // evTrend filter: only block on sustained, rapid EV collapse.
+        // Raised default floor to 8.0 — BTC 5-min markets oscillate ±3-5% per tick
+        // (boundary books + Gamma lag). A 3% drop is noise, not a collapse signal.
+        // Only block when EV is both decaying AND drops >8% in a single tick.
+        const evDecayRatio = parseFloat(this.settings?.ev_decay_ratio) || 8.0;
         const EV_VELOCITY_FLOOR = -1.0 * evDecayRatio;
         if (this.evEngine.isEVDecaying(marketId) && evVelocity < EV_VELOCITY_FLOOR) {
           log.gates.evTrend = { status: 'DECAYING', velocity: evVelocity.toFixed(2), floor: EV_VELOCITY_FLOOR, passed: false };
@@ -569,23 +573,25 @@ class GBMSignalEngine {
             passed: false
           };
 
-          // Direction alignment: YES needs BTC rising, NO needs BTC falling
-          if (direction === 'YES' && !isBullish) {
-            log.gates.gate3.passed = false;
-            continue;
-          }
-          if (direction === 'NO' && isBullish) {
-            log.gates.gate3.passed = false;
-            continue;
-          }
+          // When BTC signal is weak (|btcDelta| < minDelta), direction is unreliable —
+          // skip the direction check and let EV gate decide. Gamma displacement already
+          // priced a directional move in this case; blocking it here is over-filtering.
+          const btcSignalWeak = Math.abs(btcDelta) < minDelta;
 
-          // Strength check: btcDelta must meet minimum threshold
-          if (Math.abs(btcDelta) < minDelta) {
-            log.gates.gate3.passed = false;
-            continue;
+          if (!btcSignalWeak) {
+            // Direction alignment: YES needs BTC rising, NO needs BTC falling
+            if (direction === 'YES' && !isBullish) {
+              log.gates.gate3 = { btcDelta, minDelta, direction, passed: false, reason: 'direction_mismatch' };
+              continue;
+            }
+            if (direction === 'NO' && isBullish) {
+              log.gates.gate3 = { btcDelta, minDelta, direction, passed: false, reason: 'direction_mismatch' };
+              continue;
+            }
           }
 
           log.gates.gate3.passed = true;
+          log.gates.gate3.note = btcSignalWeak ? 'weak_btc_skipped_direction_check' : 'direction_confirmed';
         }
 
         // ==========================================
@@ -619,9 +625,11 @@ class GBMSignalEngine {
 
         const signalConfidence = parseFloat(rawConfidence.toFixed(3));
 
-        // Confidence gate — skip if signal quality is too low (noise, not edge)
-        if (signalConfidence < 0.20) {
-          console.log(`[GBMSignalEngine] SKIP — low signal quality: confidence=${signalConfidence.toFixed(3)}`);
+        // Confidence gate — skip if signal quality is too low (noise, not edge).
+        // Threshold lowered to 0.15 (was 0.20) — weak but valid signals now pass.
+        if (signalConfidence < 0.15) {
+          log.gates.confidence = { value: signalConfidence, threshold: 0.15, passed: false };
+          log.reason = `Low confidence: ${signalConfidence.toFixed(3)} < 0.15 — insufficient signal quality`;
           continue;
         }
 
@@ -664,10 +672,26 @@ class GBMSignalEngine {
       const gateNames = Object.keys(log.gates);
       const failedAt = gateNames.find(k => log.gates[k]?.passed === false) || 'all_markets_skipped';
       log.verdict = 'SKIP';
-      log.reason = 'No market passed all gates';
+      log.reason = log.reason || 'No market passed all gates';
       log.skipDetail = failedAt;
       const lastMarketId = lastMarket ? (lastMarket.id || lastMarket.condition_id) : null;
-      console.log(`[GBMSignalEngine] SKIP — ${failedAt}`, JSON.stringify(log.gates).slice(0, 200));
+
+      // Rich skip log: show exactly what blocked the best candidate market
+      const skipCtx = {
+        gate: failedAt,
+        reason: log.reason,
+        btcDelta: log.btcDelta != null ? `${log.btcDelta.toFixed(3)}%` : null,
+        yesPrice: log.yesPrice != null ? log.yesPrice.toFixed(3) : null,
+        evAdj: log.gates?.gate2?.bestEV != null ? `${log.gates.gate2.bestEV.toFixed(2)}%` : null,
+        evFloor: log.gates?.gate2?.evFloor != null ? `${log.gates.gate2.evFloor.toFixed(2)}%` : null,
+        confidence: log.gates?.gate1?.confidence != null ? log.gates.gate1.confidence.toFixed(3) : null,
+        remaining: log.gates?.timeGate?.remaining != null ? `${log.gates.timeGate.remaining}s` : null,
+        scenario: log.scenario || null,
+      };
+      // Filter nulls for cleaner output
+      const skipCtxClean = Object.fromEntries(Object.entries(skipCtx).filter(([,v]) => v != null));
+      console.log(`[GBMSignalEngine] SKIP [${failedAt}]`, JSON.stringify(skipCtxClean));
+
       return { verdict: 'SKIP', log, marketId: lastMarketId, market: lastMarket, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
 
     } catch (err) {

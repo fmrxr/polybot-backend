@@ -227,6 +227,47 @@ router.get('/gate-stats', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/bot/skip-analysis — aggregated results of evaluated skipped signals
+// Groups by skip_reason, shows would_win rate and avg sim_pnl per filter
+router.get('/skip-analysis', authMiddleware, async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+    const [summary, recent] = await Promise.all([
+      pool.query(`
+        SELECT
+          skip_reason,
+          COUNT(*)                                              AS total,
+          COUNT(*) FILTER (WHERE evaluated_at IS NOT NULL)     AS evaluated,
+          COUNT(*) FILTER (WHERE would_win = true)             AS would_win,
+          COUNT(*) FILTER (WHERE would_win = false)            AS would_lose,
+          ROUND(AVG(sim_pnl) FILTER (WHERE sim_pnl IS NOT NULL)::numeric, 4) AS avg_sim_pnl,
+          ROUND(
+            COUNT(*) FILTER (WHERE would_win = true)::numeric /
+            NULLIF(COUNT(*) FILTER (WHERE evaluated_at IS NOT NULL), 0) * 100, 1
+          )                                                    AS would_win_rate,
+          ROUND(AVG(ABS(ev_adj)) FILTER (WHERE ev_adj IS NOT NULL)::numeric, 2) AS avg_ev_at_skip,
+          ROUND(AVG(confidence)  FILTER (WHERE confidence IS NOT NULL)::numeric, 3) AS avg_confidence
+        FROM skipped_signals
+        WHERE user_id = $1 AND created_at > NOW() - ($2 || ' days')::INTERVAL
+        GROUP BY skip_reason
+        ORDER BY total DESC
+      `, [req.userId, days]),
+      pool.query(`
+        SELECT skip_reason, direction, entry_price, ev_adj, would_win, sim_pnl,
+               scenario, remaining_sec, skip_detail, created_at
+        FROM skipped_signals
+        WHERE user_id = $1 AND evaluated_at IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 50
+      `, [req.userId])
+    ]);
+    res.json({ summary: summary.rows, recent: recent.rows, days });
+  } catch (err) {
+    console.error('[skip-analysis]', err.message);
+    res.status(500).json({ error: 'Failed to fetch skip analysis' });
+  }
+});
+
 // ─── Real-time SSE stream ───────────────────────────────────────────────────
 // Pushes bot state snapshots every 200ms without polling.
 // Frontend: const es = new EventSource('/api/bot/stream?token=<jwt>')

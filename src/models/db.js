@@ -277,6 +277,35 @@ const initDB = async () => {
       CREATE INDEX IF NOT EXISTS idx_whale_perf_address ON whale_performance(target_address);
     `);
 
+    // skipped_signals — tracks every SKIP for post-hoc analysis
+    // Evaluated after market resolution to measure missed-opportunity cost per filter
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS skipped_signals (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        market_id VARCHAR(255) NOT NULL,
+        market_question TEXT,
+        skip_reason VARCHAR(64),        -- gate name that blocked: btcFlat, G1, G2, G3, evTrend, etc.
+        skip_detail TEXT,               -- full reason string
+        direction VARCHAR(10),          -- YES/NO — direction signal would have taken
+        entry_price DECIMAL(10,6),      -- Gamma price at skip time
+        ev_adj DECIMAL(10,4),           -- EV_adj at skip time (if computed)
+        confidence DECIMAL(5,3),
+        btc_delta DECIMAL(8,5),
+        remaining_sec INTEGER,
+        scenario VARCHAR(32),
+        -- Resolution fields (filled in later by evaluator)
+        resolved_price DECIMAL(10,6),   -- 0.01 (lost) or 0.99 (won) from Gamma
+        would_win BOOLEAN,              -- true if direction was correct
+        sim_pnl DECIMAL(10,4),          -- simulated P&L = shares*(resolved-entry) - fee
+        evaluated_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_skipped_user_time ON skipped_signals(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_skipped_market ON skipped_signals(market_id);
+      CREATE INDEX IF NOT EXISTS idx_skipped_unevaluated ON skipped_signals(evaluated_at) WHERE evaluated_at IS NULL;
+    `);
+
     // Ensure legacy 'size' column has no NOT NULL constraint (old schema had it; new schema uses trade_size)
     try {
       await client.query(`ALTER TABLE trades ALTER COLUMN size DROP NOT NULL`);

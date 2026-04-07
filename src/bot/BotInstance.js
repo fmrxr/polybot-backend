@@ -50,8 +50,9 @@ class BotInstance {
     // Real-time streaming (SSE) — emits 'state' events every 200ms while running
     this.streamEmitter = new EventEmitter();
     this.streamEmitter.setMaxListeners(50); // allow many concurrent SSE clients
-    this.streamInterval  = null;
+    this.streamInterval   = null;
     this._obFetchInterval = null; // 1s async loop that fetches YES/NO order books
+    this._skipEvalInterval = null; // 2min loop that evaluates resolved skipped_signals
     this._lastOrderBooks = {}; // tokenId -> { midPrice, spread, bidDepth, askDepth }
     // Last computed microstructure + EV data for broadcasting
     this._lastStreamState = {};
@@ -102,6 +103,8 @@ class BotInstance {
       this.streamInterval   = setInterval(() => this._broadcastState(), 200);
       // Order book fetcher — 1s async loop, populates YES/NO prices for stream
       this._obFetchInterval = setInterval(() => this._fetchActiveOrderBooks(), 1000);
+      // Skip evaluator — every 2 min, resolve any pending skipped_signals
+      this._skipEvalInterval = setInterval(() => this._evaluateSkippedSignals(), 120000);
 
       this._log('INFO', `✅ Bot started. Interval: ${intervalMs / 1000}s, Paper: ${this.settings.paper_trading}`);
 
@@ -132,6 +135,10 @@ class BotInstance {
     if (this._obFetchInterval) {
       clearInterval(this._obFetchInterval);
       this._obFetchInterval = null;
+    }
+    if (this._skipEvalInterval) {
+      clearInterval(this._skipEvalInterval);
+      this._skipEvalInterval = null;
     }
 
     if (this.binance) this.binance.disconnect();
@@ -261,9 +268,19 @@ class BotInstance {
       if (evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
         this._log('INFO', `✅ EV-driven flip: ${currentDirection} → ${newSignal.direction} (EV gain: +${evGain.toFixed(2)}%)`);
 
-        // Close at the signal price — same price the signal engine just used for EV evaluation.
-        // Using signal.yesPrice here ensures consistency with the rest of the tick.
-        const flipTokenPrice = existingTrade.direction === 'NO' ? newSignal.noPrice : newSignal.yesPrice;
+        // Close at the old trade's market price — NOT the new signal's market price.
+        // newSignal is for the new market; existingTrade.market_id may differ.
+        // Use _priceCache for the old market, fall back to new signal price only if same market.
+        let flipLivePriceYes = null;
+        if (newSignal.marketId === existingTrade.market_id && newSignal.yesPrice != null) {
+          flipLivePriceYes = newSignal.yesPrice;
+        } else {
+          const cached = this.signalEngine?._priceCache?.get(existingTrade.market_id);
+          flipLivePriceYes = cached?.smoothedPrice ?? null;
+        }
+        const flipTokenPrice = existingTrade.direction === 'NO'
+          ? (flipLivePriceYes != null ? 1 - flipLivePriceYes : null)
+          : flipLivePriceYes;
         const livePrice = flipTokenPrice ?? parseFloat(existingTrade.entry_price);
         await this._closePosition(existingTrade, livePrice, 'EV_FLIP');
 
@@ -1025,6 +1042,73 @@ class BotInstance {
   }
 
   // ==========================================
+  // SKIP ANALYSIS — RESOLUTION EVALUATOR
+  // ==========================================
+
+  /**
+   * Runs every 2 minutes. Finds skipped_signals that haven't been evaluated yet,
+   * queries Gamma for resolution, and fills in would_win / sim_pnl.
+   * Only evaluates markets that are old enough to have resolved (> 6 min since skip).
+   */
+  async _evaluateSkippedSignals() {
+    try {
+      const pending = await pool.query(`
+        SELECT id, market_id, direction, entry_price, ev_adj
+        FROM skipped_signals
+        WHERE user_id = $1
+          AND evaluated_at IS NULL
+          AND direction IS NOT NULL
+          AND entry_price IS NOT NULL
+          AND created_at < NOW() - INTERVAL '6 minutes'
+        LIMIT 20
+      `, [this.userId]);
+
+      if (pending.rowCount === 0) return;
+
+      for (const row of pending.rows) {
+        try {
+          const r = await axios.get(`https://gamma-api.polymarket.com/markets/${row.market_id}`, { timeout: 4000 });
+          const m = r.data;
+          if (!m || (!m.closed && !m.resolved)) {
+            // Not resolved yet — skip for now, will retry next cycle
+            continue;
+          }
+
+          let outcomePrices = m.outcomePrices;
+          if (typeof outcomePrices === 'string') {
+            try { outcomePrices = JSON.parse(outcomePrices); } catch (_) { continue; }
+          }
+          if (!Array.isArray(outcomePrices) || outcomePrices.length < 2) continue;
+
+          const yesResolved = parseFloat(outcomePrices[0]); // 1=YES won, 0=YES lost
+          const resolvedPrice = row.direction === 'YES' ? yesResolved : (1 - yesResolved);
+          // resolvedPrice: ~1 = token won, ~0 = token lost
+
+          const entryPrice = parseFloat(row.entry_price);
+          const tradeSize = 10; // simulate a standard $10 trade
+          const shares = tradeSize / entryPrice;
+          const grossPnl = shares * resolvedPrice - tradeSize;
+          const fee = Math.max(0, grossPnl) * 0.02;
+          const simPnl = grossPnl - fee;
+          const wouldWin = simPnl > 0;
+
+          await pool.query(`
+            UPDATE skipped_signals
+            SET resolved_price=$1, would_win=$2, sim_pnl=$3, evaluated_at=NOW()
+            WHERE id=$4
+          `, [resolvedPrice, wouldWin, parseFloat(simPnl.toFixed(4)), row.id]);
+        } catch (_) {
+          // Network error for this market — mark as evaluated with nulls so we don't retry forever
+          await pool.query(`UPDATE skipped_signals SET evaluated_at=NOW() WHERE id=$1`, [row.id]).catch(() => {});
+        }
+      }
+    } catch (err) {
+      // Non-critical background job — log but never throw
+      this._log('WARN', `[SkipEval] Error: ${err.message}`);
+    }
+  }
+
+  // ==========================================
   // TRADING SESSION LIFECYCLE
   // ==========================================
 
@@ -1347,13 +1431,16 @@ class BotInstance {
         spread: spreadLogged
       });
 
+      const marketId = signal.market?.id || signal.marketId || null;
+      const marketQuestion = signal.market?.question || null;
+
       await pool.query(`
         INSERT INTO signals (user_id, market_id, market_question, verdict, reason, direction, confidence, ev_raw, ev_adj, ema_edge, gate1_passed, gate2_passed, gate3_passed, gate_failed, lag_age_sec, spread_pct, scenario)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       `, [
         this.userId,
-        signal.market?.id || signal.marketId || null,
-        signal.market?.question || null,
+        marketId,
+        marketQuestion,
         signal.verdict,
         signal.log?.reason || '',
         signal.direction || null,
@@ -1369,6 +1456,43 @@ class BotInstance {
         spreadLogged,
         signal.log?.scenario || null
       ]);
+
+      // Store skipped signals with enough context for post-hoc analysis.
+      // Only record when we have a market + direction + entry price — otherwise there's
+      // nothing to evaluate against resolution.
+      if (signal.verdict === 'SKIP' && marketId && signal.log?.yesPrice != null) {
+        const skipReason = signal.log?.skipDetail || (gateFailed != null ? `gate_${gateFailed}` : 'unknown');
+        const direction = gates.gate2?.bestDirection || signal.direction || null;
+        const entryPrice = direction === 'NO'
+          ? (1 - signal.log.yesPrice)
+          : signal.log.yesPrice;
+
+        // Only record once per market per skip-reason per 30s window to avoid flooding
+        pool.query(`
+          INSERT INTO skipped_signals
+            (user_id, market_id, market_question, skip_reason, skip_detail, direction, entry_price,
+             ev_adj, confidence, btc_delta, remaining_sec, scenario)
+          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+          WHERE NOT EXISTS (
+            SELECT 1 FROM skipped_signals
+            WHERE user_id=$1 AND market_id=$2 AND skip_reason=$4
+              AND created_at > NOW() - INTERVAL '30 seconds'
+          )
+        `, [
+          this.userId,
+          marketId,
+          marketQuestion,
+          skipReason,
+          signal.log?.reason?.slice(0, 200) || null,
+          direction,
+          entryPrice,
+          evAdjLogged,
+          signal.confidence || gates.gate1?.confidence || null,
+          signal.log?.btcDelta != null ? parseFloat(signal.log.btcDelta.toFixed(5)) : null,
+          gates.timeGate?.remaining != null ? Math.round(gates.timeGate.remaining) : null,
+          signal.log?.scenario || null
+        ]).catch(() => {}); // fire-and-forget, never block main flow
+      }
     } catch (err) {
       console.error('[SignalLog ERROR]', {
         message: err.message,
