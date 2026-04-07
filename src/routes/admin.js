@@ -199,7 +199,7 @@ router.get('/bot-logs', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 200, 500);
     const level = req.query.level || null; // INFO, WARN, ERROR
-    const botManager = global.botManager;
+    const botManager = req.app.locals.botManager || global.botManager;
     if (!botManager) return res.json({ logs: [] });
     let logs = botManager.getAllLogs(limit);
     if (level) logs = logs.filter(l => l.level === level.toUpperCase());
