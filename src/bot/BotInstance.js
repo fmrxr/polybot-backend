@@ -1709,11 +1709,19 @@ class BotInstance {
         const yesBook = yesId ? this._lastOrderBooks[yesId] : null;
         const noBook  = noId  ? this._lastOrderBooks[noId]  : null;
 
-        // Gamma outcomePrices — real market consensus even when CLOB is boundary-only
-        let op = m.outcomePrices;
-        if (typeof op === 'string') { try { op = JSON.parse(op); } catch (_) { op = null; } }
-        const gammaYes = op ? parseFloat(op[0]) : null;
-        const gammaNo  = op ? parseFloat(op[1]) : null;
+        // Price from signal engine's per-tick live cache (freshest source).
+        // _priceCache is updated every tick via getLivePriceFromGamma() — never stale.
+        // Fall back to cached outcomePrices only if engine hasn't evaluated this market yet.
+        const marketId = m.id || m.condition_id;
+        const cachedEnginePrice = this.signalEngine?._priceCache?.get(marketId);
+        let gammaYes = cachedEnginePrice?.smoothedPrice ?? null;
+        let gammaNo  = gammaYes != null ? (1 - gammaYes) : null;
+        if (gammaYes == null) {
+          let op = m.outcomePrices;
+          if (typeof op === 'string') { try { op = JSON.parse(op); } catch (_) { op = null; } }
+          gammaYes = op ? parseFloat(op[0]) : null;
+          gammaNo  = op ? parseFloat(op[1]) : null;
+        }
 
         const clobSpread = yesBook?.spread ?? null;
         const isBoundary = clobSpread == null || clobSpread >= 0.90;
@@ -1721,7 +1729,7 @@ class BotInstance {
         // yesBid/yesAsk are the actual Polymarket order book prices (match what UI shows)
         // If CLOB is boundary-only, fall back to Gamma price for display
         return {
-          id:         m.id || m.condition_id,
+          id:         marketId,
           question:   m.question,
           endIso:     m.end_date_iso,
           startIso:   m.start_date_iso,
