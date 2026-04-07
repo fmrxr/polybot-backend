@@ -484,7 +484,6 @@ class BotInstance {
     //             These markets (BTC 5-min) always show boundary books (0.01/0.99) structurally,
     //             but real fills happen at lastTradePrice via GTC limit orders near fair value.
     // Never place orders based on the boundary bestAsk=0.99 — that is a ghost order.
-    const TICK = 0.01;
     let limitPrice = null;
 
     if (direction === 'NO' && signal.noTokenId) {
