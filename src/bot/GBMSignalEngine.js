@@ -165,10 +165,10 @@ class GBMSignalEngine {
           }
         }
 
-        // SOURCE 3: Gamma outcomePrices — the Polymarket-published consensus price.
-        // outcomePrices updates as trades clear on-chain, making it the authoritative
-        // market price for signal generation on boundary-book markets (bid=0.01/ask=0.99).
-        // Used for SIGNAL ONLY — execution uses a GTC limit order near this price.
+        // SOURCE 3: Gamma outcomePrices — signal-only price reference.
+        // Used to compute modelProb/EV when CLOB books are boundary-only.
+        // The real orderBook (boundary spread) is preserved so execution sees
+        // the true liquidity state and can hard-skip if no real fills are possible.
         if (rawYesPrice == null) {
           let op = market.outcomePrices;
           if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
@@ -176,10 +176,10 @@ class GBMSignalEngine {
           if (gammaYes != null && isFinite(gammaYes) && gammaYes > 0.01 && gammaYes < 0.99) {
             rawYesPrice = gammaYes;
             priceSource = 'gamma';
-            // Synthetic book: spread=0.02 so downstream boundary gate (>=0.90) passes.
-            // totalDepth from yesBook kept for depth floor check.
-            orderBook = { midPrice: gammaYes, bestAsk: gammaYes + 0.01, bestBid: gammaYes - 0.01, spread: 0.02, totalDepth: yesBook?.totalDepth || 0 };
-            console.log(`[GBMSignalEngine] Gamma source: yesPrice=${gammaYes.toFixed(3)} outcomePrices=${JSON.stringify(op)}`);
+            // Keep the real boundary book — do NOT synthesize a fake tight spread.
+            // Execution layer must see spread>=0.90 and skip with no_real_liquidity.
+            orderBook = yesBook || { midPrice: gammaYes, bestAsk: 0.99, bestBid: 0.01, spread: 0.98, totalDepth: 0 };
+            console.log(`[GBMSignalEngine] Gamma signal source: yesPrice=${gammaYes.toFixed(3)} outcomePrices=${JSON.stringify(op)} (boundary book — execution will skip)`);
           }
         }
 
@@ -221,7 +221,8 @@ class GBMSignalEngine {
         const alpha = this._adaptiveAlpha(roughRemaining);
         console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} alpha=${alpha} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
 
-        // Real CLOB spread — we only reach here when a real book exists (no gamma fallback).
+        // Real spread from order book. Gamma-sourced markets carry the actual boundary spread
+        // (~0.98) and will be blocked by the boundary book gate below.
         const rawSpread = orderBook.spread ?? (yesBook?.spread) ?? null;
         const spread = rawSpread ?? 0;
 
