@@ -195,9 +195,10 @@ class BotInstance {
       const overexposed = await this._checkDirectionalExposure(signal.direction);
       if (overexposed) return;
 
-      // --- Check if we should flip an existing position ---
-      const flipped = await this._checkForFlip(signal);
-      if (flipped) return; // Flip handled, don't open new position
+      // EV_FLIP disabled: DB analysis shows flips are net losers (-$4.45 avg, burn fees,
+      // 16/25 at zero P&L on boundary books). Binary markets resolve in ≤5 min — hold is better.
+      // const flipped = await this._checkForFlip(signal);
+      // if (flipped) return;
 
       // --- Open new position ---
       await this._executeTrade(signal);
@@ -445,7 +446,11 @@ class BotInstance {
       return;
     }
 
-    const maxTradeDollars = Math.max(1, parseFloat(this.settings.max_trade_size) || 5.00);
+    // Hard cap: $10 per trade on real CLOB markets.
+    // DB showed $50 trades hitting HARD_STOP_LOSS at -$21 and -$30 losses.
+    // Until resolution-only strategy is validated, cap at $10 to preserve balance.
+    const settingsMax = Math.max(1, parseFloat(this.settings.max_trade_size) || 5.00);
+    const maxTradeDollars = Math.min(settingsMax, 10.00);
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
     if (!balance || isNaN(balance) || balance <= 0) {
       this._log('WARN', `Invalid balance=${balance} — skipping`);
@@ -903,15 +908,24 @@ class BotInstance {
           ? await this._getMarketRemaining(trade.market_id)
           : 300;
         if (marketEndSec < 30 && pnlPct <= -15) {
-          this._log('WARN', `🛑 Time-gated stop-loss: token PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing`);
-          await this._closePosition(trade, livePrice, 'HARD_STOP_LOSS');
+          // Near resolution: fetch actual Gamma resolution price instead of stale cache.
+          // DB showed HARD_STOP_LOSS exits at 0.315/0.155 — stale boundary-book prices,
+          // not real resolution values. Use Gamma to get 0.0 or 1.0 if market has settled.
+          const resolvedPrice = await this._getResolutionPrice(trade.market_id, trade.token_id);
+          const stopPrice = resolvedPrice ?? livePrice;
+          this._log('WARN', `🛑 Time-gated stop-loss: PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing at ${stopPrice.toFixed(3)} (${resolvedPrice != null ? 'resolved' : 'live'})`);
+          await this._closePosition(trade, stopPrice, 'HARD_STOP_LOSS');
           this.evEngine.clearMarket(marketId);
           this.signalEngine.clearMarket(marketId);
           continue;
         }
 
-        // EXIT CONDITION 2: Edge fully gone — EV deeply negative
-        if (currentEV < -8) {
+        // EXIT CONDITION 2: DISABLED — NEGATIVE_EV_EXIT
+        // DB analysis: 29 exits, 22 at zero P&L (price unchanged on boundary books),
+        // avg hold 180s cutting trades that would have resolved naturally at 556s.
+        // Binary markets resolve in ≤5 min — hold to resolution captures real edge.
+        // EV oscillates on boundary books — a -8% dip is noise, not structural.
+        if (false && currentEV < -8) {
           this._log('WARN', `📉 Edge gone: EV=${currentEV.toFixed(2)}% — closing`);
           await this._closePosition(trade, livePrice, 'NEGATIVE_EV_EXIT');
           this.evEngine.clearMarket(marketId);
