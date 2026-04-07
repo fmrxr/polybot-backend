@@ -159,19 +159,35 @@ class PolymarketFeed {
       if (res.ok) {
         const markets = await res.json();
         if (Array.isArray(markets) && markets.length > 0) {
-          // Accept: true 5-min BTC markets (btc-updown-5m-* slug) OR any BTC up/down
-          // market ending within the next 5 min (last 5 min of a 15-min window).
-          // Reject: 15-min markets with > 5 min remaining — wrong timeframe for our strategy.
+          // Accept: true 5-min BTC markets (btc-updown-5m-* slug) OR short-window BTC
+          // up/down markets (≤15 min duration) in their last 5 min before expiry.
+          // Reject: hourly/daily markets — wrong timeframe, no edge.
           const btc = markets.filter(m => {
             const q = (m.question || '').toLowerCase();
             const slug = (m.slug || '').toLowerCase();
             const isBtcUpDown = (q.includes('bitcoin') || q.includes('btc')) && q.includes('up or down');
             if (!isBtcUpDown) return false;
-            const is5minSlug = slug.startsWith('btc-updown-5m-');
-            if (is5minSlug) return true;
-            // Non-5min-slug market: only accept in the last 5 min before expiry
+            // True 5-min slug: always accept
+            if (slug.startsWith('btc-updown-5m-')) return true;
+            // Non-slug BTC up/down: must verify it's a short-window market.
+            // Compute actual duration from startDate/endDate if available.
             const endMs = _endMs(m);
-            const secsRemaining = endMs ? (endMs - nowUTC) / 1000 : 9999;
+            if (!endMs || endMs <= nowUTC) return false;
+            const secsRemaining = (endMs - nowUTC) / 1000;
+            // Check duration: only accept if market is ≤15 min total (900s).
+            // Use startDate if available; otherwise infer from question time range.
+            const startRaw = m.startDate || m.start_date_iso || m.startDateIso;
+            if (startRaw && !/^\d{4}-\d{2}-\d{2}$/.test(String(startRaw).trim())) {
+              const startMs = new Date(String(startRaw).includes('Z') || String(startRaw).includes('+') ? startRaw : startRaw + 'Z').getTime();
+              const durationSec = (endMs - startMs) / 1000;
+              if (durationSec > 900) return false; // reject hourly/daily markets
+            } else {
+              // No reliable start date — check question for time-range pattern (e.g. "4:45PM-5:00PM")
+              // If question only has a single time (e.g. "4PM ET") it's likely hourly — reject.
+              const hasTimeRange = /\d{1,2}:\d{2}(am|pm).{0,5}\d{1,2}:\d{2}(am|pm)/i.test(m.question || '');
+              if (!hasTimeRange) return false;
+            }
+            // Short-window market: only trade in the last 5 min
             return secsRemaining <= 300;
           });
           console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) in next 30 min (5-min or last-5-min-of-longer)`);
