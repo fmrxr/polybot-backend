@@ -417,7 +417,7 @@ class PolymarketFeed {
         return null;
       }
       const p = parseFloat(data?.price);
-      if (!isFinite(p) || p <= 0.01 || p >= 0.99) {
+      if (!isFinite(p) || p < 0 || p > 1) {
         console.warn(`[PolymarketFeed] lastTradePrice invalid: ${data?.price} for ${tokenId?.slice(0,12)}...`);
         return null;
       }

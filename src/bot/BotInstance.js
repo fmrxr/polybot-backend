@@ -913,17 +913,19 @@ class BotInstance {
               this.signalEngine.clearMarket(trade.market_id);
             } else {
               // Gamma ambiguous (UMA challenge period / outcomePrices=[0.5,0.5]).
-              // Fall back to last cached live price rather than entry price (which gives $0 P&L).
-              // Wait up to 7min for resolution to finalise before forcing close.
+              // BTC 5-min markets typically resolve within 3-5 min of expiry via UMA.
+              // Wait up to 15min before forcing close — avoids $0 P&L from premature exit.
               const fallback = trade._cachedLivePrice ?? null;
-              if (tradeAgeMin >= 7.0) {
+              if (tradeAgeMin >= 15.0) {
+                // Last resort: close at cached price before market entry if possible.
+                // cachedLivePrice was last known token price before resolution — better than entry.
                 const closePrice = fallback ?? parseFloat(trade.entry_price);
                 this._log('WARN', `⏱️ Force-closing trade #${trade.id} at ${closePrice.toFixed(3)} (Gamma unresolved at ${tradeAgeMin.toFixed(1)}min, fallback=${fallback != null ? 'cached' : 'entry'})`);
                 await this._closePosition(trade, closePrice, 'MARKET_RESOLVED_TIMEOUT');
                 this.evEngine.clearMarket(trade.market_id);
                 this.signalEngine.clearMarket(trade.market_id);
               } else {
-                this._log('WARN', `⏳ Waiting for Gamma resolution on trade #${trade.id} (age=${tradeAgeMin.toFixed(1)}min)`);
+                this._log('INFO', `⏳ Waiting for Gamma resolution on trade #${trade.id} (age=${tradeAgeMin.toFixed(1)}min)`);
               }
             }
           } else {
@@ -1107,38 +1109,51 @@ class BotInstance {
     try {
       const r = await axios.get(`https://gamma-api.polymarket.com/markets/${marketId}`, { timeout: 5000 });
       const m = r.data;
-      if (!m || (!m.closed && !m.resolved)) return null;
+      if (!m) return null;
 
       // outcomePrices: '["1","0"]' = YES won, '["0","1"]' = NO won
       let outcomePrices = m.outcomePrices;
       if (typeof outcomePrices === 'string') {
-        try { outcomePrices = JSON.parse(outcomePrices); } catch (_) { return null; }
+        try { outcomePrices = JSON.parse(outcomePrices); } catch (_) { outcomePrices = null; }
       }
-      if (!Array.isArray(outcomePrices) || outcomePrices.length < 2) return null;
 
       // clobTokenIds[0] = YES token, [1] = NO token
       let clobIds = m.clobTokenIds;
       if (typeof clobIds === 'string') {
-        try { clobIds = JSON.parse(clobIds); } catch (_) { return null; }
+        try { clobIds = JSON.parse(clobIds); } catch (_) { clobIds = null; }
       }
 
-      const yesPrice0 = parseFloat(outcomePrices[0]);
-      // Only trust a clear winner: 1.0 = YES won, 0.0 = NO won
-      // Avoid 0.5/0.5 which means UMA hasn't resolved yet (challenge period)
-      if (yesPrice0 >= 0.9) {
-        // YES won — YES token resolves to 1.0, NO token to 0.0
-        const isYesToken = clobIds?.[0] === tokenId;
-        const isNoToken  = clobIds?.[1] === tokenId;
-        if (isYesToken) return 1.0;
-        if (isNoToken)  return 0.0;
-      } else if (yesPrice0 <= 0.1) {
-        // NO won — NO token resolves to 1.0, YES token to 0.0
-        const isYesToken = clobIds?.[0] === tokenId;
-        const isNoToken  = clobIds?.[1] === tokenId;
-        if (isYesToken) return 0.0;
-        if (isNoToken)  return 1.0;
+      if (Array.isArray(outcomePrices) && outcomePrices.length >= 2) {
+        const yesPrice0 = parseFloat(outcomePrices[0]);
+        // Only trust a clear winner: ≥0.9 = YES won, ≤0.1 = NO won
+        // Avoid 0.5/0.5 which means UMA hasn't resolved yet (challenge period)
+        if (yesPrice0 >= 0.9) {
+          const isYesToken = clobIds?.[0] === tokenId;
+          const isNoToken  = clobIds?.[1] === tokenId;
+          if (isYesToken) return 1.0;
+          if (isNoToken)  return 0.0;
+        } else if (yesPrice0 <= 0.1) {
+          const isYesToken = clobIds?.[0] === tokenId;
+          const isNoToken  = clobIds?.[1] === tokenId;
+          if (isYesToken) return 0.0;
+          if (isNoToken)  return 1.0;
+        }
       }
-      return null; // ambiguous or not yet resolved
+
+      // Gamma is ambiguous (outcomePrices=[0.5,0.5] during UMA challenge period).
+      // Fall back to CLOB lastTradePrice — at settlement, the last trade IS the settlement price.
+      // If the last trade was 0.99 or 0.01, the market has effectively resolved.
+      if (tokenId && this.polymarket) {
+        try {
+          const lastPrice = await this.polymarket.getLastTradePrice(tokenId);
+          if (lastPrice != null) {
+            if (lastPrice >= 0.90) return 1.0;
+            if (lastPrice <= 0.10) return 0.0;
+          }
+        } catch (_) {}
+      }
+
+      return null; // truly ambiguous — market still settling
     } catch (err) {
       this._log('WARN', `Gamma resolution lookup failed for ${marketId}: ${err.message}`);
       return null;
