@@ -839,6 +839,7 @@ class BotInstance {
         // For NO trades:  token price = noPrice (= 1 - yesPrice)
         let livePrice = null;
         let rawLivePrice = null;
+        let livePriceSrc = null;
         // Only use signal prices if this signal is for THIS trade's market.
         // Signal is evaluated per-market; using a different market's price gives wrong PnL.
         const signalIsForThisMarket = signal?.marketId != null && signal.marketId === trade.market_id;
@@ -846,12 +847,13 @@ class BotInstance {
           livePrice    = trade.direction === 'NO' ? signal.noPrice          : signal.yesPrice;
           rawLivePrice = trade.direction === 'NO' ? 1 - (signal.rawPrice ?? signal.yesPrice)
                                                   : (signal.rawPrice ?? signal.yesPrice);
+          livePriceSrc = signal.priceSource || 'signal';
 
           // Desync guard: log if smoothed price jumped >10% relative vs last tick.
           if (trade._cachedLivePrice != null) {
             const relDivergence = Math.abs(trade._cachedLivePrice - livePrice) / trade._cachedLivePrice;
             if (relDivergence > 0.10) {
-              this._log('WARN', `⚠️ Desync on trade #${trade.id}: prev=${trade._cachedLivePrice.toFixed(3)} signal=${livePrice.toFixed(3)} divergence=${(relDivergence*100).toFixed(1)}% src=${signal.priceSource}`);
+              this._log('WARN', `⚠️ Desync on trade #${trade.id}: prev=${trade._cachedLivePrice.toFixed(3)} signal=${livePrice.toFixed(3)} divergence=${(relDivergence*100).toFixed(1)}% src=${livePriceSrc}`);
             }
           }
           trade._cachedLivePrice = livePrice;
@@ -864,6 +866,7 @@ class BotInstance {
             const cachedYes = cached.smoothedPrice;
             livePrice    = trade.direction === 'NO' ? (1 - cachedYes) : cachedYes;
             rawLivePrice = livePrice;
+            livePriceSrc = `cache(${cached.priceSource || 'gamma'})`;
             trade._cachedLivePrice = livePrice;
           }
         }
@@ -875,6 +878,7 @@ class BotInstance {
             if (gp != null) {
               livePrice    = gp;
               rawLivePrice = gp;
+              livePriceSrc = 'gamma_direct';
               trade._cachedLivePrice = livePrice;
             }
           } catch (_) {}
@@ -885,6 +889,7 @@ class BotInstance {
         if (!livePrice && trade._cachedLivePrice != null) {
           livePrice    = trade._cachedLivePrice;
           rawLivePrice = livePrice;
+          livePriceSrc = 'cached_last';
         }
 
         if (!livePrice) {
@@ -966,7 +971,7 @@ class BotInstance {
         // PnL uses rawLivePrice (unsmoothed) — the smoothed price lags real moves
         // and would understate losses near resolution. Decisions still use livePrice.
         const pnlPct = (((rawLivePrice ?? livePrice) - entryPrice) / entryPrice) * 100;
-        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% smoothed=${livePrice.toFixed(3)} raw=${(rawLivePrice ?? livePrice).toFixed(3)} PnL=${pnlPct.toFixed(1)}% src=${signal.priceSource}`);
+        this._log('INFO', `📍 Holding ${trade.direction} on "${trade.market_question?.slice(0,40)}" — EV=${currentEV.toFixed(2)}% smoothed=${livePrice.toFixed(3)} raw=${(rawLivePrice ?? livePrice).toFixed(3)} PnL=${pnlPct.toFixed(1)}% src=${livePriceSrc}`);
 
         // EXIT CONDITION 1: Time-gated stop-loss
         // pnlPct = (currentTokenPrice - entryPrice) / entryPrice * 100
