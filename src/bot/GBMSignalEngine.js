@@ -165,18 +165,29 @@ class GBMSignalEngine {
           }
         }
 
-        // Both CLOB books are boundary-only — no real liquidity.
-        // Log Gamma price for diagnostics only, but DO NOT trade on it.
+        // SOURCE 3: lastTradePrice from CLOB — the actual last matched execution price.
+        // BTC 5-min Polymarket markets always show boundary books (bid=0.01/ask=0.99)
+        // because no one rests orders at those extremes for real — they submit limits near
+        // fair value (~0.505) which get matched. lastTradePrice IS the real execution price.
+        // This is what the Polymarket UI shows as the current price.
         if (rawYesPrice == null) {
-          let op = market.outcomePrices;
-          if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
-          console.log(`[Gamma] outcomePrices=${JSON.stringify(op)} — CLOB boundary-only, skipping market`);
-          continue; // Hard skip — no real CLOB liquidity
+          const ltp = await this.polymarket.getLastTradePrice(yesTokenId);
+          if (ltp != null) {
+            rawYesPrice = ltp;
+            priceSource = 'lastTrade';
+            // Construct a synthetic book for spread/depth checks downstream.
+            // We know it's a boundary book structurally — flag it so the boundary gate
+            // doesn't hard-skip it. orderBook.spread = 0 signals "last trade price, no real spread".
+            orderBook = { midPrice: ltp, bestAsk: ltp + 0.01, bestBid: ltp - 0.01, spread: 0.02, totalDepth: yesBook?.totalDepth || 0 };
+            console.log(`[GBMSignalEngine] lastTradePrice source: yesPrice=${ltp.toFixed(3)} (CLOB /lastTradePrice)`);
+          }
         }
 
         if (rawYesPrice == null || !orderBook) {
-          console.log(`[GBMSignalEngine] SKIP — no real price from any source`);
-          continue;
+          let op = market.outcomePrices;
+          if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
+          console.log(`[Gamma] outcomePrices=${JSON.stringify(op)} — no real price from any source, skipping market`);
+          continue; // Hard skip — no real price available
         }
 
         // Reject near-resolved CLOB prices: token already settling to 0 or 1.

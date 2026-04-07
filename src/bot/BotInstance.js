@@ -478,32 +478,42 @@ class BotInstance {
       return;
     }
 
-    // Limit price: must be based on a real CLOB order book (spread < 0.90).
-    // signal.orderBook is always the YES token book. For NO trades we fetch the NO book.
-    // Never use Gamma or lastTradePrice as the execution price — boundary books
-    // (bestBid≈0.01 / bestAsk≈0.99) have no real liquidity at fair value.
-    let tokenBook = null;
+    // Limit price determination:
+    // Priority 1: real CLOB book with spread < 0.90 → use bestAsk (real fillable price)
+    // Priority 2: lastTradePrice source (signal.priceSource === 'lastTrade') → use lastTradePrice + 1 tick
+    //             These markets (BTC 5-min) always show boundary books (0.01/0.99) structurally,
+    //             but real fills happen at lastTradePrice via GTC limit orders near fair value.
+    // Never place orders based on the boundary bestAsk=0.99 — that is a ghost order.
+    const TICK = 0.01;
+    let limitPrice = null;
+
     if (direction === 'NO' && signal.noTokenId) {
       try {
         const noOb = await this.polymarket.getOrderBook(signal.noTokenId);
         const noSpread = noOb?.bestAsk != null && noOb?.bestBid != null ? noOb.bestAsk - noOb.bestBid : 1;
-        if (noOb?.midPrice != null && noSpread < 0.90) tokenBook = noOb;
+        if (noOb?.midPrice != null && noSpread < 0.90) {
+          limitPrice = parseFloat(Math.max(0.01, noOb.bestAsk).toFixed(2));
+        }
       } catch (_) {}
     } else if (direction === 'YES' && ob?.midPrice != null) {
       const yesSpread = ob?.bestAsk != null && ob?.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
-      if (yesSpread < 0.90) tokenBook = ob;
+      if (yesSpread < 0.90) {
+        limitPrice = parseFloat(Math.max(0.01, ob.bestAsk).toFixed(2));
+      }
     }
 
-    if (!tokenBook) {
-      this._log('WARN', `[SKIP] no_liquidity_boundary_book for ${direction} — no real CLOB book available (spread>=0.90)`);
+    // Fall back to lastTradePrice for boundary-book markets (BTC 5-min standard structure)
+    if (limitPrice == null && signal.priceSource === 'lastTrade') {
+      // GTC limit 1 tick above lastTradePrice — rests on the book at fair value,
+      // gets filled by the next counter-party submitting at or below this price.
+      limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, lastTradePrice + TICK)).toFixed(2));
+      this._log('INFO', `[lastTrade] Using lastTradePrice execution: limit=${limitPrice.toFixed(2)} (lastTrade=${lastTradePrice.toFixed(3)})`);
+    }
+
+    if (limitPrice == null) {
+      this._log('WARN', `[SKIP] no_liquidity_boundary_book for ${direction} — no real price source available`);
       return;
     }
-
-    // Entry price = bestAsk (real executable price for a buyer).
-    // Limit is placed at bestAsk — this is the price a seller is willing to accept right now.
-    // Never cross the spread by submitting above bestAsk.
-    const bestAsk = tokenBook.bestAsk;
-    const limitPrice = parseFloat(Math.max(0.01, bestAsk).toFixed(2));
 
     this._log('INFO', `📊 ${direction} "${market.question?.slice(0,40)}" — ref=${lastTradePrice.toFixed(4)} limit=${limitPrice.toFixed(2)} size=$${tradeSize.toFixed(2)} kelly=${(kellyFraction*100).toFixed(1)}% EV=${evAdj.toFixed(2)}%`);
 
@@ -613,19 +623,45 @@ class BotInstance {
     const spread = ob.bestAsk != null && ob.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
     const isBoundaryBook = spread >= 0.90;
 
-    // Boundary-only books must never fill — bestAsk=0.99 is a ghost order, not a real price.
-    // Orders should not reach here since _executeTrade blocks boundary books, but cancel
-    // defensively if one somehow slips through.
+    // For lastTradePrice-sourced orders: boundary book structure is expected on BTC 5-min markets.
+    // Fill simulation uses lastTradePrice (actual execution price), not bestAsk=0.99 (ghost order).
     if (isBoundaryBook) {
-      this._log('WARN', `🚫 [PAPER] Cancel stale order ${orderId.slice(0,12)} — book became boundary-only (spread=${(spread*100).toFixed(0)}%) no_liquidity_boundary_book`);
+      if (pending.signal?.priceSource === 'lastTrade') {
+        // Fetch current lastTradePrice — this is the real market price
+        const ltp = await this.polymarket.getLastTradePrice(pending.tokenId);
+        if (ltp == null) {
+          this._log('INFO', `📊 [PAPER] lastTrade fill check: no price yet, waiting`);
+          return;
+        }
+        // Adverse: lastTradePrice moved significantly above our limit (direction flipped against us)
+        if (ltp > pending.limitPrice + ADVERSE_TICKS * TICK) {
+          this._log('WARN', `🚫 [PAPER] lastTrade adverse: limit=${pending.limitPrice.toFixed(2)} ltp=${ltp.toFixed(3)} — cancelling`);
+          this._pendingOrders.delete(orderId);
+          return;
+        }
+        // Fill when lastTradePrice <= our limit (a seller traded at or below our buy limit)
+        const atPrice = ltp <= pending.limitPrice;
+        if (atPrice) {
+          pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
+        } else {
+          pending.fillConfirmTicks = 0;
+        }
+        this._log('INFO', `📊 [PAPER] lastTrade fill check: limit=${pending.limitPrice.toFixed(2)} ltp=${ltp.toFixed(3)} confirmTicks=${pending.fillConfirmTicks}/2`);
+        if (pending.fillConfirmTicks >= 2) {
+          const fillPrice = parseFloat(pending.limitPrice.toFixed(2));
+          this._log('INFO', `✅ [PAPER] Filled (lastTrade 2-tick confirm): ${pending.direction} @ ${fillPrice.toFixed(4)} (ltp=${ltp.toFixed(3)})`);
+          await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
+          this._pendingOrders.delete(orderId);
+        }
+        return;
+      }
+      // Non-lastTrade order on a boundary book — cancel (should not happen after _executeTrade fix)
+      this._log('WARN', `🚫 [PAPER] Cancel stale order ${orderId.slice(0,12)} — book became boundary-only (spread=${(spread*100).toFixed(0)}%)`);
       this._pendingOrders.delete(orderId);
       return;
     }
 
-    // bestAsk is the lowest price any seller is willing to accept right now.
-    // A passive buy limit fills when a seller drops their ask to our limit price
-    // (i.e. bestAsk <= limitPrice). Using bestAsk directly from Polymarket CLOB
-    // is the correct simulation — all math comes from real market data.
+    // Real CLOB book: fill when bestAsk <= limitPrice
     const bestAsk = ob.bestAsk;
     if (bestAsk == null || bestAsk <= 0) return;
 
@@ -639,8 +675,6 @@ class BotInstance {
     const atPrice = bestAsk <= pending.limitPrice;
 
     // Require 2 consecutive ticks at-or-below limit before filling.
-    // A single tick at our price could be a momentary print that bounces back —
-    // persistence confirms real liquidity crossed our level, not a 1-tick artifact.
     if (atPrice) {
       pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
     } else {
