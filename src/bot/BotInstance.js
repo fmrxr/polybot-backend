@@ -1050,7 +1050,9 @@ class BotInstance {
           const pnl = isFinite(exitPrice) && isFinite(entryPrice) && entryPrice > 0
             ? (tradeSize / entryPrice) * exitPrice - tradeSize
             : 0;
-          const result = pnl > 0 ? 'WIN' : 'LOSS';
+          // SESSION_RESET_UNKNOWN = market still live at restart, exit=entry, pnl=0 → not a real loss
+          // Don't assign WIN/LOSS — null keeps it out of win rate stats
+          const result = resolvedPrice != null ? (pnl > 0 ? 'WIN' : 'LOSS') : null;
           const reason = resolvedPrice != null ? 'SESSION_RESET_RESOLVED' : 'SESSION_RESET_UNKNOWN';
           await pool.query(
             `UPDATE trades SET status='closed', close_reason=$1, exit_price=$2, pnl=$3, result=$4, closed_at=NOW() WHERE id=$5`,
