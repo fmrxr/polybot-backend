@@ -388,9 +388,12 @@ class BotInstance {
     const { direction, tokenId, market, evAdj, modelProb, marketId, fillProb } = signal;
     const TICK = 0.01;
 
-    // Diagnostic: log what the signal engine sent vs what's in the order book
+    // Diagnostic: log signal state at execution time
     const ob = signal.orderBook;
-    console.log(`[_executeTrade] direction=${direction} entryPrice=${signal.entryPrice} bestBid=${ob?.bestBid} bestAsk=${ob?.bestAsk} mid=${ob?.midPrice}`);
+    const obDesc = signal.priceSource === 'gamma'
+      ? `gamma=${signal.yesPrice?.toFixed(3)} (boundary book — GTC limit execution)`
+      : `bestBid=${ob?.bestBid} bestAsk=${ob?.bestAsk} mid=${ob?.midPrice}`;
+    console.log(`[_executeTrade] direction=${direction} src=${signal.priceSource} ${obDesc}`);
 
     // ── 1. Token ID safety check ──────────────────────────────────────────────
     if (!tokenId || tokenId === 'undefined' || tokenId === 'null') {
@@ -408,10 +411,16 @@ class BotInstance {
     }
 
     // ── 2b. Prevent multiple open positions in the same market ───────────────
-    // _checkDirectionalExposure only checks total cross-market exposure, not per-market.
-    // Without this, a filled order removed from _pendingOrders allows the next signal
-    // tick to immediately open another position in the same market.
+    // Check both DB (open trades) AND in-memory pending orders to catch races
+    // where two fills arrive before the second DB insert has committed.
     if (marketId) {
+      const hasPendingForMarket = [...this._pendingOrders.values()].some(
+        o => o.signal?.marketId === marketId
+      );
+      if (hasPendingForMarket) {
+        this._log('INFO', `[SKIP] Pending order already exists for market ${marketId?.slice(0,12)} — skipping`);
+        return;
+      }
       const existing = await pool.query(
         "SELECT id FROM trades WHERE user_id=$1 AND status='open' AND market_id=$2",
         [this.userId, marketId]
@@ -842,14 +851,28 @@ class BotInstance {
           trade._cachedLivePrice = livePrice;
         }
 
-        // Fallback: use the price cache from the signal engine (updated every tick for all markets).
-        // This is the primary price source when the signal is for a different market.
+        // Fallback 1: signal engine price cache — updated every tick for all active markets.
         if (!livePrice && this.signalEngine?._priceCache?.has(trade.market_id)) {
           const cached = this.signalEngine._priceCache.get(trade.market_id);
           if (cached?.smoothedPrice != null) {
             const cachedYes = cached.smoothedPrice;
             livePrice    = trade.direction === 'NO' ? (1 - cachedYes) : cachedYes;
             rawLivePrice = livePrice;
+            trade._cachedLivePrice = livePrice;
+          }
+        }
+
+        // Fallback 2: Gamma API direct fetch — for markets that left the active discovery
+        // cache (e.g. expired market with still-open trade, or market not in current window).
+        if (!livePrice && trade.market_id) {
+          const gp = await this.polymarket.getLivePriceFromGamma(trade.market_id, trade.token_id).catch(() => null);
+          if (gp != null) {
+            // getLivePriceFromGamma returns YES token price matched to tokenId
+            // For YES trades: token is YES → price is gp. For NO trades: price = gp (already NO token).
+            // But we want yesPrice for EV, so reconstruct:
+            // trade.token_id may be YES or NO token — getLivePriceFromGamma matches by tokenId
+            livePrice    = gp; // already direction-matched to token_id
+            rawLivePrice = gp;
             trade._cachedLivePrice = livePrice;
           }
         }
