@@ -398,7 +398,6 @@ class GBMSignalEngine {
         const nowSec = Date.now() / 1000;
         const elapsed = nowSec - marketStartSec;
         const remaining = marketEndSec - nowSec;
-        const windowDuration = marketEndSec - marketStartSec;
 
         // TIME GATE: trade ONLY in the opening window OR the closing window.
         // Opening window: elapsed ≤ earlyWindowSec — fresh mispricing, widest spread.
@@ -408,13 +407,6 @@ class GBMSignalEngine {
         // For 5-min markets (300s): lateWindowSec=600 always covers the full window → always pass.
         // For 15-min+ markets: skip the middle unless in the first earlyWindowSec.
         // Configurable via settings.early_window_sec / late_window_sec (defaults: 100 / 600).
-        // Hard filter: only trade 5-min markets (240–320s duration). Longer markets
-        // (15-min, hourly) have different dynamics and dilute edge.
-        if (windowDuration > 320 || windowDuration < 240) {
-          log.reason = `Non-5min market: duration=${Math.round(windowDuration)}s — skip`;
-          continue;
-        }
-
         // Skip pre-open markets (market hasn't started yet — elapsed < 0)
         if (elapsed < 0) {
           log.reason = `Pre-open: market starts in ${Math.round(-elapsed)}s — skip`;
@@ -427,31 +419,15 @@ class GBMSignalEngine {
           continue;
         }
 
-        // Hard minimum remaining: skip if too close to close for a fill to matter.
-        // For 5-min markets (300s): default 60s floor — last 60s is garbage liquidity.
-        // For longer markets: use settings.min_remaining_sec (default 400s).
-        // The floor is capped at windowDuration * 0.25 so it never blocks all of a short market.
-        const minRemainingRaw = parseInt(this.settings?.min_remaining_sec) || 400;
-        const minRemainingSec = Math.min(minRemainingRaw, windowDuration * 0.25);
-        if (remaining < minRemainingSec) {
-          log.reason = `Too close to close: ${Math.round(remaining)}s remaining < ${Math.round(minRemainingSec)}s min — skip`;
+        // TIME GATE: only trade in the last 300s (5 min) of any market.
+        // 5-min markets → always in window. 15-min+ → only last 5 min.
+        const TRADE_WINDOW_SEC = 300;
+        if (remaining > TRADE_WINDOW_SEC) {
+          log.gates.timeGate = { remaining: Math.round(remaining), window: TRADE_WINDOW_SEC, passed: false };
+          log.reason = `Outside trade window: ${Math.round(remaining)}s remaining > ${TRADE_WINDOW_SEC}s — wait for last 5 min`;
           continue;
         }
-
-        const earlyWindowSec = parseInt(this.settings?.early_window_sec ?? this.settings?.early_skip_sec) || 100;
-        const lateWindowSec  = parseInt(this.settings?.late_window_sec  ?? this.settings?.late_skip_sec)  || 600;
-        const inEarlyWindow  = elapsed  <= earlyWindowSec;
-        const inLateWindow   = remaining <= lateWindowSec;
-        const inTradingWindow = inEarlyWindow || inLateWindow;
-
-        console.log(`[TimeGate] market=${marketId?.slice(0,8)} elapsed=${Math.round(elapsed)}s remaining=${Math.round(remaining)}s duration=${Math.round(windowDuration)}s early=${inEarlyWindow} late=${inLateWindow} pass=${inTradingWindow}`);
-
-        if (!inTradingWindow) {
-          log.gates.timeGate = { elapsed: Math.round(elapsed), remaining: Math.round(remaining), earlyWindowSec, lateWindowSec, passed: false };
-          log.reason = `Mid-window: elapsed=${Math.round(elapsed)}s > ${earlyWindowSec}s, remaining=${Math.round(remaining)}s > ${lateWindowSec}s — no structural edge`;
-          continue;
-        }
-        log.gates.timeGate = { elapsed: Math.round(elapsed), remaining: Math.round(remaining), earlyWindowSec, lateWindowSec, passed: true, zone: inEarlyWindow ? 'OPEN' : 'CLOSE' };
+        log.gates.timeGate = { remaining: Math.round(remaining), window: TRADE_WINDOW_SEC, passed: true };
 
         // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 books have no resting liquidity at fair
         // value. However, execution uses GTC limit orders at Gamma price — so a boundary
