@@ -328,8 +328,9 @@ class GBMSignalEngine {
         // Exception: if Gamma price is already meaningfully off 0.5 (|yesPrice - 0.5| > 0.01),
         // the market has priced a directional move we may still have edge on.
         const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.01;
-        if (Math.abs(btcDelta) < 0.02 && !gammaPriceSignificant) {
-          log.gates.btcFlat = { btcDelta, yesPrice, passed: false };
+        const minBtcDelta = parseFloat(this.settings?.min_btc_delta) || 0.005;
+        if (Math.abs(btcDelta) < minBtcDelta && !gammaPriceSignificant) {
+          log.gates.btcFlat = { btcDelta, minBtcDelta, yesPrice, passed: false };
           continue;
         }
 
@@ -387,7 +388,7 @@ class GBMSignalEngine {
           fees: 0.002
         };
 
-        // Window timing — compute before depth/EV checks so we can skip late windows
+        // Window timing — compute before depth/EV checks so we can skip mid-window
         const marketEndSec = market.end_date_iso
           ? new Date(market.end_date_iso).getTime() / 1000
           : (market.resolution_time || market.end_time || 0);
@@ -397,20 +398,30 @@ class GBMSignalEngine {
         const nowSec = Date.now() / 1000;
         const elapsed = nowSec - marketStartSec;
         const remaining = marketEndSec - nowSec;
+        const windowDuration = marketEndSec - marketStartSec;
 
-        // EARLY WINDOW SKIP: first 100s — price discovery still chaotic, no edge yet
-        const earlySkipSec = parseInt(this.settings?.early_skip_sec) || 100;
-        if (elapsed < earlySkipSec) {
-          log.reason = `Window too new: ${Math.round(elapsed)}s elapsed < ${earlySkipSec}s min — skipping`;
+        // TIME GATE: trade ONLY in the opening window OR the closing window.
+        // Opening window: elapsed ≤ earlyWindowSec — fresh mispricing, widest spread.
+        // Closing window: remaining ≤ lateWindowSec — resolution momentum, price locked in.
+        // Middle period: skip — market is efficiently priced, no structural edge.
+        //
+        // For 5-min markets (300s): lateWindowSec=600 always covers the full window → always pass.
+        // For 15-min+ markets: skip the middle unless in the first earlyWindowSec.
+        // Configurable via settings.early_window_sec / late_window_sec (defaults: 100 / 600).
+        const earlyWindowSec = parseInt(this.settings?.early_window_sec ?? this.settings?.early_skip_sec) || 100;
+        const lateWindowSec  = parseInt(this.settings?.late_window_sec  ?? this.settings?.late_skip_sec)  || 600;
+        const inEarlyWindow  = elapsed  <= earlyWindowSec;
+        const inLateWindow   = remaining <= lateWindowSec;
+        const inTradingWindow = inEarlyWindow || inLateWindow;
+
+        console.log(`[TimeGate] market=${marketId?.slice(0,8)} elapsed=${Math.round(elapsed)}s remaining=${Math.round(remaining)}s duration=${Math.round(windowDuration)}s early=${inEarlyWindow} late=${inLateWindow} pass=${inTradingWindow}`);
+
+        if (!inTradingWindow) {
+          log.gates.timeGate = { elapsed: Math.round(elapsed), remaining: Math.round(remaining), earlyWindowSec, lateWindowSec, passed: false };
+          log.reason = `Mid-window: elapsed=${Math.round(elapsed)}s > ${earlyWindowSec}s, remaining=${Math.round(remaining)}s > ${lateWindowSec}s — no structural edge`;
           continue;
         }
-
-        // LATE WINDOW SKIP: last 600s — market approaching resolution, price locked in
-        const lateSkipSec = parseInt(this.settings?.late_skip_sec) || 600;
-        if (remaining < lateSkipSec) {
-          log.reason = `Window expiring in ${Math.round(remaining)}s < ${lateSkipSec}s — skipping`;
-          continue;
-        }
+        log.gates.timeGate = { elapsed: Math.round(elapsed), remaining: Math.round(remaining), earlyWindowSec, lateWindowSec, passed: true, zone: inEarlyWindow ? 'OPEN' : 'CLOSE' };
 
         // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 books have no resting liquidity at fair
         // value. However, execution uses GTC limit orders at Gamma price — so a boundary
@@ -455,10 +466,12 @@ class GBMSignalEngine {
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
         const evReal = evAnalysis.bestEV;
 
-        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 1.5;
+        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 0.5;
 
-        // Early window (< 60s in): largest mispricings, lower threshold
-        if (elapsed < 60) evFloor *= 0.7;
+        // Opening window: freshest mispricings, ease floor
+        if (inEarlyWindow) evFloor *= 0.7;
+        // Closing window: resolution momentum locked in, ease floor
+        if (inLateWindow && !inEarlyWindow) evFloor *= 0.8;
 
         // Scenario 9: Cross-Market Lag — strongest edge, ease floor significantly
         if (scenario.type === 'LAG_EDGE') evFloor *= 0.65;
@@ -518,9 +531,12 @@ class GBMSignalEngine {
         //   2. evVelocity drop exceeds absolute floor of 1.0% — prevents blocking a
         //      22%→21.9% move (noise) while still catching 10%→5%→2% collapse.
         const evVelocity = this.evEngine.getEVVelocity(marketId);
-        const EV_VELOCITY_FLOOR = -1.0; // must drop >1% per tick to count as falling
+        // Only block if EV is collapsing rapidly (>3% drop per tick) — prevents blocking
+        // oscillating signals. evDecayRatio from settings further controls sensitivity.
+        const evDecayRatio = parseFloat(this.settings?.ev_decay_ratio) || 2.0;
+        const EV_VELOCITY_FLOOR = -1.0 * evDecayRatio;
         if (this.evEngine.isEVDecaying(marketId) && evVelocity < EV_VELOCITY_FLOOR) {
-          log.gates.evTrend = { status: 'DECAYING', velocity: evVelocity, passed: false };
+          log.gates.evTrend = { status: 'DECAYING', velocity: evVelocity.toFixed(2), floor: EV_VELOCITY_FLOOR, passed: false };
           continue;
         }
 
@@ -539,7 +555,7 @@ class GBMSignalEngine {
         if (this.settings.gate3_enabled !== false) {
           // btcDelta > 0 = BTC rising (bullish), < 0 = falling (bearish)
           const isBullish = btcDelta > 0;
-          const minDelta = parseFloat(this.settings.gate3_min_delta) || 0.05;
+          const minDelta = parseFloat(this.settings.gate3_min_delta) || 0.01;
 
           log.gates.gate3 = {
             btcDelta,

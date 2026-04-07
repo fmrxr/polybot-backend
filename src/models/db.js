@@ -220,9 +220,12 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS paper_balance_initialized BOOLEAN DEFAULT false,
         ADD COLUMN IF NOT EXISTS kelly_mode VARCHAR(10) DEFAULT 'manual',
         ADD COLUMN IF NOT EXISTS flip_threshold DECIMAL(5,2) DEFAULT 5.00,
-        ADD COLUMN IF NOT EXISTS ev_decay_ratio DECIMAL(5,2) DEFAULT 0.50,
+        ADD COLUMN IF NOT EXISTS ev_decay_ratio DECIMAL(5,2) DEFAULT 2.00,
         ADD COLUMN IF NOT EXISTS early_skip_sec INTEGER DEFAULT 100,
-        ADD COLUMN IF NOT EXISTS late_skip_sec INTEGER DEFAULT 600;
+        ADD COLUMN IF NOT EXISTS late_skip_sec INTEGER DEFAULT 600,
+        ADD COLUMN IF NOT EXISTS early_window_sec INTEGER DEFAULT 100,
+        ADD COLUMN IF NOT EXISTS late_window_sec INTEGER DEFAULT 600,
+        ADD COLUMN IF NOT EXISTS min_btc_delta DECIMAL(8,5) DEFAULT 0.00500;
 
       ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),

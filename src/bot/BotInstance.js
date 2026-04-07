@@ -944,14 +944,21 @@ class BotInstance {
 
       // Binary market PnL: we spent tradeSize dollars to buy (tradeSize/entryPrice) shares.
       // At exit each share is worth exitPrice (1.0=win, 0.0=loss, or intermediate for EV exits).
-      // PnL = proceeds - cost = (shares * exitPrice) - tradeSize
+      // Gross PnL = proceeds - cost = (shares * exitPrice) - tradeSize
+      // Polymarket fee: 2% on gross winnings only (not applied to losses).
+      const POLYMARKET_FEE_RATE = 0.02;
       const shares = tradeSize / entryPrice;
-      const pnl = shares * effectiveExit - tradeSize;
+      const grossPnl = shares * effectiveExit - tradeSize;
+      const fee = Math.max(0, grossPnl) * POLYMARKET_FEE_RATE;
+      const pnl = grossPnl - fee;
 
       if (!isFinite(pnl) || isNaN(pnl)) {
         this._log('ERROR', `Invalid PnL=${pnl} (entry=${entryPrice}, exit=${effectiveExit}, size=${tradeSize}) — skipping close`);
         return;
       }
+
+      // PnL reconciliation log — always emit so every close is auditable
+      this._log('INFO', `📊 PnL reconcile #${trade.id}: entry=${entryPrice.toFixed(4)} exit=${effectiveExit.toFixed(4)} shares=${shares.toFixed(2)} gross=$${grossPnl.toFixed(4)} fee=$${fee.toFixed(4)} net=$${pnl.toFixed(4)} reason=${reason}`);
 
       const result = pnl >= 0 ? 'WIN' : 'LOSS';
       await pool.query(`
@@ -964,7 +971,7 @@ class BotInstance {
         await pool.query('UPDATE bot_settings SET paper_balance = $1 WHERE user_id = $2', [this.paperBalance, this.userId]);
       }
 
-      this._log('INFO', `✅ Closed #${trade.id} ${trade.direction} [${reason}] entry=${entryPrice.toFixed(3)} exit=${effectiveExit.toFixed(3)} size=$${tradeSize.toFixed(2)} PnL=$${pnl.toFixed(2)} (${((pnl/tradeSize)*100).toFixed(1)}%)`);
+      this._log('INFO', `✅ Closed #${trade.id} ${trade.direction} [${reason}] entry=${entryPrice.toFixed(3)} exit=${effectiveExit.toFixed(3)} size=$${tradeSize.toFixed(2)} gross=$${grossPnl.toFixed(2)} fee=$${fee.toFixed(2)} net=$${pnl.toFixed(2)} (${((pnl/tradeSize)*100).toFixed(1)}%)`);
     } catch (err) {
       this._log('ERROR', `Close position failed: ${err.message}`);
     }
