@@ -165,35 +165,19 @@ class GBMSignalEngine {
           }
         }
 
-        // never Fall back to Gamma API outcomePrices if both CLOB books have no real spread.
-        // Gamma returns outcomePrices as JSON string: '["0.487","0.513"]'
-        // outcomePrices[0] = YES/Up price, outcomePrices[1] = NO/Down price
-        // This is the real market-implied probability, not CLOB boundary orders.
+        // Both CLOB books are boundary-only — no real liquidity.
+        // Log Gamma price for diagnostics only, but DO NOT trade on it.
+        // Gamma outcomePrices reflect last on-chain settled price, not live order flow.
+        // Trading on Gamma prices in a dead CLOB = synthetic execution against no real liquidity.
         if (rawYesPrice == null) {
           let op = market.outcomePrices;
           if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
-          console.log(`[Gamma] outcomePrices=${JSON.stringify(op)}`);
-          const gammaYes = op ? parseFloat(op[0]) : NaN;
-          const gammaNo  = op ? parseFloat(op[1]) : NaN;
-          // Reject only prices that are exactly at the CLOB boundary mid (≈0.5 artifact).
-          // Valid Gamma prices range 0.01–0.99 and include near-resolved markets (0.95+, 0.05-).
-          // Reject near-resolved markets (≥0.88 or ≤0.12) — Kelly/EV math degrades, no real edge left.
-          // 0.93 was too lenient — markets at 0.925 still generated TRADE signals with pending orders.
-          // Also reject exact 0.5 artifacts from boundary CLOB mid.
-          const isValidGammaPrice = (p) => !isNaN(p) && p > 0.12 && p < 0.88 && Math.abs(p - 0.5) > 0.001;
-          if (isValidGammaPrice(gammaYes)) {
-            rawYesPrice = gammaYes;
-            priceSource = 'gamma';
-            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma outcomePrices: yesPrice=${rawYesPrice.toFixed(3)}`);
-          } else if (isValidGammaPrice(gammaNo)) {
-            rawYesPrice = 1 - gammaNo;
-            priceSource = 'gamma';
-            console.log(`[GBMSignalEngine] Both CLOB books boundary-only — Gamma NO price: noPrice=${gammaNo.toFixed(3)} yesPrice=${rawYesPrice.toFixed(3)}`);
-          }
+          console.log(`[Gamma] outcomePrices=${JSON.stringify(op)} — CLOB boundary-only, skipping market`);
+          continue; // Hard skip — no real CLOB liquidity, refuse to trade
         }
 
         if (rawYesPrice == null || !orderBook) {
-          console.log(`[GBMSignalEngine] SKIP — no real price from any source (CLOB both boundary, Gamma also 0.5)`);
+          console.log(`[GBMSignalEngine] SKIP — no real price from any source`);
           continue;
         }
 
@@ -220,12 +204,9 @@ class GBMSignalEngine {
         const alpha = this._adaptiveAlpha(roughRemaining);
         console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} alpha=${alpha} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
 
-        // When priceSource='gamma', both CLOB books were boundary-only (spread≥90%).
-        // orderBook.spread is null in that case, making the || chain collapse to 0
-        // and bypassing the boundary-book guard below. Force spread=1 so the guard
-        // fires and we don't produce TRADE verdicts with no real CLOB liquidity.
+        // Real CLOB spread — we only reach here when a real book exists (no gamma fallback).
         const rawSpread = orderBook.spread ?? (yesBook?.spread) ?? null;
-        const spread = priceSource === 'gamma' ? 1.0 : (rawSpread ?? 0);
+        const spread = rawSpread ?? 0;
 
         // ==========================================
         // PRE-FILTER A: Signal Freshness
