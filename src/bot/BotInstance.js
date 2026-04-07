@@ -195,10 +195,10 @@ class BotInstance {
       const overexposed = await this._checkDirectionalExposure(signal.direction);
       if (overexposed) return;
 
-      // EV_FLIP disabled: DB analysis shows flips are net losers (-$4.45 avg, burn fees,
-      // 16/25 at zero P&L on boundary books). Binary markets resolve in ≤5 min — hold is better.
-      // const flipped = await this._checkForFlip(signal);
-      // if (flipped) return;
+      // EV_FLIP: only allowed when existing position is losing (pnlPct < 0).
+      // Profitable positions hold to resolution — flipping a winner burns fees needlessly.
+      const flipped = await this._checkForFlip(signal);
+      if (flipped) return;
 
       // --- Open new position ---
       await this._executeTrade(signal);
@@ -241,6 +241,21 @@ class BotInstance {
           this._flipSuppressLogAt[suppressKey] = Date.now();
         }
         return false;
+      }
+
+      // Only flip when the existing position is currently losing.
+      // A winning position should hold to resolution — flipping burns fees unnecessarily.
+      const cachedForFlip = this.signalEngine?._priceCache?.get(existingTrade.market_id);
+      if (cachedForFlip?.smoothedPrice != null) {
+        const cachedYes = cachedForFlip.smoothedPrice;
+        const currentTokenPrice = existingTrade.direction === 'NO' ? 1 - cachedYes : cachedYes;
+        const entryP = parseFloat(existingTrade.entry_price);
+        const pnlPct = entryP > 0 ? (currentTokenPrice - entryP) / entryP * 100 : 0;
+        if (pnlPct >= 0) {
+          this._log('INFO', `⏳ Flip skipped — position is profitable (PnL=${pnlPct.toFixed(1)}%), holding to resolution`);
+          return false;
+        }
+        this._log('INFO', `🔻 Position losing (PnL=${pnlPct.toFixed(1)}%) — evaluating flip`);
       }
 
       // EV-driven flip evaluation with hysteresis (prevents whipsaw)
@@ -446,11 +461,7 @@ class BotInstance {
       return;
     }
 
-    // Hard cap: $10 per trade on real CLOB markets.
-    // DB showed $50 trades hitting HARD_STOP_LOSS at -$21 and -$30 losses.
-    // Until resolution-only strategy is validated, cap at $10 to preserve balance.
-    const settingsMax = Math.max(1, parseFloat(this.settings.max_trade_size) || 5.00);
-    const maxTradeDollars = Math.min(settingsMax, 10.00);
+    const maxTradeDollars = Math.max(1, parseFloat(this.settings.max_trade_size) || 5.00);
     const balance = this.settings.paper_trading ? this.paperBalance : await this._getLiveBalance();
     if (!balance || isNaN(balance) || balance <= 0) {
       this._log('WARN', `Invalid balance=${balance} — skipping`);
