@@ -2,7 +2,7 @@
 
 ## What This Is
 Live algorithmic trading bot for Polymarket BTC 5-minute binary markets.
-Node.js + Express backend, PostgreSQL (Railway), single-page HTML frontend.
+Node.js + Express backend, PostgreSQL (Render), single-page HTML frontend.
 EV-driven prediction market strategy — NOT scalping or latency arbitrage.
 
 ## Architecture
@@ -70,9 +70,8 @@ await clobClient.createAndPostOrder(
 - Token `outcome` field is often `undefined` in Gamma responses — IDs come from `clobTokenIds`, not `tokens[].outcome`
 
 ## Deployment
-- Backend: Railway (auto-deploys on push to `main` branch of `github.com/fmrxr/polybot-backend`)
-- Database: Railway PostgreSQL (connection via `DATABASE_URL` env var)
-- Public DB URL: `gondola.proxy.rlwy.net:42802` (internal: `postgres.railway.internal:5432`)
+- Backend: Render (auto-deploys on push to `main` branch of `github.com/fmrxr/polybot-backend`)
+- Database: Render PostgreSQL (connection via `DATABASE_URL` env var)
 - No test suite — manual testing via dashboard
 
 ## Data Reset (when needed)
