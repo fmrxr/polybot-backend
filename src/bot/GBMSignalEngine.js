@@ -167,17 +167,23 @@ class GBMSignalEngine {
 
         // Both CLOB books are boundary-only — no real liquidity.
         // Log Gamma price for diagnostics only, but DO NOT trade on it.
-        // Gamma outcomePrices reflect last on-chain settled price, not live order flow.
-        // Trading on Gamma prices in a dead CLOB = synthetic execution against no real liquidity.
         if (rawYesPrice == null) {
           let op = market.outcomePrices;
           if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
           console.log(`[Gamma] outcomePrices=${JSON.stringify(op)} — CLOB boundary-only, skipping market`);
-          continue; // Hard skip — no real CLOB liquidity, refuse to trade
+          continue; // Hard skip — no real CLOB liquidity
         }
 
         if (rawYesPrice == null || !orderBook) {
           console.log(`[GBMSignalEngine] SKIP — no real price from any source`);
+          continue;
+        }
+
+        // Reject near-resolved CLOB prices: token already settling to 0 or 1.
+        // Kelly/EV math degrades badly above 0.88 — no tradeable edge remains.
+        // Also filters markets that are resolving imminently but CLOB still active.
+        if (rawYesPrice >= 0.88 || rawYesPrice <= 0.12) {
+          console.log(`[GBMSignalEngine] SKIP — near-resolved CLOB price: yesPrice=${rawYesPrice.toFixed(3)} (outside 0.12–0.88 tradeable range)`);
           continue;
         }
 
