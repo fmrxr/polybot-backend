@@ -478,27 +478,32 @@ class BotInstance {
       return;
     }
 
-    // Limit price: 1 tick below the current token mid price.
-    // signal.orderBook is always the YES token book. For NO trades we must fetch
-    // the NO token book — using the YES book for a NO order gives the wrong price
-    // (~0.48 YES price instead of the actual NO token price).
-    //
-    // lastTradePrice is already direction-adjusted (NO: 1-yesPrice, YES: yesPrice).
-    // We use it as fallback when the live book fetch fails or returns a boundary book.
-    let tokenMid = lastTradePrice;
+    // Limit price: must be based on a real CLOB order book (spread < 0.90).
+    // signal.orderBook is always the YES token book. For NO trades we fetch the NO book.
+    // Never use Gamma or lastTradePrice as the execution price — boundary books
+    // (bestBid≈0.01 / bestAsk≈0.99) have no real liquidity at fair value.
+    let tokenBook = null;
     if (direction === 'NO' && signal.noTokenId) {
       try {
         const noOb = await this.polymarket.getOrderBook(signal.noTokenId);
         const noSpread = noOb?.bestAsk != null && noOb?.bestBid != null ? noOb.bestAsk - noOb.bestBid : 1;
-        if (noOb?.midPrice != null && noSpread < 0.90) tokenMid = noOb.midPrice;
+        if (noOb?.midPrice != null && noSpread < 0.90) tokenBook = noOb;
       } catch (_) {}
     } else if (direction === 'YES' && ob?.midPrice != null) {
       const yesSpread = ob?.bestAsk != null && ob?.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
-      if (yesSpread < 0.90) tokenMid = ob.midPrice;
+      if (yesSpread < 0.90) tokenBook = ob;
     }
 
-    // Place 1 tick below mid — passive resting order, never crosses the spread.
-    const limitPrice = parseFloat(Math.max(0.01, tokenMid - TICK).toFixed(2));
+    if (!tokenBook) {
+      this._log('WARN', `[SKIP] no_liquidity_boundary_book for ${direction} — no real CLOB book available (spread>=0.90)`);
+      return;
+    }
+
+    // Entry price = bestAsk (real executable price for a buyer).
+    // Limit is placed at bestAsk — this is the price a seller is willing to accept right now.
+    // Never cross the spread by submitting above bestAsk.
+    const bestAsk = tokenBook.bestAsk;
+    const limitPrice = parseFloat(Math.max(0.01, bestAsk).toFixed(2));
 
     this._log('INFO', `📊 ${direction} "${market.question?.slice(0,40)}" — ref=${lastTradePrice.toFixed(4)} limit=${limitPrice.toFixed(2)} size=$${tradeSize.toFixed(2)} kelly=${(kellyFraction*100).toFixed(1)}% EV=${evAdj.toFixed(2)}%`);
 
@@ -608,45 +613,12 @@ class BotInstance {
     const spread = ob.bestAsk != null && ob.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
     const isBoundaryBook = spread >= 0.90;
 
-    // Boundary-only books: CLOB bestAsk=0.99 is a ghost resting order, not a real offer.
-    // Polymarket Gamma outcomePrices IS the real market consensus — it's the last-traded
-    // price published by Polymarket and used by all participants as fair value.
-    //
-    // Fill logic: GTC limit on a boundary book fills at the Gamma consensus price after
-    // 2 ticks of price stability (confirms signal hasn't reversed immediately).
-    // Entry price = current Gamma token price (real data, not synthetic).
-    //
-    // Adverse: cancel if Gamma moved > ADVERSE_TICKS against reference price at placement.
+    // Boundary-only books must never fill — bestAsk=0.99 is a ghost order, not a real price.
+    // Orders should not reach here since _executeTrade blocks boundary books, but cancel
+    // defensively if one somehow slips through.
     if (isBoundaryBook) {
-      const cachedGamma = this.signalEngine?._priceCache?.get(pending.signal?.marketId);
-      const gammaPrice = cachedGamma?.smoothedPrice ?? null;
-      if (gammaPrice == null) {
-        this._log('INFO', `📊 [PAPER] Boundary book — no Gamma price for ${pending.signal?.marketId?.slice(0,12)}, waiting`);
-        return;
-      }
-      // Token price we're buying (YES token price, or NO token price = 1 - yesPrice)
-      const tokenGammaPrice = pending.direction === 'NO' ? (1 - gammaPrice) : gammaPrice;
-
-      // Adverse: if the token we're buying has moved > ADVERSE_TICKS above our reference
-      // (i.e. we'd now be paying much more than expected), cancel.
-      const refPrice = pending.referencePrice;
-      if (tokenGammaPrice > refPrice + ADVERSE_TICKS * TICK) {
-        this._log('WARN', `🚫 [PAPER] Boundary adverse: ref=${refPrice.toFixed(2)} gammaToken=${tokenGammaPrice.toFixed(3)} (+${((tokenGammaPrice - refPrice)/TICK).toFixed(0)} ticks above ref) — cancelling`);
-        this._pendingOrders.delete(orderId);
-        return;
-      }
-
-      // Confirm fill: require 2 consecutive ticks before recording entry.
-      // Entry price = current Gamma consensus (real Polymarket data).
-      pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
-      this._log('INFO', `📊 [PAPER] Boundary fill check: ref=${refPrice.toFixed(2)} gammaToken=${tokenGammaPrice.toFixed(3)} confirmTicks=${pending.fillConfirmTicks}/2`);
-
-      if (pending.fillConfirmTicks >= 2) {
-        const fillPrice = parseFloat(tokenGammaPrice.toFixed(3));
-        this._log('INFO', `✅ [PAPER] Boundary fill @ ${fillPrice} (Gamma consensus, real Polymarket price) — ${pending.direction} market ${pending.signal?.marketId?.slice(0,12)}`);
-        await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
-        this._pendingOrders.delete(orderId);
-      }
+      this._log('WARN', `🚫 [PAPER] Cancel stale order ${orderId.slice(0,12)} — book became boundary-only (spread=${(spread*100).toFixed(0)}%) no_liquidity_boundary_book`);
+      this._pendingOrders.delete(orderId);
       return;
     }
 

@@ -420,46 +420,28 @@ class GBMSignalEngine {
         }
         log.gates.timeGate = { remaining: Math.round(remaining), window: TRADE_WINDOW_SEC, passed: true };
 
-        // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 books have no resting liquidity at fair
-        // value. However, execution uses GTC limit orders at Gamma price — so a boundary
-        // CLOB book does NOT mean we can't trade. It means we place a passive limit and
-        // wait for a counter-party.
-        //
-        // Allow trading on boundary books ONLY when Gamma shows meaningful displacement
-        // Block only if Gamma is exactly 0.500 (gammaDisp < 0.001) — any displacement = tradeable signal.
-        // For real books (spread < 90%), normal fill probability logic applies below.
+        // BOUNDARY BOOK GUARD: bid=0.01/ask=0.99 means no real liquidity at fair value.
+        // Entry price must be near bestAsk — on a boundary book, bestAsk=0.99 is a ghost
+        // resting order, NOT a fillable price. Never trade when spread >= 0.90.
+        // Gamma may be used for signal generation only, never for execution or PnL.
         const isBoundaryBook = spread >= 0.90;
         if (isBoundaryBook) {
-          const gammaDisp = Math.abs(yesPrice - 0.5);
-          // Only block if Gamma is exactly 0.500 — any displacement at all is a tradeable signal.
-          // All these BTC 5-min markets have boundary CLOB books; Gamma IS the price source.
-          if (gammaDisp < 0.001) {
-            log.gates.boundaryBook = { spread, gammaDisp, passed: false };
-            log.reason = `Boundary book + zero Gamma displacement (yesPrice=${yesPrice.toFixed(3)}) — no edge`;
-            continue;
-          }
-          // Gamma shows real displacement — allow GTC limit execution
-          log.gates.boundaryBook = { spread, gammaDisp, passed: true, note: 'GTC-limit-ok' };
+          log.gates.boundaryBook = { spread, passed: false };
+          log.reason = `no_liquidity_boundary_book (spread=${(spread*100).toFixed(0)}%) — bestAsk=0.99 is a ghost order, not a real price`;
+          continue;
         }
+        log.gates.boundaryBook = { spread, passed: true };
 
         // DEPTH FLOOR: avoid thin real books (< 100 USDC total depth)
         const totalDepth = orderBook.totalDepth || 0;
-        if (!isBoundaryBook && totalDepth < 100) {
+        if (totalDepth < 100) {
           log.reason = `Thin book: depth=${totalDepth.toFixed(0)} USDC < 100 min`;
           continue;
         }
 
-        // Fill probability: spread-adjusted depth score.
-        // Boundary books use GTC limit execution — assign baseline fillProb of 0.40
-        // (moderate confidence: passive limit will fill if any counter-party enters).
-        // Real books use spread-adjusted depth score.
-        let fillProb;
-        if (isBoundaryBook) {
-          fillProb = 0.40; // GTC passive limit on boundary book
-        } else {
-          const spreadPenalty = Math.max(0, 1 - spread * 5); // 10% spread → 0.5, 20% → 0
-          fillProb = Math.min(1.0, (totalDepth / 500) * spreadPenalty);
-        }
+        // Fill probability: spread-adjusted depth score for real CLOB books only.
+        const spreadPenalty = Math.max(0, 1 - spread * 5); // 10% spread → 0.5, 20% → 0
+        const fillProb = Math.min(1.0, (totalDepth / 500) * spreadPenalty);
 
         // Evaluate BOTH sides — check EV directly against floor (no fillProb penalty)
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
