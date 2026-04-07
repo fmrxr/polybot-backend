@@ -312,7 +312,9 @@ class GBMSignalEngine {
         // RANGE_CHOP only. NEWS_SPIKE remains blocked (chaotic fills, no structure).
         // Threshold configurable via settings.range_chop_gamma_override (default 0.04 = 4%).
         // 5% was too strict — markets at 0.545 (4.5% disp) were blocked despite real edge.
-        const chopOverrideThreshold = parseFloat(this.settings?.range_chop_gamma_override) || 0.04;
+        // Default 0.005 (0.5%): any Gamma price ≠ 0.500 carries real edge even in flat BTC.
+        // 0.04 was too strict — boundary books always show yesPrice ≈ 0.505 and got blocked constantly.
+        const chopOverrideThreshold = parseFloat(this.settings?.range_chop_gamma_override) || 0.005;
         const gammaDisplacementPct = Math.abs(yesPrice - 0.5);
         const gammaOverridesChop = scenario.type === 'RANGE_CHOP' && gammaDisplacementPct >= chopOverrideThreshold;
         if (scenario.noTrade && !gammaOverridesChop) {
