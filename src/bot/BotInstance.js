@@ -501,12 +501,12 @@ class BotInstance {
       }
     }
 
-    // Fall back to lastTradePrice for boundary-book markets (BTC 5-min standard structure)
-    if (limitPrice == null && signal.priceSource === 'lastTrade') {
-      // GTC limit 1 tick above lastTradePrice — rests on the book at fair value,
-      // gets filled by the next counter-party submitting at or below this price.
+    // Fall back to Gamma price for boundary-book markets (BTC 5-min standard structure).
+    // Gamma outcomePrices IS the market consensus. GTC limit 1 tick above Gamma YES price
+    // rests on the book at fair value and gets filled by counter-parties.
+    if (limitPrice == null && signal.priceSource === 'gamma') {
       limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, lastTradePrice + TICK)).toFixed(2));
-      this._log('INFO', `[lastTrade] Using lastTradePrice execution: limit=${limitPrice.toFixed(2)} (lastTrade=${lastTradePrice.toFixed(3)})`);
+      this._log('INFO', `[gamma] Gamma-sourced execution: limit=${limitPrice.toFixed(2)} (gamma=${lastTradePrice.toFixed(3)})`);
     }
 
     if (limitPrice == null) {
@@ -622,39 +622,39 @@ class BotInstance {
     const spread = ob.bestAsk != null && ob.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
     const isBoundaryBook = spread >= 0.90;
 
-    // For lastTradePrice-sourced orders: boundary book structure is expected on BTC 5-min markets.
-    // Fill simulation uses lastTradePrice (actual execution price), not bestAsk=0.99 (ghost order).
+    // For Gamma-sourced orders: boundary book structure is expected on BTC 5-min markets.
+    // Fill simulation uses live Gamma outcomePrices as the current market price.
     if (isBoundaryBook) {
-      if (pending.signal?.priceSource === 'lastTrade') {
-        // Fetch current lastTradePrice — this is the real market price
-        const ltp = await this.polymarket.getLastTradePrice(pending.tokenId);
-        if (ltp == null) {
-          this._log('INFO', `📊 [PAPER] lastTrade fill check: no price yet, waiting`);
+      if (pending.signal?.priceSource === 'gamma') {
+        const marketId = pending.signal?.marketId;
+        const gp = await this.polymarket.getLivePriceFromGamma(marketId, pending.tokenId);
+        if (gp == null) {
+          this._log('INFO', `📊 [PAPER] Gamma fill check: no price yet, waiting`);
           return;
         }
-        // Adverse: lastTradePrice moved significantly above our limit (direction flipped against us)
-        if (ltp > pending.limitPrice + ADVERSE_TICKS * TICK) {
-          this._log('WARN', `🚫 [PAPER] lastTrade adverse: limit=${pending.limitPrice.toFixed(2)} ltp=${ltp.toFixed(3)} — cancelling`);
+        const gammaToken = pending.direction === 'NO' ? 1 - gp : gp;
+        // Adverse: Gamma moved significantly above our limit
+        if (gammaToken > pending.limitPrice + ADVERSE_TICKS * TICK) {
+          this._log('WARN', `🚫 [PAPER] Gamma adverse: limit=${pending.limitPrice.toFixed(2)} gamma=${gammaToken.toFixed(3)} — cancelling`);
           this._pendingOrders.delete(orderId);
           return;
         }
-        // Fill when lastTradePrice <= our limit (a seller traded at or below our buy limit)
-        const atPrice = ltp <= pending.limitPrice;
+        const atPrice = gammaToken <= pending.limitPrice;
         if (atPrice) {
           pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
         } else {
           pending.fillConfirmTicks = 0;
         }
-        this._log('INFO', `📊 [PAPER] lastTrade fill check: limit=${pending.limitPrice.toFixed(2)} ltp=${ltp.toFixed(3)} confirmTicks=${pending.fillConfirmTicks}/2`);
+        this._log('INFO', `📊 [PAPER] Gamma fill check: limit=${pending.limitPrice.toFixed(2)} gamma=${gammaToken.toFixed(3)} confirmTicks=${pending.fillConfirmTicks}/2`);
         if (pending.fillConfirmTicks >= 2) {
           const fillPrice = parseFloat(pending.limitPrice.toFixed(2));
-          this._log('INFO', `✅ [PAPER] Filled (lastTrade 2-tick confirm): ${pending.direction} @ ${fillPrice.toFixed(4)} (ltp=${ltp.toFixed(3)})`);
+          this._log('INFO', `✅ [PAPER] Filled (Gamma 2-tick confirm): ${pending.direction} @ ${fillPrice.toFixed(4)} (gamma=${gammaToken.toFixed(3)})`);
           await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
           this._pendingOrders.delete(orderId);
         }
         return;
       }
-      // Non-lastTrade order on a boundary book — cancel (should not happen after _executeTrade fix)
+      // Non-gamma order on a boundary book — cancel
       this._log('WARN', `🚫 [PAPER] Cancel stale order ${orderId.slice(0,12)} — book became boundary-only (spread=${(spread*100).toFixed(0)}%)`);
       this._pendingOrders.delete(orderId);
       return;
