@@ -64,6 +64,16 @@ class BotManager {
     return this.instances.size + this.copyInstances.size;
   }
 
+  getAllLogs(limit = 200) {
+    const logs = [];
+    for (const [userId, bot] of this.instances) {
+      const entries = bot.decisionLog || [];
+      for (const e of entries) logs.push({ ...e, userId });
+    }
+    logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return logs.slice(0, limit);
+  }
+
   isRunning(userId) {
     const bot = this.instances.get(userId);
     return bot ? bot.isRunning : false;

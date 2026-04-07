@@ -1785,6 +1785,28 @@
     <div class="panel-title" style="margin-bottom:12px;">Admin Action Log</div>
     <div id="adminLogsBody" style="font-size:12px;"></div>
   </div>
+
+  <!-- Live Bot Logs -->
+  <div class="panel">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+      <span class="panel-title" style="margin:0;">Live Bot Logs</span>
+      <span id="botLogsLiveIndicator" style="font-size:10px;color:var(--green);">● LIVE</span>
+      <select id="botLogsLevelFilter" onchange="loadBotLogs()" style="font-size:11px;font-family:var(--font);background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:3px 6px;">
+        <option value="">All levels</option>
+        <option value="INFO">INFO</option>
+        <option value="WARN">WARN</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;">
+        <input type="checkbox" id="botLogsAutoRefresh" checked onchange="toggleBotLogsAutoRefresh()">
+        Auto-refresh
+      </label>
+      <button class="secondary" onclick="loadBotLogs()" style="font-size:11px;padding:4px 10px;margin-left:auto;">↻ Refresh</button>
+    </div>
+    <div id="botLogsContainer" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:480px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.6;">
+      <span style="color:var(--text-muted);">Loading logs…</span>
+    </div>
+  </div>
 </div>
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
 
@@ -1936,7 +1958,15 @@
     if (pageId === 'lab') { loadLab(); loadSettingsFromAPI(); }
     if (pageId === 'settings') loadSettingsFromAPI();
     if (pageId === 'dashboard') loadDashboard();
-    if (pageId === 'admin') loadAdmin();
+    if (pageId === 'admin') {
+      loadAdmin();
+      // Start auto-refresh for bot logs when admin panel is opened
+      if (!_botLogsInterval) _botLogsInterval = setInterval(loadBotLogs, 3000);
+    } else {
+      // Stop auto-refresh when navigating away
+      clearInterval(_botLogsInterval);
+      _botLogsInterval = null;
+    }
   }
 
   function switchTradesTab(tabId, clickedEl) {
@@ -3966,9 +3996,59 @@
 
       // Load trades page 1
       loadAdminTrades(1);
+
+      // Load bot logs
+      loadBotLogs();
     } catch (err) {
       console.error('Admin load error:', err);
     }
+  }
+
+  let _botLogsInterval = null;
+
+  function toggleBotLogsAutoRefresh() {
+    const enabled = document.getElementById('botLogsAutoRefresh')?.checked;
+    if (enabled) {
+      if (!_botLogsInterval) _botLogsInterval = setInterval(loadBotLogs, 3000);
+    } else {
+      clearInterval(_botLogsInterval);
+      _botLogsInterval = null;
+    }
+  }
+
+  async function loadBotLogs() {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    const level = document.getElementById('botLogsLevelFilter')?.value || '';
+    const url = (window.API_BASE||'') + '/api/admin/bot-logs?limit=200' + (level ? `&level=${level}` : '');
+    try {
+      const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) return;
+      const { logs } = await res.json();
+      renderBotLogs(logs || []);
+    } catch (e) { /* network error, ignore */ }
+  }
+
+  function renderBotLogs(logs) {
+    const container = document.getElementById('botLogsContainer');
+    if (!container) return;
+    if (!logs.length) {
+      container.innerHTML = '<span style="color:var(--text-muted);">No logs — bot may not be running.</span>';
+      return;
+    }
+    const levelColor = { INFO: 'var(--text)', WARN: 'var(--amber)', ERROR: 'var(--red)' };
+    const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 20;
+    container.innerHTML = logs.map(e => {
+      const t = new Date(e.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+      const col = levelColor[e.level] || 'var(--text-muted)';
+      const userTag = e.userId ? `<span style="color:var(--text-muted);">[u${e.userId}]</span> ` : '';
+      const levelTag = `<span style="color:${col};min-width:36px;display:inline-block;">${e.level}</span>`;
+      const msg = e.message.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<div style="padding:1px 0;border-bottom:1px solid var(--border-dim,#2a2a2a);">`
+           + `<span style="color:var(--text-muted);margin-right:8px;">${t}</span>`
+           + `${userTag}${levelTag} ${msg}</div>`;
+    }).join('');
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
   }
 
   function renderAdminUsers(users) {
