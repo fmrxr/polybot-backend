@@ -440,9 +440,9 @@ class GBMSignalEngine {
         const isBoundaryBook = spread >= 0.90;
         if (isBoundaryBook) {
           const gammaDisp = Math.abs(yesPrice - 0.5);
-          if (gammaDisp < 0.02) {
+          if (gammaDisp < 0.01) {
             log.gates.boundaryBook = { spread, gammaDisp, passed: false };
-            log.reason = `Boundary book + flat Gamma (|${yesPrice.toFixed(3)}-0.5|=${gammaDisp.toFixed(3)} < 0.02) — no edge`;
+            log.reason = `Boundary book + flat Gamma (|${yesPrice.toFixed(3)}-0.5|=${gammaDisp.toFixed(3)} < 0.01) — no edge`;
             continue;
           }
           // Gamma shows real displacement — allow GTC limit execution
@@ -473,11 +473,6 @@ class GBMSignalEngine {
         const evReal = evAnalysis.bestEV;
 
         let evFloor = parseFloat(this.settings.gate2_ev_floor) || 0.5;
-
-        // Opening window: freshest mispricings, ease floor
-        if (inEarlyWindow) evFloor *= 0.7;
-        // Closing window: resolution momentum locked in, ease floor
-        if (inLateWindow && !inEarlyWindow) evFloor *= 0.8;
 
         // Scenario 9: Cross-Market Lag — strongest edge, ease floor significantly
         if (scenario.type === 'LAG_EDGE') evFloor *= 0.65;

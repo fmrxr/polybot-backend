@@ -685,8 +685,8 @@ class BotInstance {
       // Still LIVE (resting) — check for adverse selection using CLOB mid (no Gamma)
       const liveBook = await this.polymarket.getOrderBook(pending.tokenId);
       const currentPrice = liveBook?.midPrice ?? null;
-      if (currentPrice && currentPrice < pending.limitPrice - ADVERSE_TICKS * TICK) {
-        this._log('WARN', `🚫 [LIVE] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} — cancelling order ${orderId.slice(0,12)}`);
+      if (currentPrice && currentPrice > pending.limitPrice + ADVERSE_TICKS * TICK) {
+        this._log('WARN', `🚫 [LIVE] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} (+${((currentPrice - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling order ${orderId.slice(0,12)}`);
         try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
         this._pendingOrders.delete(orderId);
       }
