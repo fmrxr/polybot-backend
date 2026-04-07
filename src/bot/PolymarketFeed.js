@@ -159,16 +159,22 @@ class PolymarketFeed {
       if (res.ok) {
         const markets = await res.json();
         if (Array.isArray(markets) && markets.length > 0) {
-          // Only 5-min BTC up/down markets — must match slug pattern or question.
-          // "on April 6, 5PM ET?" markets have btc in other fields but are not 5-min markets.
+          // Accept: true 5-min BTC markets (btc-updown-5m-* slug) OR any BTC up/down
+          // market ending within the next 5 min (last 5 min of a 15-min window).
+          // Reject: 15-min markets with > 5 min remaining — wrong timeframe for our strategy.
           const btc = markets.filter(m => {
             const q = (m.question || '').toLowerCase();
             const slug = (m.slug || '').toLowerCase();
             const isBtcUpDown = (q.includes('bitcoin') || q.includes('btc')) && q.includes('up or down');
-            const isBtcSlug = slug.startsWith('btc-updown-5m-');
-            return isBtcUpDown || isBtcSlug;
+            if (!isBtcUpDown) return false;
+            const is5minSlug = slug.startsWith('btc-updown-5m-');
+            if (is5minSlug) return true;
+            // Non-5min-slug market: only accept in the last 5 min before expiry
+            const endMs = _endMs(m);
+            const secsRemaining = endMs ? (endMs - nowUTC) / 1000 : 9999;
+            return secsRemaining <= 300;
           });
-          console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) in next 30 min`);
+          console.log(`[PolymarketFeed] S1 found ${btc.length} BTC market(s) in next 30 min (5-min or last-5-min-of-longer)`);
           for (const m of btc) {
             const norm = _normalise(m);
             if (norm) {
