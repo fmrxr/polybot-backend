@@ -427,11 +427,14 @@ class GBMSignalEngine {
           continue;
         }
 
-        // Hard minimum: never enter a trade with less than 400s remaining — not enough
-        // time for a fill + meaningful price movement before resolution.
-        const minRemainingSec = parseInt(this.settings?.min_remaining_sec) || 400;
+        // Hard minimum remaining: skip if too close to close for a fill to matter.
+        // For 5-min markets (300s): default 60s floor — last 60s is garbage liquidity.
+        // For longer markets: use settings.min_remaining_sec (default 400s).
+        // The floor is capped at windowDuration * 0.25 so it never blocks all of a short market.
+        const minRemainingRaw = parseInt(this.settings?.min_remaining_sec) || 400;
+        const minRemainingSec = Math.min(minRemainingRaw, windowDuration * 0.25);
         if (remaining < minRemainingSec) {
-          log.reason = `Too close to close: ${Math.round(remaining)}s remaining < ${minRemainingSec}s min — skip`;
+          log.reason = `Too close to close: ${Math.round(remaining)}s remaining < ${Math.round(minRemainingSec)}s min — skip`;
           continue;
         }
 
