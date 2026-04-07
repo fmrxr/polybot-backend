@@ -478,10 +478,11 @@ class BotInstance {
       return;
     }
 
-    // Limit price: must come from a real CLOB order book with spread < 0.90.
-    // Boundary books (bid=0.01/ask=0.99, spread=98%) have no real liquidity —
-    // bestAsk=0.99 is a ghost resting order, not a fillable price.
-    // Gamma prices are signal-only and are NEVER used for execution.
+    // Limit price determination:
+    // Priority 1: real CLOB book (spread < 0.90) → use bestAsk (directly fillable)
+    // Priority 2: Gamma outcomePrices (boundary-book markets, priceSource='gamma') →
+    //             limit = gammaPrice + 1 tick. GTC orders at this price are how real
+    //             fills happen on BTC 5-min markets. Paper simulates via Gamma polling.
     let limitPrice = null;
 
     if (direction === 'NO' && signal.noTokenId) {
@@ -499,20 +500,28 @@ class BotInstance {
       }
     }
 
+    // Gamma fallback for boundary-book markets
+    if (limitPrice == null && signal.priceSource === 'gamma') {
+      limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, lastTradePrice + TICK)).toFixed(2));
+      this._log('INFO', `[gamma] Limit order at Gamma+1tick: ${limitPrice.toFixed(2)} (gamma=${lastTradePrice.toFixed(3)})`);
+    }
+
     if (limitPrice == null) {
-      this._log('WARN', `[SKIP] no_real_liquidity for ${direction} — boundary book or no CLOB data (spread >= 90%)`);
+      this._log('WARN', `[SKIP] no_real_liquidity for ${direction} — no CLOB book and no Gamma price`);
       return;
     }
 
     this._log('INFO', `📊 ${direction} "${market.question?.slice(0,40)}" — ref=${lastTradePrice.toFixed(4)} limit=${limitPrice.toFixed(2)} size=$${tradeSize.toFixed(2)} kelly=${(kellyFraction*100).toFixed(1)}% EV=${evAdj.toFixed(2)}%`);
 
     // ── 7. Place order and add to pending map ─────────────────────────────────
+    const placedAt = Date.now();
     const pendingBase = {
       tokenId, side: 'BUY', limitPrice,
       referencePrice: lastTradePrice, // price when order was created — used for adverse-selection check
       dollarSize: tradeSize,
       direction, market, signal,
-      placedAt: Date.now(),
+      placedAt,
+      orderPlacedAt: new Date(placedAt).toISOString(),
       lastCheckedPrice: lastTradePrice
     };
 
@@ -598,32 +607,73 @@ class BotInstance {
   // Using signal.yesPrice (from the current tick's evaluate() call) ensures the
   // fill simulation reflects the same price that every other component sees.
   async _checkPaperFill(orderId, pending, TICK, ADVERSE_TICKS) {
-    // Fetch the live CLOB order book for the token we want to buy.
-    // This is the ONLY valid price source — pending.signal.yesPrice is stale
-    // (captured at order creation, never updated) and must not be used here.
+    const isGamma = pending.signal?.priceSource === 'gamma';
+
+    if (isGamma) {
+      // ── Gamma-sourced order: BTC 5-min boundary-book market ──────────────────
+      // Fill simulation: poll Gamma outcomePrices as the live market price.
+      // A resting GTC limit at gammaPrice+1tick fills when a counterparty crosses it.
+      // Simulate: fill if Gamma price stays within ±2 ticks of our limit for ≥2 ticks.
+      // Cancel: if price moves > ADVERSE_TICKS away OR market expires.
+      const marketId = pending.signal?.marketId;
+      const gp = await this.polymarket.getLivePriceFromGamma(marketId, pending.tokenId);
+      if (gp == null) return; // no price yet — wait
+
+      const gammaToken = pending.direction === 'NO' ? 1 - gp : gp;
+      const ticksFromLimit = (gammaToken - pending.limitPrice) / TICK;
+
+      // Adverse: price moved strongly against our limit
+      if (ticksFromLimit > ADVERSE_TICKS) {
+        const ageSec = ((Date.now() - pending.placedAt) / 1000).toFixed(1);
+        this._log('WARN', `🚫 [PAPER/SIM] Missed trade — adverse move: limit=${pending.limitPrice.toFixed(2)} gamma=${gammaToken.toFixed(3)} (+${ticksFromLimit.toFixed(1)} ticks) age=${ageSec}s`);
+        this._pendingOrders.delete(orderId);
+        return;
+      }
+
+      // Fill condition: price at or below our limit
+      const atPrice = gammaToken <= pending.limitPrice;
+      if (atPrice) {
+        pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
+      } else {
+        pending.fillConfirmTicks = 0;
+      }
+
+      this._log('INFO', `📊 [PAPER/SIM] Fill check: limit=${pending.limitPrice.toFixed(2)} gamma=${gammaToken.toFixed(3)} ticks=${ticksFromLimit.toFixed(1)} confirmTicks=${pending.fillConfirmTicks}/2`);
+
+      if (pending.fillConfirmTicks >= 2) {
+        const fillPrice = parseFloat(pending.limitPrice.toFixed(2));
+        const timeToFillSec = parseFloat(((Date.now() - pending.placedAt) / 1000).toFixed(2));
+        const slippageTicks = parseFloat(((fillPrice - pending.referencePrice) / TICK).toFixed(2));
+        this._log('INFO', `✅ [PAPER/SIM] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} gamma=${gammaToken.toFixed(3)} ttf=${timeToFillSec}s slip=${slippageTicks > 0 ? '+' : ''}${slippageTicks} ticks`);
+        await this._recordFilledTrade(pending, fillPrice, pending.dollarSize, {
+          executionType: 'SIMULATED',
+          timeToFillSec,
+          fillSlippageTicks: slippageTicks
+        });
+        this._pendingOrders.delete(orderId);
+      }
+      return;
+    }
+
+    // ── Real CLOB book path ───────────────────────────────────────────────────
     let ob;
     try {
       ob = await this.polymarket.getOrderBook(pending.tokenId);
     } catch (_) {}
 
-    // No book data — skip this tick, try again next cycle.
     if (!ob) return;
 
     const spread = ob.bestAsk != null && ob.bestBid != null ? ob.bestAsk - ob.bestBid : 1;
-    const isBoundaryBook = spread >= 0.90;
-
-    // If the book became boundary-only after order placement, cancel — no real fills possible.
-    if (isBoundaryBook) {
-      this._log('WARN', `🚫 [PAPER] Cancel order ${orderId.slice(0,12)} — book is boundary-only (spread=${(spread*100).toFixed(0)}%), no real liquidity`);
+    if (spread >= 0.90) {
+      // Book became boundary-only — cancel (can't simulate a real fill)
+      this._log('WARN', `🚫 [PAPER] Cancel ${orderId.slice(0,12)} — book became boundary-only (spread=${(spread*100).toFixed(0)}%)`);
       this._pendingOrders.delete(orderId);
       return;
     }
 
-    // Real CLOB book: fill when bestAsk <= limitPrice
     const bestAsk = ob.bestAsk;
     if (bestAsk == null || bestAsk <= 0) return;
 
-    // Adverse selection: ask moved significantly above our limit — cancel.
     if (bestAsk > pending.limitPrice + ADVERSE_TICKS * TICK) {
       this._log('WARN', `🚫 [PAPER] Adverse selection: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} (+${((bestAsk - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling`);
       this._pendingOrders.delete(orderId);
@@ -631,20 +681,24 @@ class BotInstance {
     }
 
     const atPrice = bestAsk <= pending.limitPrice;
-
-    // Require 2 consecutive ticks at-or-below limit before filling.
     if (atPrice) {
       pending.fillConfirmTicks = (pending.fillConfirmTicks || 0) + 1;
     } else {
-      pending.fillConfirmTicks = 0; // reset — price moved back above limit
+      pending.fillConfirmTicks = 0;
     }
 
     this._log('INFO', `📊 [PAPER] Fill check: limit=${pending.limitPrice.toFixed(2)} bestAsk=${bestAsk.toFixed(3)} spread=${(spread*100).toFixed(0)}% confirmTicks=${pending.fillConfirmTicks}/2`);
 
     if (pending.fillConfirmTicks >= 2) {
       const fillPrice = parseFloat(pending.limitPrice.toFixed(2));
-      this._log('INFO', `✅ [PAPER] Filled (2-tick confirm): ${pending.direction} @ ${fillPrice.toFixed(4)} (bestAsk=${bestAsk.toFixed(3)})`);
-      await this._recordFilledTrade(pending, fillPrice, pending.dollarSize);
+      const timeToFillSec = parseFloat(((Date.now() - pending.placedAt) / 1000).toFixed(2));
+      const slippageTicks = parseFloat(((fillPrice - pending.referencePrice) / TICK).toFixed(2));
+      this._log('INFO', `✅ [PAPER] Filled: ${pending.direction} @ ${fillPrice.toFixed(4)} bestAsk=${bestAsk.toFixed(3)} ttf=${timeToFillSec}s slip=${slippageTicks > 0 ? '+' : ''}${slippageTicks} ticks`);
+      await this._recordFilledTrade(pending, fillPrice, pending.dollarSize, {
+        executionType: 'SIMULATED',
+        timeToFillSec,
+        fillSlippageTicks: slippageTicks
+      });
       this._pendingOrders.delete(orderId);
     }
   }
@@ -657,8 +711,9 @@ class BotInstance {
 
       if (status.isFilled) {
         const fillDollars = status.sizeMatched * pending.limitPrice;
-        this._log('INFO', `✅ [LIVE] Order ${orderId.slice(0,12)} MATCHED @ ${pending.limitPrice.toFixed(4)} — $${fillDollars.toFixed(2)}`);
-        await this._recordFilledTrade(pending, pending.limitPrice, fillDollars);
+        const timeToFillSec = parseFloat(((Date.now() - pending.placedAt) / 1000).toFixed(2));
+        this._log('INFO', `✅ [LIVE] Order ${orderId.slice(0,12)} MATCHED @ ${pending.limitPrice.toFixed(4)} — $${fillDollars.toFixed(2)} ttf=${timeToFillSec}s`);
+        await this._recordFilledTrade(pending, pending.limitPrice, fillDollars, { executionType: 'LIVE', timeToFillSec });
         this._pendingOrders.delete(orderId);
         return;
       }
@@ -672,9 +727,10 @@ class BotInstance {
       if (status.isPartial) {
         // Partial fill — accept what we got, cancel the rest
         const fillDollars = status.sizeMatched * pending.limitPrice;
-        this._log('INFO', `📊 [LIVE] Partial fill ${orderId.slice(0,12)}: ${status.sizeMatched.toFixed(2)}/${status.sizeTotal.toFixed(2)} tokens = $${fillDollars.toFixed(2)}`);
+        const timeToFillSec = parseFloat(((Date.now() - pending.placedAt) / 1000).toFixed(2));
+        this._log('INFO', `📊 [LIVE] Partial fill ${orderId.slice(0,12)}: ${status.sizeMatched.toFixed(2)}/${status.sizeTotal.toFixed(2)} tokens = $${fillDollars.toFixed(2)} ttf=${timeToFillSec}s`);
         try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
-        await this._recordFilledTrade(pending, pending.limitPrice, fillDollars);
+        await this._recordFilledTrade(pending, pending.limitPrice, fillDollars, { executionType: 'LIVE', timeToFillSec });
         this._pendingOrders.delete(orderId);
         return;
       }
@@ -693,11 +749,16 @@ class BotInstance {
     }
   }
 
-  // Write confirmed fill to DB and update balance
-  async _recordFilledTrade(pending, fillPrice, fillDollars) {
+  // Write confirmed fill to DB and update balance.
+  // execInfo: { executionType, timeToFillSec, fillSlippageTicks } — optional, paper only
+  async _recordFilledTrade(pending, fillPrice, fillDollars, execInfo = {}) {
     const { direction, market, signal, tokenId } = pending;
     const { confidence, evAdj } = signal;
     const marketId = market?.id || market?.condition_id;
+
+    const executionType = execInfo.executionType || (pending.isPaper ? 'SIMULATED' : 'LIVE');
+    const timeToFillSec = execInfo.timeToFillSec ?? null;
+    const fillSlippageTicks = execInfo.fillSlippageTicks ?? null;
 
     if (pending.isPaper) {
       this.paperBalance -= fillDollars;
@@ -705,21 +766,29 @@ class BotInstance {
     }
 
     await pool.query(`
-      INSERT INTO trades (user_id, session_id, market_id, market_question, token_id, direction, entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score, scenario)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'open', 'signal', $9, $10, $11, $12, $13, $14)
+      INSERT INTO trades (
+        user_id, session_id, market_id, market_question, token_id, direction,
+        entry_price, trade_size, size, status, trade_type,
+        signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score, scenario,
+        execution_type, order_placed_at, time_to_fill_sec, fill_slippage_ticks
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,'open','signal',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
     `, [
       this.userId, this.sessionId || null, marketId, market?.question, tokenId, direction,
       fillPrice, fillDollars, confidence, evAdj,
       signal.log?.gates?.gate1?.confidence || 0,
       signal.log?.gates?.gate2?.bestEV || 0,
       signal.log?.gates?.gate3?.emaEdge || 0,
-      signal.log?.scenario || null
+      signal.log?.scenario || null,
+      executionType,
+      pending.orderPlacedAt || null,
+      timeToFillSec,
+      fillSlippageTicks
     ]);
 
     this._recordSlippage(pending.referencePrice, fillPrice);
 
-    const slipTicks = Math.abs(fillPrice - pending.referencePrice) / 0.01;
-    this._log('INFO', `📝 Trade recorded: ${direction} fill=${fillPrice.toFixed(4)} ref=${pending.referencePrice.toFixed(4)} slip=${slipTicks.toFixed(1)} ticks size=$${fillDollars.toFixed(2)} balance=$${(pending.isPaper ? this.paperBalance : 0).toFixed(2)}`);
+    const slipTicks = fillSlippageTicks ?? (Math.abs(fillPrice - pending.referencePrice) / 0.01);
+    this._log('INFO', `📝 [${executionType}] Trade recorded: ${direction} fill=${fillPrice.toFixed(4)} ref=${pending.referencePrice.toFixed(4)} slip=${slipTicks.toFixed(1)}t ttf=${timeToFillSec != null ? timeToFillSec+'s' : 'n/a'} size=$${fillDollars.toFixed(2)} balance=$${(pending.isPaper ? this.paperBalance : 0).toFixed(2)}`);
   }
 
   // ==========================================
