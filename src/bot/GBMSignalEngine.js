@@ -427,6 +427,14 @@ class GBMSignalEngine {
           continue;
         }
 
+        // Hard minimum: never enter a trade with less than 400s remaining — not enough
+        // time for a fill + meaningful price movement before resolution.
+        const minRemainingSec = parseInt(this.settings?.min_remaining_sec) || 400;
+        if (remaining < minRemainingSec) {
+          log.reason = `Too close to close: ${Math.round(remaining)}s remaining < ${minRemainingSec}s min — skip`;
+          continue;
+        }
+
         const earlyWindowSec = parseInt(this.settings?.early_window_sec ?? this.settings?.early_skip_sec) || 100;
         const lateWindowSec  = parseInt(this.settings?.late_window_sec  ?? this.settings?.late_skip_sec)  || 600;
         const inEarlyWindow  = elapsed  <= earlyWindowSec;

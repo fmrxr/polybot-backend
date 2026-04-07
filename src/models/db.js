@@ -225,6 +225,7 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS late_skip_sec INTEGER DEFAULT 600,
         ADD COLUMN IF NOT EXISTS early_window_sec INTEGER DEFAULT 100,
         ADD COLUMN IF NOT EXISTS late_window_sec INTEGER DEFAULT 600,
+        ADD COLUMN IF NOT EXISTS min_remaining_sec INTEGER DEFAULT 400,
         ADD COLUMN IF NOT EXISTS min_btc_delta DECIMAL(8,5) DEFAULT 0.00500;
 
       ALTER TABLE signals
