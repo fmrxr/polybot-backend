@@ -165,20 +165,32 @@ class GBMSignalEngine {
           }
         }
 
-        // SOURCE 3: Gamma outcomePrices — market consensus for boundary-book markets.
+        // SOURCE 3: Gamma live price — fresh per-tick fetch, NOT cached market.outcomePrices.
+        // market.outcomePrices is stale (fetched up to 30s ago). During active trading,
+        // the real market price can move significantly (e.g. 0.50 → 0.78) between fetches.
+        // getLivePriceFromGamma() does a fresh Gamma /markets/:id call each tick.
         // BTC 5-min markets structurally show boundary CLOB books (bid=0.01/ask=0.99).
         // Execution uses a GTC limit order placed at Gamma price ± 1 tick — this is how
         // real fills happen on these markets (same as the Polymarket UI).
         // Synthetic spread=0.02 so the boundary gate below passes for these markets.
         if (rawYesPrice == null) {
-          let op = market.outcomePrices;
-          if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
-          const gammaYes = op ? parseFloat(op[0]) : null;
+          const gammaYes = await this.polymarket.getLivePriceFromGamma(marketId, yesTokenId);
           if (gammaYes != null && isFinite(gammaYes) && gammaYes > 0.01 && gammaYes < 0.99) {
             rawYesPrice = gammaYes;
             priceSource = 'gamma';
             orderBook = { midPrice: gammaYes, bestAsk: gammaYes + 0.01, bestBid: gammaYes - 0.01, spread: 0.02, totalDepth: yesBook?.totalDepth || 0 };
-            console.log(`[GBMSignalEngine] Gamma source: yesPrice=${gammaYes.toFixed(3)} outcomePrices=${JSON.stringify(op)}`);
+            console.log(`[GBMSignalEngine] Gamma source (live): yesPrice=${gammaYes.toFixed(3)}`);
+          } else {
+            // Fallback: use cached outcomePrices if fresh fetch fails or returns ambiguous 0.5
+            let op = market.outcomePrices;
+            if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
+            const cachedYes = op ? parseFloat(op[0]) : null;
+            if (cachedYes != null && isFinite(cachedYes) && cachedYes > 0.01 && cachedYes < 0.99) {
+              rawYesPrice = cachedYes;
+              priceSource = 'gamma';
+              orderBook = { midPrice: cachedYes, bestAsk: cachedYes + 0.01, bestBid: cachedYes - 0.01, spread: 0.02, totalDepth: yesBook?.totalDepth || 0 };
+              console.log(`[GBMSignalEngine] Gamma source (cached): yesPrice=${cachedYes.toFixed(3)} outcomePrices=${JSON.stringify(op)}`);
+            }
           }
         }
 
