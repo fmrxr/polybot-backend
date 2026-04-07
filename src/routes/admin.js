@@ -146,22 +146,24 @@ router.post('/users/:id/role', async (req, res) => {
   }
 });
 
-// GET /api/admin/trades — All trades across all users (paginated)
+// GET /api/admin/trades — Trades for the requesting user only (paginated)
 router.get('/trades', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
+    const userId = req.userId;
 
     const [trades, count] = await Promise.all([
       pool.query(`
         SELECT t.*, u.email
         FROM trades t
         JOIN users u ON t.user_id = u.id
+        WHERE t.user_id = $3
         ORDER BY t.created_at DESC
         LIMIT $1 OFFSET $2
-      `, [limit, offset]),
-      pool.query('SELECT COUNT(*) as count FROM trades')
+      `, [limit, offset, userId]),
+      pool.query('SELECT COUNT(*) as count FROM trades WHERE user_id = $1', [userId])
     ]);
 
     const total = parseInt(count.rows[0].count);

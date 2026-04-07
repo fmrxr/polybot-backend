@@ -398,9 +398,17 @@ class GBMSignalEngine {
         const elapsed = nowSec - marketStartSec;
         const remaining = marketEndSec - nowSec;
 
-        // LATE WINDOW SKIP: last 60s = garbage liquidity + price already baked in
-        if (remaining < 60) {
-          log.reason = `Window expiring in ${Math.round(remaining)}s — skipping`;
+        // EARLY WINDOW SKIP: first 100s — price discovery still chaotic, no edge yet
+        const earlySkipSec = parseInt(this.settings?.early_skip_sec) || 100;
+        if (elapsed < earlySkipSec) {
+          log.reason = `Window too new: ${Math.round(elapsed)}s elapsed < ${earlySkipSec}s min — skipping`;
+          continue;
+        }
+
+        // LATE WINDOW SKIP: last 600s — market approaching resolution, price locked in
+        const lateSkipSec = parseInt(this.settings?.late_skip_sec) || 600;
+        if (remaining < lateSkipSec) {
+          log.reason = `Window expiring in ${Math.round(remaining)}s < ${lateSkipSec}s — skipping`;
           continue;
         }
 

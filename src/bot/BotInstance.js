@@ -1023,13 +1023,34 @@ class BotInstance {
 
   async _startSession() {
     try {
-      // 1. Close any lingering open trades from a previous session
+      // 1. Close any lingering open trades from a previous session.
+      // Try to resolve each one at its actual market resolution price before falling back
+      // to entry_price (which produces fake $0.00 P&L and distorts stats).
       const lingering = await pool.query(
-        "UPDATE trades SET status='closed', close_reason='SESSION_RESET', exit_price=entry_price, pnl=0, result='LOSS', closed_at=NOW() WHERE user_id=$1 AND status='open' RETURNING id",
+        "SELECT id, market_id, token_id, entry_price, trade_size, direction FROM trades WHERE user_id=$1 AND status='open'",
         [this.userId]
       );
       if (lingering.rowCount > 0) {
-        this._log('INFO', `🔄 Session reset: closed ${lingering.rowCount} lingering trade(s) from previous session`);
+        this._log('INFO', `🔄 Session reset: resolving ${lingering.rowCount} lingering trade(s) from previous session`);
+        for (const t of lingering.rows) {
+          let resolvedPrice = null;
+          try {
+            resolvedPrice = await this._getResolutionPrice(t.market_id, t.token_id);
+          } catch (_) {}
+          const exitPrice = resolvedPrice ?? parseFloat(t.entry_price);
+          const tradeSize = parseFloat(t.trade_size);
+          const entryPrice = parseFloat(t.entry_price);
+          const pnl = isFinite(exitPrice) && isFinite(entryPrice) && entryPrice > 0
+            ? (tradeSize / entryPrice) * exitPrice - tradeSize
+            : 0;
+          const result = pnl > 0 ? 'WIN' : 'LOSS';
+          const reason = resolvedPrice != null ? 'SESSION_RESET_RESOLVED' : 'SESSION_RESET_UNKNOWN';
+          await pool.query(
+            `UPDATE trades SET status='closed', close_reason=$1, exit_price=$2, pnl=$3, result=$4, closed_at=NOW() WHERE id=$5`,
+            [reason, exitPrice, pnl, result, t.id]
+          );
+          this._log('INFO', `  └─ #${t.id} ${t.direction} entry=${entryPrice.toFixed(3)} exit=${exitPrice.toFixed(3)} pnl=$${pnl.toFixed(2)} [${reason}]`);
+        }
       }
 
       // 2. Clear in-memory state
