@@ -26,8 +26,8 @@ EV-driven prediction market strategy — NOT scalping or latency arbitrage.
 - Entry price = **real order book ASK** at execution time — never Gamma mid or signal.entryPrice
 - Spread filter: skip any trade where `spread > 15%` (boundary-only books = bid=0.01/ask=0.99)
 - Paper trading simulates real cost: `entry = ask + 25% of spread` as slippage
-- Hard trade size cap: **$5 max per trade** regardless of Kelly or balance
-- Kelly cap: **25%** (but $5 hard cap means it only matters at very low balances)
+- Trade size cap: **`max_trade_size` from `bot_settings` (user-configurable)** — no hardcoded cap
+- Kelly cap: **`kelly_cap` from `bot_settings` (user-configurable, default 10%)**
 - Token size for CLOB limit orders: `tokenSize = dollarAmount / price` (not dollar amount directly)
 
 ## Polymarket CLOB SDK v5.8.1 — Breaking Changes
@@ -53,7 +53,7 @@ await clobClient.createAndPostOrder(
 - $6.33M phantom P&L → old corrupted test trades, filtered by `WHERE ABS(pnl) < 100000`
 - Win rate 0% → TP/SL exits wrote `result='CLOSED'`, stats only counted `result='WIN'`
 - `createAndPlaceOrder is not a function` → SDK v5 renamed to `createAndPostOrder`; also walletAddress was passed as 5th constructor arg (now signatureType) breaking auth entirely
-- Phantom $90k P&L on $1000 balance → entry used Gamma mid (~0.505), resolved at 0.99 = fake win; Kelly then sized next trade at full inflated balance → fix: real ASK + $5 hard cap
+- Phantom $90k P&L on $1000 balance → entry used Gamma mid (~0.505), resolved at 0.99 = fake win; Kelly then sized next trade at full inflated balance → fix: real ASK price + user-configured `max_trade_size` cap
 - Paper balance reset not sticking → `UPDATE bot_settings` updates DB but running bot keeps in-memory value; `reset-paper-balance` route now also sets `bot.paperBalance` directly
 
 ## Paper vs Live Mode

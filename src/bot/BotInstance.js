@@ -16,6 +16,7 @@ class BotInstance {
     this.userLabel = settings.email ? settings.email.split('@')[0] : `user${userId}`;
     this.isRunning = false;
     this.loopInterval = null;
+    this._loopRunning = false; // re-entrance guard: prevents overlapping tick executions
 
     // Data feeds
     this.binance = new BinanceFeed();
@@ -158,6 +159,11 @@ class BotInstance {
 
   async _mainLoop() {
     if (!this.isRunning) return;
+    // Re-entrance guard: if previous tick is still executing (e.g. slow API calls),
+    // skip this tick rather than running two evaluate() pipelines in parallel.
+    // This prevents duplicate signals, double-fills, and split-brain pricing.
+    if (this._loopRunning) return;
+    this._loopRunning = true;
 
     try {
       // --- Risk checks ---
@@ -205,6 +211,8 @@ class BotInstance {
 
     } catch (err) {
       this._log('ERROR', `Main loop error: ${err.message}`);
+    } finally {
+      this._loopRunning = false;
     }
   }
 
@@ -1214,31 +1222,38 @@ class BotInstance {
       // Try to resolve each one at its actual market resolution price before falling back
       // to entry_price (which produces fake $0.00 P&L and distorts stats).
       const lingering = await pool.query(
-        "SELECT id, market_id, token_id, entry_price, trade_size, direction FROM trades WHERE user_id=$1 AND status='open'",
+        "SELECT id, market_id, token_id, entry_price, trade_size, direction, created_at FROM trades WHERE user_id=$1 AND status='open'",
         [this.userId]
       );
       if (lingering.rowCount > 0) {
-        this._log('INFO', `🔄 Session reset: resolving ${lingering.rowCount} lingering trade(s) from previous session`);
+        this._log('INFO', `🔄 Session reset: checking ${lingering.rowCount} lingering trade(s) from previous session`);
         for (const t of lingering.rows) {
+          // First try to resolve at the actual market outcome
           let resolvedPrice = null;
           try {
             resolvedPrice = await this._getResolutionPrice(t.market_id, t.token_id);
           } catch (_) {}
-          const exitPrice = resolvedPrice ?? parseFloat(t.entry_price);
-          const tradeSize = parseFloat(t.trade_size);
-          const entryPrice = parseFloat(t.entry_price);
-          const pnl = isFinite(exitPrice) && isFinite(entryPrice) && entryPrice > 0
-            ? (tradeSize / entryPrice) * exitPrice - tradeSize
-            : 0;
-          // SESSION_RESET_UNKNOWN = market still live at restart, exit=entry, pnl=0 → not a real loss
-          // Don't assign WIN/LOSS — null keeps it out of win rate stats
-          const result = resolvedPrice != null ? (pnl > 0 ? 'WIN' : 'LOSS') : null;
-          const reason = resolvedPrice != null ? 'SESSION_RESET_RESOLVED' : 'SESSION_RESET_UNKNOWN';
-          await pool.query(
-            `UPDATE trades SET status='closed', close_reason=$1, exit_price=$2, pnl=$3, result=$4, closed_at=NOW() WHERE id=$5`,
-            [reason, exitPrice, pnl, result, t.id]
-          );
-          this._log('INFO', `  └─ #${t.id} ${t.direction} entry=${entryPrice.toFixed(3)} exit=${exitPrice.toFixed(3)} pnl=$${pnl.toFixed(2)} [${reason}]`);
+
+          if (resolvedPrice != null) {
+            // Market has resolved — close with real P&L
+            const exitPrice = resolvedPrice;
+            const tradeSize = parseFloat(t.trade_size);
+            const entryPrice = parseFloat(t.entry_price);
+            const pnl = isFinite(exitPrice) && isFinite(entryPrice) && entryPrice > 0
+              ? (tradeSize / entryPrice) * exitPrice - tradeSize
+              : 0;
+            const result = pnl > 0 ? 'WIN' : 'LOSS';
+            await pool.query(
+              `UPDATE trades SET status='closed', close_reason=$1, exit_price=$2, pnl=$3, result=$4, closed_at=NOW() WHERE id=$5`,
+              ['SESSION_RESET_RESOLVED', exitPrice, pnl, result, t.id]
+            );
+            this._log('INFO', `  └─ #${t.id} ${t.direction} entry=${entryPrice.toFixed(3)} exit=${exitPrice.toFixed(3)} pnl=$${pnl.toFixed(2)} [SESSION_RESET_RESOLVED]`);
+          } else {
+            // Market still live — re-adopt this trade into the new session (don't close it)
+            // Update session_id so it belongs to this session, leave status='open'
+            this._log('INFO', `  └─ #${t.id} ${t.direction} market still live — re-adopting into new session`);
+            // (session_id update happens after session is created — handled below)
+          }
         }
       }
 
@@ -1258,6 +1273,12 @@ class BotInstance {
       );
       this.sessionId = result.rows[0].id;
       this._log('INFO', `🟢 Session #${this.sessionId} started — ${isPaper ? 'PAPER' : 'LIVE'} — balance: $${initialBalance.toFixed(2)}`);
+
+      // Re-adopt still-live trades into this session (don't re-close them)
+      await pool.query(
+        `UPDATE trades SET session_id=$1 WHERE user_id=$2 AND status='open' AND session_id IS DISTINCT FROM $1`,
+        [this.sessionId, this.userId]
+      );
     } catch (err) {
       this._log('WARN', `Session start failed: ${err.message} — trades will have null session_id`);
       this.sessionId = null;
