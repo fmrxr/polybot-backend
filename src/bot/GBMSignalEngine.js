@@ -437,14 +437,16 @@ class GBMSignalEngine {
         // wait for a counter-party.
         //
         // Allow trading on boundary books ONLY when Gamma shows meaningful displacement
-        // (≥ 2% from 0.5 = |yesPrice - 0.5| > 0.02). At exactly 0.5 there's no edge.
+        // Block only if Gamma is exactly 0.500 (gammaDisp < 0.001) — any displacement = tradeable signal.
         // For real books (spread < 90%), normal fill probability logic applies below.
         const isBoundaryBook = spread >= 0.90;
         if (isBoundaryBook) {
           const gammaDisp = Math.abs(yesPrice - 0.5);
-          if (gammaDisp < 0.01) {
+          // Only block if Gamma is exactly 0.500 — any displacement at all is a tradeable signal.
+          // All these BTC 5-min markets have boundary CLOB books; Gamma IS the price source.
+          if (gammaDisp < 0.001) {
             log.gates.boundaryBook = { spread, gammaDisp, passed: false };
-            log.reason = `Boundary book + flat Gamma (|${yesPrice.toFixed(3)}-0.5|=${gammaDisp.toFixed(3)} < 0.01) — no edge`;
+            log.reason = `Boundary book + zero Gamma displacement (yesPrice=${yesPrice.toFixed(3)}) — no edge`;
             continue;
           }
           // Gamma shows real displacement — allow GTC limit execution

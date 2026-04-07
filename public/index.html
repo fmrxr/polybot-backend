@@ -2635,7 +2635,7 @@
     const search = (document.getElementById('tradeSearch')?.value || '').toLowerCase();
     const filter = window._tradeFilter || 'all';
 
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const todayStart = new Date(); todayStart.setUTCHours(0,0,0,0);
     let filtered = trades.filter(t => {
       const q = t.market_question || '';
       if (search && !q.toLowerCase().includes(search)) return false;
