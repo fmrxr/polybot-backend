@@ -758,7 +758,10 @@ class BotInstance {
         // For NO trades:  token price = noPrice (= 1 - yesPrice)
         let livePrice = null;
         let rawLivePrice = null;
-        if (signal?.yesPrice != null) {
+        // Only use signal prices if this signal is for THIS trade's market.
+        // Signal is evaluated per-market; using a different market's price gives wrong PnL.
+        const signalIsForThisMarket = signal?.marketId != null && signal.marketId === trade.market_id;
+        if (signalIsForThisMarket && signal.yesPrice != null) {
           livePrice    = trade.direction === 'NO' ? signal.noPrice          : signal.yesPrice;
           rawLivePrice = trade.direction === 'NO' ? 1 - (signal.rawPrice ?? signal.yesPrice)
                                                   : (signal.rawPrice ?? signal.yesPrice);
@@ -773,8 +776,8 @@ class BotInstance {
           trade._cachedLivePrice = livePrice;
         }
 
-        // Fallback: if signal skipped this market, use the price cache from the signal engine.
-        // This keeps position management live even when gate filters block the signal.
+        // Fallback: use the price cache from the signal engine (updated every tick for all markets).
+        // This is the primary price source when the signal is for a different market.
         if (!livePrice && this.signalEngine?._priceCache?.has(trade.market_id)) {
           const cached = this.signalEngine._priceCache.get(trade.market_id);
           if (cached?.smoothedPrice != null) {
