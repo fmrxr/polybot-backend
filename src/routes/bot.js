@@ -205,9 +205,12 @@ router.get('/gate-stats', authMiddleware, async (req, res) => {
         ROUND(
           (100 - COUNT(*) FILTER (WHERE verdict='SKIP')::numeric /
           NULLIF(COUNT(*), 0) * 100), 1)                               AS avg_total_cost,
+        COUNT(*) FILTER (WHERE gate_failed = 0.1)                      AS skip_btc_flat,
         COUNT(*) FILTER (WHERE gate_failed = 0.2)                      AS skip_lag,
         COUNT(*) FILTER (WHERE gate_failed = 0.3)                      AS skip_chase,
         COUNT(*) FILTER (WHERE gate_failed = 0.4)                      AS skip_ev_trend,
+        COUNT(*) FILTER (WHERE gate_failed = 0.6)                      AS skip_scenario,
+        COUNT(*) FILTER (WHERE gate_failed = 0.7)                      AS skip_boundary,
         COUNT(*) FILTER (WHERE gate_failed = 1)                        AS skip_gate1,
         COUNT(*) FILTER (WHERE gate_failed = 1.5)                      AS skip_gate1_5,
         COUNT(*) FILTER (WHERE gate_failed = 2 OR gate_failed = 2.5)   AS skip_gate2,

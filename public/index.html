@@ -2285,19 +2285,23 @@
   function renderSkipBreakdown(s) {
     const el = document.getElementById('skipBreakdownBars');
     if (!el) return;
-    const total = (s.skip_lag||0)+(s.skip_chase||0)+(s.skip_ev_trend||0)+
+    const total = (s.skip_btc_flat||0)+(s.skip_lag||0)+(s.skip_chase||0)+(s.skip_ev_trend||0)+
+                  (s.skip_scenario||0)+(s.skip_boundary||0)+
                   (s.skip_gate1||0)+(s.skip_gate1_5||0)+(s.skip_gate2||0)+(s.skip_gate3||0);
     if (total === 0) {
       el.innerHTML = '<div style="color:var(--text-muted);text-align:center;font-size:12px;padding:8px 0;">No skip data in last 24h</div>';
       return;
     }
     const bars = [
-      { label:'A: Stale lag', count:s.skip_lag||0,    color:'var(--purple)' },
-      { label:'B: Chase',     count:s.skip_chase||0,  color:'var(--yellow)' },
-      { label:'C: EV decay',  count:s.skip_ev_trend||0, color:'#fb923c' },
+      { label:'BTC Flat',     count:s.skip_btc_flat||0,  color:'var(--text-muted)' },
+      { label:'A: Stale lag', count:s.skip_lag||0,       color:'var(--purple)' },
+      { label:'B: Chase',     count:s.skip_chase||0,     color:'var(--yellow)' },
+      { label:'C: EV decay',  count:s.skip_ev_trend||0,  color:'#fb923c' },
+      { label:'Scenario',     count:s.skip_scenario||0,  color:'var(--amber)' },
+      { label:'Boundary',     count:s.skip_boundary||0,  color:'#94a3b8' },
       { label:'G1 Micro',     count:(s.skip_gate1||0)+(s.skip_gate1_5||0), color:'var(--cyan)' },
-      { label:'G2 EV',        count:s.skip_gate2||0,  color:'var(--green)' },
-      { label:'G3 BTC Mom',   count:s.skip_gate3||0,  color:'var(--red)' },
+      { label:'G2 EV',        count:s.skip_gate2||0,     color:'var(--green)' },
+      { label:'G3 BTC Mom',   count:s.skip_gate3||0,     color:'var(--red)' },
     ];
     let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
     bars.forEach(b => {
