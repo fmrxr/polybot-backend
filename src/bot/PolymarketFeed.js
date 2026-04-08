@@ -48,15 +48,44 @@ class PolymarketFeed {
         // SDK v5 requires an ethers.js Wallet signer — raw private key string is rejected
         // with "unsupported signer type". Wrap the key in an ethers v6 Wallet first.
         const signer = await getEthersSigner(this.privateKey);
+
+        // Step 1: Create a temporary L1-only client to derive API key credentials.
+        // createAndPostOrder requires L2 (HMAC) auth using API key creds, in addition
+        // to the wallet signer. Derive them from the private key via the CLOB API.
+        const l1Client = new ClobClient(
+          'https://clob.polymarket.com',
+          137,
+          signer,
+          undefined,         // no creds yet
+          0,                 // signatureType: 0 = EOA
+          this.walletAddress
+        );
+
+        let creds;
+        try {
+          creds = await l1Client.deriveApiKey();
+          console.log('[PolymarketFeed] API key derived successfully');
+        } catch (e) {
+          console.warn('[PolymarketFeed] deriveApiKey failed, trying createApiKey:', e.message);
+          try {
+            creds = await l1Client.createApiKey();
+            console.log('[PolymarketFeed] API key created successfully');
+          } catch (e2) {
+            console.error('[PolymarketFeed] Could not get API key credentials:', e2.message);
+            throw new Error(`Failed to obtain CLOB API credentials: ${e2.message}`);
+          }
+        }
+
+        // Step 2: Create the fully-authenticated client with both signer + API key creds.
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
           137,
-          signer,            // ethers.Wallet signer (NOT raw private key string)
-          undefined,         // creds (API key — not used with EOA signing)
+          signer,
+          creds,             // { key, secret, passphrase } — required for L2 (order placement)
           0,                 // signatureType: 0 = EOA (ECDSA EIP-712)
           this.walletAddress // funderAddress (wallet that funds the orders)
         );
-        console.log('[PolymarketFeed] CLOB client initialized (authenticated EOA)');
+        console.log('[PolymarketFeed] CLOB client initialized (authenticated EOA + API key)');
       } else {
         this.clobClient = new ClobClient('https://clob.polymarket.com', 137);
         console.log('[PolymarketFeed] CLOB client initialized (read-only)');

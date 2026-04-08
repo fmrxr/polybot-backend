@@ -190,7 +190,7 @@ const initDB = async () => {
       ALTER TABLE bot_settings
         ADD COLUMN IF NOT EXISTS copy_bot_active    BOOLEAN DEFAULT false,
         ADD COLUMN IF NOT EXISTS gate1_threshold    DECIMAL(5,3) DEFAULT 0.450,
-        ADD COLUMN IF NOT EXISTS gate2_ev_floor     DECIMAL(5,2) DEFAULT 5.00,
+        ADD COLUMN IF NOT EXISTS gate2_ev_floor     DECIMAL(5,2) DEFAULT 2.00,
         ADD COLUMN IF NOT EXISTS gate3_enabled      BOOLEAN DEFAULT true,
         ADD COLUMN IF NOT EXISTS gate3_min_edge     DECIMAL(5,2) DEFAULT 5.00,
         ADD COLUMN IF NOT EXISTS snipe_timer_seconds INTEGER DEFAULT 10,
@@ -323,6 +323,12 @@ const initDB = async () => {
     if (legacy.rowCount > 0) {
       console.log(`[DB] Closed ${legacy.rowCount} legacy trade(s) with no token_id`);
     }
+
+    // Migration: gate2_ev_floor was defaulted to 5.00 — too high for BTC 5-min markets
+    // where typical EV is 1–4%. Reset users still at the bad default to 2.00.
+    await client.query(`
+      UPDATE bot_settings SET gate2_ev_floor = 2.00 WHERE gate2_ev_floor >= 5.00
+    `);
 
     console.log('[DB] Tables initialized successfully');
   } catch (err) {
