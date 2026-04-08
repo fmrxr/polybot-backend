@@ -13,10 +13,19 @@ async function getClobClient() {
 }
 
 // ethers v6 Wallet signer — required by CLOB SDK v5 (raw private key string is rejected)
+// The CLOB SDK v5 detects ethers signers via `_signTypedData` (ethers v5 API).
+// ethers v6 renamed this to `signTypedData`, so the SDK falls through to the viem
+// walletClient branch and fails with "wallet client is missing account address".
+// Fix: wrap ethers v6 Wallet and expose `_signTypedData` as an alias.
 let _ethers = null;
 async function getEthersSigner(privateKey) {
   if (!_ethers) _ethers = require('ethers');
-  return new _ethers.Wallet(privateKey);
+  const wallet = new _ethers.Wallet(privateKey);
+  // Polyfill ethers v5 API so CLOB SDK v5 detects this as an ethers TypedDataSigner
+  if (typeof wallet._signTypedData !== 'function' && typeof wallet.signTypedData === 'function') {
+    wallet._signTypedData = (domain, types, value) => wallet.signTypedData(domain, types, value);
+  }
+  return wallet;
 }
 
 class PolymarketFeed {
