@@ -1670,6 +1670,11 @@
         <input type="password" id="polymarketPrivateKey" placeholder="0x… (leave blank to keep existing)" autocomplete="new-password">
         <div class="form-hint">Required for live trading. Stored encrypted. Never shared.</div>
       </div>
+      <div class="form-group">
+        <label>Geo Block Token <span id="geoTokenStatus" style="font-size:10px;color:var(--text-muted);font-weight:normal;">(not set)</span></label>
+        <input type="password" id="geoBlockToken" placeholder="eyJ… (leave blank to keep existing)" autocomplete="off">
+        <div class="form-hint">Required if server IP is geo-blocked by Polymarket. Get from browser DevTools → any clob.polymarket.com POST request → <code>geo_block_token</code> query param.</div>
+      </div>
       <button class="secondary" onclick="testPolymarketConnection()" style="width:100%;margin-bottom:10px;">Test &amp; Fetch Balance</button>
       <div style="padding:8px 10px;border:1px solid var(--yellow);font-size:11px;color:var(--yellow);">
         USDC Balance: <span id="polymarketBalance">Not connected</span>
@@ -2878,6 +2883,8 @@
     const pkStatus = document.getElementById('privateKeyStatus');
     if (pkStatus) pkStatus.textContent = settings.has_private_key ? '✓ saved' : '(not set)';
     if (pkStatus) pkStatus.style.color = settings.has_private_key ? 'var(--green)' : 'var(--text-muted)';
+    const geoStatus = document.getElementById('geoTokenStatus');
+    if (geoStatus) { geoStatus.textContent = settings.has_geo_token ? '✓ saved' : '(not set)'; geoStatus.style.color = settings.has_geo_token ? 'var(--green)' : 'var(--text-muted)'; }
     if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
     if (settings.gate3_min_delta != null) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
     if (settings.min_btc_delta != null) { const el = document.getElementById('minBtcDelta'); if (el) { el.value = settings.min_btc_delta; updateSliderValue('minBtcDelta'); } }
@@ -3147,12 +3154,14 @@
   async function saveAdvancedSettings() {
     const token = localStorage.getItem('token');
     const pkVal = document.getElementById('polymarketPrivateKey').value.trim();
+    const geoVal = document.getElementById('geoBlockToken').value.trim();
     const settings = {
       paper_trading: document.getElementById('paperTradingEnabled').checked,
       polymarket_wallet_address: document.getElementById('polymarketWallet').value,
       require_whale_convergence: document.getElementById('requireWhaleConvergence').checked
     };
     if (pkVal) settings.private_key = pkVal;
+    if (geoVal) settings.geo_block_token = geoVal;
     try {
       const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
         method: 'PUT',
@@ -3164,6 +3173,11 @@
           document.getElementById('polymarketPrivateKey').value = '';
           const pkStatus = document.getElementById('privateKeyStatus');
           if (pkStatus) { pkStatus.textContent = '✓ saved'; pkStatus.style.color = 'var(--green)'; }
+        }
+        if (geoVal) {
+          document.getElementById('geoBlockToken').value = '';
+          const geoStatus = document.getElementById('geoTokenStatus');
+          if (geoStatus) { geoStatus.textContent = '✓ saved'; geoStatus.style.color = 'var(--green)'; }
         }
         showAlert('Advanced settings saved', 'success');
         await loadDashboard();

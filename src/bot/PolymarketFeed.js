@@ -29,9 +29,10 @@ async function getEthersSigner(privateKey) {
 }
 
 class PolymarketFeed {
-  constructor(privateKey, walletAddress) {
+  constructor(privateKey, walletAddress, geoBlockToken = null) {
     this.privateKey = privateKey;
     this.walletAddress = walletAddress;
+    this.geoBlockToken = geoBlockToken || process.env.POLYMARKET_GEO_TOKEN || null;
     this.clobClient = null;
     this.marketsCache = [];
     this.lastMarketFetch = null;
@@ -77,13 +78,11 @@ class PolymarketFeed {
         }
 
         // Step 2: Create the fully-authenticated client with both signer + API key creds.
-        // Pass geo_block_token if set — Polymarket blocks US IPs (Render is us-east-1).
-        // Get it from browser devtools: Network tab → any clob.polymarket.com request → geo_block_token query param.
-        const geoToken = process.env.POLYMARKET_GEO_TOKEN || undefined;
+        const geoToken = this.geoBlockToken || undefined;
         if (geoToken) {
-          console.log('[PolymarketFeed] Using geo_block_token from env');
+          console.log('[PolymarketFeed] Using geo_block_token');
         } else {
-          console.warn('[PolymarketFeed] No POLYMARKET_GEO_TOKEN set — orders may 403 from geo-blocked IPs (Render us-east-1)');
+          console.warn('[PolymarketFeed] No geo_block_token set — orders may 403 from geo-blocked regions');
         }
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
