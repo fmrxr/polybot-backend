@@ -12,6 +12,13 @@ async function getClobClient() {
   return _ClobClient;
 }
 
+// ethers v6 Wallet signer — required by CLOB SDK v5 (raw private key string is rejected)
+let _ethers = null;
+async function getEthersSigner(privateKey) {
+  if (!_ethers) _ethers = require('ethers');
+  return new _ethers.Wallet(privateKey);
+}
+
 class PolymarketFeed {
   constructor(privateKey, walletAddress) {
     this.privateKey = privateKey;
@@ -29,13 +36,13 @@ class PolymarketFeed {
     try {
       const ClobClient = await getClobClient();
       if (this.privateKey && this.walletAddress) {
-        // SDK v5.8.1 constructor: (host, chainId, signer, creds, signatureType, funderAddress, ...)
-        // v4 had (host, chainId, privateKey, undefined, walletAddress) — walletAddress was 5th.
-        // v5 moved walletAddress to 6th (funderAddress); 5th is now signatureType (0=EOA).
+        // SDK v5 requires an ethers.js Wallet signer — raw private key string is rejected
+        // with "unsupported signer type". Wrap the key in an ethers v6 Wallet first.
+        const signer = await getEthersSigner(this.privateKey);
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
           137,
-          this.privateKey,   // signer (private key)
+          signer,            // ethers.Wallet signer (NOT raw private key string)
           undefined,         // creds (API key — not used with EOA signing)
           0,                 // signatureType: 0 = EOA (ECDSA EIP-712)
           this.walletAddress // funderAddress (wallet that funds the orders)
