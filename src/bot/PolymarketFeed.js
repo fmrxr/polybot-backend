@@ -538,6 +538,10 @@ class PolymarketFeed {
         { tickSize: '0.01', negRisk: false },
         OrderType.GTC
       );
+      console.log(`[PolymarketFeed] Order response: ${JSON.stringify(resp)}`);
+      if (resp?.status === 403 || resp?.errorMsg || resp?.error) {
+        throw new Error(`CLOB rejected order: ${JSON.stringify(resp)}`);
+      }
       console.log(`[PolymarketFeed] Order placed: orderId=${resp?.orderID ?? resp?.order_id} status=${resp?.status}`);
       return { ...resp, price: limitPrice };
     } catch (err) {
