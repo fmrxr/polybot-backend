@@ -77,13 +77,22 @@ class PolymarketFeed {
         }
 
         // Step 2: Create the fully-authenticated client with both signer + API key creds.
+        // Pass geo_block_token if set — Polymarket blocks US IPs (Render is us-east-1).
+        // Get it from browser devtools: Network tab → any clob.polymarket.com request → geo_block_token query param.
+        const geoToken = process.env.POLYMARKET_GEO_TOKEN || undefined;
+        if (geoToken) {
+          console.log('[PolymarketFeed] Using geo_block_token from env');
+        } else {
+          console.warn('[PolymarketFeed] No POLYMARKET_GEO_TOKEN set — orders may 403 from geo-blocked IPs (Render us-east-1)');
+        }
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
           137,
           signer,
           creds,             // { key, secret, passphrase } — required for L2 (order placement)
           0,                 // signatureType: 0 = EOA (ECDSA EIP-712)
-          this.walletAddress // funderAddress (wallet that funds the orders)
+          this.walletAddress,// funderAddress (wallet that funds the orders)
+          geoToken           // geo_block_token — bypass US IP geo-block
         );
         console.log('[PolymarketFeed] CLOB client initialized (authenticated EOA + API key)');
       } else {
