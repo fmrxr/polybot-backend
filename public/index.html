@@ -1279,7 +1279,7 @@
           document.getElementById('lpMom').value='0.065'; document.getElementById('lpMomVal').textContent='0.065%';
           document.getElementById('lpKelly').value='5'; document.getElementById('lpKellyVal').textContent='5%';
           document.getElementById('lpInterval').value='10'; document.getElementById('lpIntervalVal').textContent='10s';
-          document.getElementById('lpMaxSize').value='10'; document.getElementById('lpMaxSizeVal').textContent='$10';
+          document.getElementById('lpMaxSize').value='10'; document.getElementById('lpMaxSizeVal').textContent='$10'; document.getElementById('lpMaxSize').step='1'; document.getElementById('lpMaxSize').min='1';
           document.getElementById('lpGate3').checked=true;
           document.getElementById('gate3Enabled').checked=true;
         })()" style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;font-weight:600;">RESET</button>
@@ -1327,9 +1327,9 @@
 
         <div>
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:3px;">
-            <span>Max Trade Size (USD)</span><span id="lpMaxSizeVal" style="color:var(--text);">$100</span>
+            <span>Max Trade Size (USD)</span><span id="lpMaxSizeVal" style="color:var(--text);">$10</span>
           </div>
-          <input type="range" id="lpMaxSize" min="10" max="500" step="10" value="100"
+          <input type="range" id="lpMaxSize" min="1" max="500" step="1" value="10"
             oninput="document.getElementById('lpMaxSizeVal').textContent='$'+this.value"
             style="width:100%;accent-color:var(--text);">
         </div>
