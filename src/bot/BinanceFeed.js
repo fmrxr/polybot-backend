@@ -100,6 +100,10 @@ class BinanceFeed {
   disconnect() {
     if (this.ws) {
       this.ws.removeAllListeners();
+      // Register noop error handler BEFORE terminate() — ws can emit 'error'
+      // after listeners are stripped when the socket was never fully established,
+      // and Node's default behavior for an unhandled 'error' event is to crash.
+      this.ws.on('error', () => {});
       try { this.ws.terminate(); } catch (e) {}
       this.ws = null;
     }
