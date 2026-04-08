@@ -564,9 +564,10 @@ class PolymarketFeed {
       let resp;
 
       if (this.clobProxyUrl && this._signer && this._creds && _orderToJson && _createL2Headers) {
-        // Proxy mode: sign the order via SDK (L1 only, no geo-blocked endpoint),
-        // then POST the signed payload through the user's local proxy server.
-        // This bypasses the SDK's internal axios call which routes through Render Frankfurt (geo-blocked).
+        // Relay mode: sign the order locally (L1, no network), then POST the signed
+        // payload to clob-relay.js running on the user's local VPN machine.
+        // The relay forwards it verbatim to clob.polymarket.com — bypassing the
+        // Render Frankfurt geo-block without needing an HTTP CONNECT proxy.
         const signedOrder = await this.clobClient.createOrder(
           { tokenID: tokenId, side: sideEnum, price: limitPrice, size: tokenSize },
           { tickSize: '0.01', negRisk: false }
@@ -579,23 +580,14 @@ class PolymarketFeed {
         headers['Accept'] = '*/*';
         headers['User-Agent'] = '@polymarket/clob-client';
 
-        // Parse proxy URL for axios proxy config
-        const proxyUrl = new URL(this.clobProxyUrl);
-        const axiosResp = await axios.post(
-          `https://clob.polymarket.com/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`,
-          orderPayload,
-          {
-            headers,
-            proxy: {
-              protocol: proxyUrl.protocol.replace(':', ''),
-              host: proxyUrl.hostname,
-              port: parseInt(proxyUrl.port, 10),
-            },
-            timeout: 15000,
-          }
-        );
+        // POST to relay — relay URL is e.g. https://xxxx.ngrok-free.app
+        // Path includes /order and optional geo_block_token query param
+        const relayBase = this.clobProxyUrl.replace(/\/$/, '');
+        const relayUrl = `${relayBase}/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`;
+        console.log(`[PolymarketFeed] Relay POST → ${relayUrl}`);
+        const axiosResp = await axios.post(relayUrl, orderPayload, { headers, timeout: 15000 });
         resp = axiosResp.data;
-        console.log(`[PolymarketFeed] Proxy order response: ${JSON.stringify(resp)}`);
+        console.log(`[PolymarketFeed] Relay order response: ${JSON.stringify(resp)}`);
       } else {
         // Direct mode: use the SDK's built-in axios (works when not geo-blocked)
         resp = await this.clobClient.createAndPostOrder(
