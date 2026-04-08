@@ -939,6 +939,30 @@ class BotInstance {
           continue;
         }
 
+        // ── Stale/orphan trade check: market no longer in active discovery ───────
+        // If the market has expired (not in marketsCache → remaining=0) and the
+        // trade is older than 5 min, resolve via Gamma or force-close.
+        // This handles re-adopted trades from previous sessions whose markets have
+        // long since expired — without this check they block new entries indefinitely.
+        const remainingForClose = await this._getMarketRemaining(trade.market_id);
+        if (remainingForClose === 0 && tradeAgeMin >= 5.0) {
+          const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id);
+          if (resolvedAt !== null) {
+            this._log('INFO', `⏱️ Stale trade #${trade.id} — market expired, resolved at ${resolvedAt.toFixed(3)}`);
+            await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
+          } else if (tradeAgeMin >= 15.0) {
+            const closePrice = trade._cachedLivePrice ?? livePrice ?? parseFloat(trade.entry_price);
+            this._log('WARN', `⏱️ Force-closing stale trade #${trade.id} at ${closePrice.toFixed(3)} — market expired ${tradeAgeMin.toFixed(1)}min ago, Gamma unresolved`);
+            await this._closePosition(trade, closePrice, 'MARKET_RESOLVED_TIMEOUT');
+          } else {
+            this._log('INFO', `⏳ Stale trade #${trade.id} — market expired, waiting for Gamma resolution (age=${tradeAgeMin.toFixed(1)}min)`);
+            continue;
+          }
+          this.evEngine.clearMarket(trade.market_id);
+          this.signalEngine.clearMarket(trade.market_id);
+          continue;
+        }
+
         // Near-resolution detection: token price approaching 0 or 1 = market settling
         if (livePrice >= 0.92 || livePrice <= 0.08) {
           const resolvedAt = livePrice >= 0.92 ? 1.0 : 0.0;
@@ -1037,16 +1061,22 @@ class BotInstance {
     }
   }
 
-  // Returns seconds remaining for a market, or 300 if unknown.
+  // Returns seconds remaining for a market.
+  // Returns 0 if the market has expired (not in cache = expired and dropped from discovery).
+  // Returns 300 only if marketId is null/undefined (truly unknown).
   async _getMarketRemaining(marketId) {
+    if (!marketId) return 300;
     try {
       const markets = this.polymarket?.marketsCache || [];
       const m = markets.find(x => (x.id || x.condition_id) === marketId);
       if (m?.end_date_iso) {
         return Math.max(0, new Date(m.end_date_iso).getTime() / 1000 - Date.now() / 1000);
       }
+      // Market not in active cache — it has expired and been dropped from discovery.
+      // Return 0 so age-based stop-loss and resolution checks trigger immediately.
+      return 0;
     } catch (_) {}
-    return 300; // assume plenty of time if unknown
+    return 0;
   }
 
   async _closePosition(trade, exitPrice, reason) {
