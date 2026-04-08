@@ -59,6 +59,7 @@ router.get('/settings', async (req, res) => {
     delete settings.claude_api_key_encrypted;
     // Don't send the raw geo token to the frontend — just signal presence
     delete settings.geo_block_token;
+    // clob_proxy_url is not sensitive — send it as-is so UI can show current value
     res.json({ ...settings, has_private_key: hasKey, has_polymarket_api_key: hasApiKey, has_claude_api_key: hasClaudeKey, has_geo_token: hasGeoToken });
   } catch (err) {
     console.error('Settings GET error:', err);
@@ -77,7 +78,7 @@ router.put('/settings', async (req, res) => {
     order_timeout_sec, adverse_ticks, kelly_mode, snipe_timer_seconds,
     flip_threshold, ev_decay_ratio,
     min_btc_delta, early_window_sec, late_window_sec,
-    geo_block_token
+    geo_block_token, clob_proxy_url
   } = req.body;
 
   try {
@@ -111,8 +112,8 @@ router.put('/settings', async (req, res) => {
         min_ev_threshold, min_prob_diff, direction_filter, market_prob_min, market_prob_max, paper_trading, min_edge, snipe_before_close_sec, require_whale_convergence,
         claude_api_key_encrypted, claude_model, claude_auto_analysis, gate1_threshold, gate2_ev_floor, gate3_enabled, gate3_min_delta,
         order_timeout_sec, adverse_ticks, kelly_mode, snipe_timer_seconds, flip_threshold, ev_decay_ratio,
-        min_btc_delta, early_window_sec, late_window_sec, geo_block_token, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, NOW())
+        min_btc_delta, early_window_sec, late_window_sec, geo_block_token, clob_proxy_url, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, NOW())
       ON CONFLICT (user_id) DO UPDATE SET
         encrypted_private_key = COALESCE($2, bot_settings.encrypted_private_key),
         encrypted_polymarket_api_key = COALESCE($3, bot_settings.encrypted_polymarket_api_key),
@@ -146,6 +147,7 @@ router.put('/settings', async (req, res) => {
         early_window_sec = COALESCE($31, bot_settings.early_window_sec),
         late_window_sec = COALESCE($32, bot_settings.late_window_sec),
         geo_block_token = COALESCE($33, bot_settings.geo_block_token),
+        clob_proxy_url = COALESCE($34, bot_settings.clob_proxy_url),
         updated_at = NOW()
     `, [
       req.userId, encryptedKey, encryptedApiKey, polymarket_wallet_address || null,
@@ -164,7 +166,7 @@ router.put('/settings', async (req, res) => {
       kelly_mode || null, snipe_timer_seconds || null,
       flip_threshold || null, ev_decay_ratio || null,
       min_btc_delta || null, early_window_sec || null, late_window_sec || null,
-      geo_block_token || null
+      geo_block_token || null, clob_proxy_url || null
     ]);
 
     res.json({ success: true });

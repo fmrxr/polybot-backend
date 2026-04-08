@@ -1,13 +1,22 @@
+const axios = require('axios');
+
 // ClobClient is ESM-only — must be loaded with dynamic import()
 let _ClobClient = null;
 let _Side = null;
 let _OrderType = null;
+let _orderToJson = null;
+let _createL2Headers = null;
 async function getClobClient() {
   if (!_ClobClient) {
     const mod = await import('@polymarket/clob-client');
     _ClobClient = mod.ClobClient;
     _Side = mod.Side;           // Side.BUY = 0, Side.SELL = 1
     _OrderType = mod.OrderType; // OrderType.GTC, OrderType.FOK, etc.
+    // Internal SDK helpers needed for proxy-mode order posting
+    const utilsMod = await import('@polymarket/clob-client/dist/utilities.js');
+    _orderToJson = utilsMod.orderToJson;
+    const headersMod = await import('@polymarket/clob-client/dist/headers/index.js');
+    _createL2Headers = headersMod.createL2Headers;
   }
   return _ClobClient;
 }
@@ -29,10 +38,16 @@ async function getEthersSigner(privateKey) {
 }
 
 class PolymarketFeed {
-  constructor(privateKey, walletAddress, geoBlockToken = null) {
+  constructor(privateKey, walletAddress, geoBlockToken = null, clobProxyUrl = null) {
     this.privateKey = privateKey;
     this.walletAddress = walletAddress;
     this.geoBlockToken = geoBlockToken || process.env.POLYMARKET_GEO_TOKEN || null;
+    // When set, order POSTs are sent through this HTTP proxy instead of the SDK's
+    // internal axios call — bypasses Render Frankfurt geo-block.
+    // Format: "http://host:port" — must be accessible from Render (e.g. via ngrok tunnel).
+    this.clobProxyUrl = clobProxyUrl || process.env.CLOB_PROXY_URL || null;
+    this._signer = null;  // kept for proxy-mode order signing
+    this._creds = null;   // kept for proxy-mode L2 header generation
     this.clobClient = null;
     this.marketsCache = [];
     this.lastMarketFetch = null;
@@ -79,11 +94,16 @@ class PolymarketFeed {
 
         // Step 2: Create the fully-authenticated client with both signer + API key creds.
         const geoToken = this.geoBlockToken || undefined;
-        if (geoToken) {
+        if (this.clobProxyUrl) {
+          console.log(`[PolymarketFeed] Proxy mode: order POSTs will route through ${this.clobProxyUrl}`);
+        } else if (geoToken) {
           console.log('[PolymarketFeed] Using geo_block_token');
         } else {
-          console.warn('[PolymarketFeed] No geo_block_token set — orders may 403 from geo-blocked regions');
+          console.warn('[PolymarketFeed] No geo_block_token or proxy set — orders may 403 from geo-blocked regions');
         }
+        // Store signer + creds for proxy-mode order posting (bypasses SDK's internal axios)
+        this._signer = signer;
+        this._creds = creds;
         this.clobClient = new ClobClient(
           'https://clob.polymarket.com',
           137,
@@ -541,12 +561,51 @@ class PolymarketFeed {
     console.log(`[PolymarketFeed] Placing GTC limit: ${side} ${tokenSize} tokens @ ${limitPrice} (fairPrice=${fairPrice}, ~$${dollarSize}) token=${tokenId?.slice(0,12)}...`);
 
     try {
-      const resp = await this.clobClient.createAndPostOrder(
-        { tokenID: tokenId, side: sideEnum, price: limitPrice, size: tokenSize },
-        { tickSize: '0.01', negRisk: false },
-        OrderType.GTC
-      );
-      console.log(`[PolymarketFeed] Order response: ${JSON.stringify(resp)}`);
+      let resp;
+
+      if (this.clobProxyUrl && this._signer && this._creds && _orderToJson && _createL2Headers) {
+        // Proxy mode: sign the order via SDK (L1 only, no geo-blocked endpoint),
+        // then POST the signed payload through the user's local proxy server.
+        // This bypasses the SDK's internal axios call which routes through Render Frankfurt (geo-blocked).
+        const signedOrder = await this.clobClient.createOrder(
+          { tokenID: tokenId, side: sideEnum, price: limitPrice, size: tokenSize },
+          { tickSize: '0.01', negRisk: false }
+        );
+        const orderPayload = _orderToJson(signedOrder, this._creds.key || '', OrderType.GTC, false, false);
+        const bodyStr = JSON.stringify(orderPayload);
+        const l2HeaderArgs = { method: 'POST', requestPath: '/order', body: bodyStr };
+        const headers = await _createL2Headers(this._signer, this._creds, l2HeaderArgs);
+        headers['Content-Type'] = 'application/json';
+        headers['Accept'] = '*/*';
+        headers['User-Agent'] = '@polymarket/clob-client';
+
+        // Parse proxy URL for axios proxy config
+        const proxyUrl = new URL(this.clobProxyUrl);
+        const axiosResp = await axios.post(
+          `https://clob.polymarket.com/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`,
+          orderPayload,
+          {
+            headers,
+            proxy: {
+              protocol: proxyUrl.protocol.replace(':', ''),
+              host: proxyUrl.hostname,
+              port: parseInt(proxyUrl.port, 10),
+            },
+            timeout: 15000,
+          }
+        );
+        resp = axiosResp.data;
+        console.log(`[PolymarketFeed] Proxy order response: ${JSON.stringify(resp)}`);
+      } else {
+        // Direct mode: use the SDK's built-in axios (works when not geo-blocked)
+        resp = await this.clobClient.createAndPostOrder(
+          { tokenID: tokenId, side: sideEnum, price: limitPrice, size: tokenSize },
+          { tickSize: '0.01', negRisk: false },
+          OrderType.GTC
+        );
+        console.log(`[PolymarketFeed] Order response: ${JSON.stringify(resp)}`);
+      }
+
       if (resp?.status === 403 || resp?.errorMsg || resp?.error) {
         throw new Error(`CLOB rejected order: ${JSON.stringify(resp)}`);
       }

@@ -73,7 +73,7 @@ class BotInstance {
       if (this.settings.encrypted_private_key) {
         privateKey = decrypt(this.settings.encrypted_private_key);
       }
-      this.polymarket = new PolymarketFeed(privateKey, this.settings.polymarket_wallet_address, this.settings.geo_block_token || null);
+      this.polymarket = new PolymarketFeed(privateKey, this.settings.polymarket_wallet_address, this.settings.geo_block_token || null, this.settings.clob_proxy_url || null);
       await this.polymarket.initialize();
 
       // Connect data feeds
