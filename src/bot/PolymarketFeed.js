@@ -89,9 +89,9 @@ class PolymarketFeed {
           137,
           signer,
           creds,             // { key, secret, passphrase } — required for L2 (order placement)
-          0,                 // signatureType: 0 = EOA (ECDSA EIP-712)
+          1,                 // signatureType: 1 = POLY_PROXY (Polymarket embedded wallet)
           this.walletAddress,// funderAddress (wallet that funds the orders)
-          geoToken           // geo_block_token — bypass US IP geo-block
+          geoToken           // geo_block_token — bypass geo-blocked regions
         );
         console.log('[PolymarketFeed] CLOB client initialized (authenticated EOA + API key)');
       } else {
