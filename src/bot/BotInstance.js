@@ -491,10 +491,15 @@ class BotInstance {
       return;
     }
 
-    const tradeSize = Math.min(parseFloat((balance * kellyFraction).toFixed(2)), maxTradeDollars);
+    let tradeSize = Math.min(parseFloat((balance * kellyFraction).toFixed(2)), maxTradeDollars);
     if (tradeSize < 1) {
-      this._log('WARN', `[SKIP] Trade size $${tradeSize.toFixed(2)} < $1 minimum`);
-      return;
+      if (balance >= 1) {
+        this._log('INFO', `Kelly produced $${tradeSize.toFixed(2)} — flooring to $1 minimum`);
+        tradeSize = 1.00;
+      } else {
+        this._log('WARN', `[SKIP] Trade size $${tradeSize.toFixed(2)} < $1 minimum (balance $${balance.toFixed(2)})`);
+        return;
+      }
     }
     if (this.settings.paper_trading && this.paperBalance < tradeSize) {
       this._log('WARN', `Insufficient paper balance $${this.paperBalance.toFixed(2)} < $${tradeSize.toFixed(2)}`);

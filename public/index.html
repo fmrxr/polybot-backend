@@ -1665,6 +1665,11 @@
         <label>Wallet Address</label>
         <input type="text" id="polymarketWallet" placeholder="0x..." onchange="updateSetting()">
       </div>
+      <div class="form-group">
+        <label>Private Key <span id="privateKeyStatus" style="font-size:10px;color:var(--text-muted);font-weight:normal;">(not set)</span></label>
+        <input type="password" id="polymarketPrivateKey" placeholder="0x… (leave blank to keep existing)" autocomplete="new-password">
+        <div class="form-hint">Required for live trading. Stored encrypted. Never shared.</div>
+      </div>
       <button class="secondary" onclick="testPolymarketConnection()" style="width:100%;margin-bottom:10px;">Test &amp; Fetch Balance</button>
       <div style="padding:8px 10px;border:1px solid var(--yellow);font-size:11px;color:var(--yellow);">
         USDC Balance: <span id="polymarketBalance">Not connected</span>
@@ -2870,6 +2875,9 @@
       if (balEl) balEl.value = '$' + parseFloat(settings.paper_balance).toFixed(2);
     }
     if (settings.polymarket_wallet_address) document.getElementById('polymarketWallet').value = settings.polymarket_wallet_address;
+    const pkStatus = document.getElementById('privateKeyStatus');
+    if (pkStatus) pkStatus.textContent = settings.has_private_key ? '✓ saved' : '(not set)';
+    if (pkStatus) pkStatus.style.color = settings.has_private_key ? 'var(--green)' : 'var(--text-muted)';
     if (settings.min_edge) { document.getElementById('minEdge').value = settings.min_edge; updateSliderValue('minEdge'); }
     if (settings.gate3_min_delta != null) { const el = document.getElementById('gate3MinDelta'); if (el) { el.value = settings.gate3_min_delta; updateSliderValue('gate3MinDelta'); } }
     if (settings.min_btc_delta != null) { const el = document.getElementById('minBtcDelta'); if (el) { el.value = settings.min_btc_delta; updateSliderValue('minBtcDelta'); } }
@@ -3138,19 +3146,28 @@
 
   async function saveAdvancedSettings() {
     const token = localStorage.getItem('token');
+    const pkVal = document.getElementById('polymarketPrivateKey').value.trim();
     const settings = {
       paper_trading: document.getElementById('paperTradingEnabled').checked,
       polymarket_wallet_address: document.getElementById('polymarketWallet').value,
       require_whale_convergence: document.getElementById('requireWhaleConvergence').checked
     };
+    if (pkVal) settings.private_key = pkVal;
     try {
       const res = await fetch((window.API_BASE||'')+'/api/user/settings', {
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
       });
-      if (res.ok) { showAlert('Advanced settings saved', 'success'); await loadDashboard(); }
-      else showAlert('Failed to save settings', 'error');
+      if (res.ok) {
+        if (pkVal) {
+          document.getElementById('polymarketPrivateKey').value = '';
+          const pkStatus = document.getElementById('privateKeyStatus');
+          if (pkStatus) { pkStatus.textContent = '✓ saved'; pkStatus.style.color = 'var(--green)'; }
+        }
+        showAlert('Advanced settings saved', 'success');
+        await loadDashboard();
+      } else showAlert('Failed to save settings', 'error');
     } catch (err) { showAlert('Error saving settings', 'error'); }
   }
 
