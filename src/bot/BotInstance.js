@@ -57,6 +57,9 @@ class BotInstance {
     this._lastOrderBooks = {}; // tokenId -> { midPrice, spread, bidDepth, askDepth }
     // Last computed microstructure + EV data for broadcasting
     this._lastStreamState = {};
+
+    // Suppress repeated balance-error retries — set to future timestamp when balance is insufficient
+    this._balanceErrorUntil = null;
   }
 
   async start() {
@@ -561,6 +564,14 @@ class BotInstance {
 
     } else {
       // Live: send to Polymarket CLOB
+
+      // Suppress retries if a balance error occurred recently (cooldown 2 min)
+      if (this._balanceErrorUntil && Date.now() < this._balanceErrorUntil) {
+        const secsLeft = Math.ceil((this._balanceErrorUntil - Date.now()) / 1000);
+        this._log('WARN', `[LIVE] Skipping order — insufficient balance cooldown (${secsLeft}s left). Deposit USDC to resume.`);
+        return;
+      }
+
       try {
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
         const orderId = order?.orderID || order?.order_id || order?.id;
@@ -568,10 +579,18 @@ class BotInstance {
           this._log('WARN', `[LIVE] Order placed but no orderId returned — cannot monitor fill`);
           return;
         }
+        this._balanceErrorUntil = null; // clear on success
         this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: order.price || limitPrice });
         this._log('INFO', `🔥 [LIVE] Order ${orderId} resting at ${(order.price || limitPrice).toFixed(2)} — monitoring fill`);
       } catch (err) {
-        this._log('ERROR', `[LIVE] placeOrder failed: ${err.message}`);
+        const errBody = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        if (errBody.includes('not enough balance') || errBody.includes('balance is not enough')) {
+          // 2-minute cooldown — log once, don't spam every tick
+          this._balanceErrorUntil = Date.now() + 2 * 60 * 1000;
+          this._log('WARN', `[LIVE] Insufficient balance — pausing order placement for 2 min. Deposit USDC to resume.`);
+        } else {
+          this._log('ERROR', `[LIVE] placeOrder failed: ${errBody}`);
+        }
       }
     }
   }

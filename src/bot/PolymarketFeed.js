@@ -581,7 +581,14 @@ class PolymarketFeed {
         const orderPayload = _orderToJson(signedOrder, this._creds.key || '', OrderType.GTC, false, false);
         const bodyStr = JSON.stringify(orderPayload);
         const l2HeaderArgs = { method: 'POST', requestPath: '/order', body: bodyStr };
-        const headers = await _createL2Headers(this._signer, this._creds, l2HeaderArgs);
+        // Use server time to avoid HMAC clock-skew rejection ("incorrect header check")
+        let serverTs;
+        try {
+          serverTs = await this.clobClient.getServerTime();
+        } catch (_) {
+          serverTs = undefined;
+        }
+        const headers = await _createL2Headers(this._signer, this._creds, l2HeaderArgs, serverTs);
         headers['Content-Type'] = 'application/json';
         headers['Accept'] = '*/*';
         headers['User-Agent'] = '@polymarket/clob-client';
