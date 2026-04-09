@@ -368,13 +368,14 @@ class GBMSignalEngine {
           continue;
         }
 
-        // NEUTRAL MARKET BLOCK: yesPrice within 2% of 0.5 AND BTC barely moving = coin flip.
-        // 2¢ threshold catches true 50/50, not early drift (52¢ is an early signal, not noise).
-        // BTC threshold at 0.02% — true flat, not "early movement."
-        const minStrongDelta = parseFloat(this.settings?.min_strong_btc_delta) || 0.02;
-        if (Math.abs(yesPrice - 0.5) < 0.02 && Math.abs(btcDelta) < minStrongDelta) {
-          log.gates.neutralBlock = { yesPrice, btcDelta, threshold: 0.02, passed: false };
-          log.reason = `Neutral market: yesPrice=${yesPrice.toFixed(3)} within 2% of 0.5 and BTC delta=${btcDelta.toFixed(3)}% < ${minStrongDelta}% — coin flip, skip`;
+        // NEUTRAL MARKET BLOCK: yesPrice within 3% of 0.5 AND BTC not moving strongly.
+        // 50.5¢ with 0.03% BTC delta is a coin flip — history shows these always lose.
+        // Require BTC to move at least 0.05% before trading near-neutral markets.
+        // 53¢+ is real displacement and can trade on weaker BTC signal.
+        const minStrongDelta = parseFloat(this.settings?.min_strong_btc_delta) || 0.05;
+        if (Math.abs(yesPrice - 0.5) < 0.03 && Math.abs(btcDelta) < minStrongDelta) {
+          log.gates.neutralBlock = { yesPrice, btcDelta, threshold: 0.03, minDelta: minStrongDelta, passed: false };
+          log.reason = `Neutral market: yesPrice=${yesPrice.toFixed(3)} within 3% of 0.5 and BTC delta=${btcDelta.toFixed(3)}% < ${minStrongDelta}% — coin flip, skip`;
           continue;
         }
 

@@ -344,19 +344,18 @@ const initDB = async () => {
       UPDATE bot_settings SET gate2_ev_floor = 2.00 WHERE gate2_ev_floor >= 5.00
     `);
 
-    // Migration: loosen thresholds — confidence 0.42 and min_btc_delta 0.015% were
-    // blocking too many valid signals. New values: confidence=0.20, btc_delta=0.008%,
-    // snipe_timer=5s, range_chop_override=0.02 (allow thin momentum).
+    // Migration: fix coin-flip trades. 50.5¢ markets with 0.03% BTC delta always lose.
+    // Block neutral markets (within 3% of 0.5) unless BTC moves at least 0.05%.
+    // Restore sensitive entry thresholds for genuinely displaced markets (53¢+).
     await client.query(`
       UPDATE bot_settings SET
-        min_confidence            = 0.200,
-        min_btc_delta             = 0.00800,
+        min_confidence            = 0.150,
+        min_btc_delta             = 0.00500,
+        min_strong_btc_delta      = 0.05000,
         snipe_timer_seconds       = 5,
-        range_chop_gamma_override = 0.020,
-        gate2_ev_floor            = 1.50
-      WHERE min_confidence >= 0.420
-         OR min_btc_delta >= 0.01500
-         OR snipe_timer_seconds >= 10
+        range_chop_gamma_override = 0.010,
+        gate2_ev_floor            = 0.80
+      WHERE true
     `);
 
     console.log('[DB] Tables initialized successfully');
