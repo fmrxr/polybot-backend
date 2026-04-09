@@ -102,6 +102,17 @@ class GBMSignalEngine {
 
       this.updateEMA(btcPrice);
 
+      // --- Pre-check BTC delta before expensive API calls ---
+      // If BTC is flat AND there's no reason to think any market is displaced,
+      // skip all order book + Gamma fetches immediately — saves 6 API calls per tick.
+      const btcDeltaPrecheck = this.binance.getWindowDeltaScore(60);
+      const minBtcDeltaPrecheck = parseFloat(this.settings?.min_btc_delta) || 0.05;
+      if (Math.abs(btcDeltaPrecheck) < minBtcDeltaPrecheck) {
+        log.reason = `BTC pre-check flat: |delta|=${Math.abs(btcDeltaPrecheck).toFixed(3)}% < ${minBtcDeltaPrecheck}% — skipping market scan`;
+        log.gates.btcPrecheck = { btcDelta: btcDeltaPrecheck, passed: false };
+        return { verdict: 'SKIP', log, marketId: null, market: null, yesPrice: null, rawPrice: null, noPrice: null, priceSource: null, timestamp: Date.now() };
+      }
+
       // --- Fetch active markets ---
       const markets = await this.polymarket.fetchActiveBTCMarkets();
       if (!markets || markets.length === 0) {
