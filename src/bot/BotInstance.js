@@ -946,12 +946,28 @@ class BotInstance {
         // long since expired — without this check they block new entries indefinitely.
         const remainingForClose = await this._getMarketRemaining(trade.market_id);
         if (remainingForClose === 0 && tradeAgeMin >= 5.0) {
+          // Always do a fresh Gamma fetch here — the price cache may be stale for
+          // an expired market (e.g. 0.505 cached while real price is 0.885 resolved).
+          let freshPrice = null;
+          try {
+            freshPrice = await this.polymarket.getLivePriceFromGamma(trade.market_id, trade.token_id);
+          } catch (_) {}
+          // If Gamma returns a near-resolved price, treat as resolved
+          if (freshPrice != null && (freshPrice >= 0.88 || freshPrice <= 0.12)) {
+            const resolvedAt = freshPrice >= 0.88 ? 1.0 : 0.0;
+            this._log('INFO', `⏱️ Stale trade #${trade.id} — near-resolved via fresh Gamma: ${freshPrice.toFixed(3)} → closing at ${resolvedAt}`);
+            await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
+            this.evEngine.clearMarket(trade.market_id);
+            this.signalEngine.clearMarket(trade.market_id);
+            continue;
+          }
           const resolvedAt = await this._getResolutionPrice(trade.market_id, trade.token_id);
           if (resolvedAt !== null) {
             this._log('INFO', `⏱️ Stale trade #${trade.id} — market expired, resolved at ${resolvedAt.toFixed(3)}`);
             await this._closePosition(trade, resolvedAt, 'MARKET_RESOLVED');
-          } else if (tradeAgeMin >= 15.0) {
-            const closePrice = trade._cachedLivePrice ?? livePrice ?? parseFloat(trade.entry_price);
+          } else if (tradeAgeMin >= 10.0) {
+            // UMA challenge period is typically 3-8min. Force-close at 10min with best available price.
+            const closePrice = freshPrice ?? trade._cachedLivePrice ?? livePrice ?? parseFloat(trade.entry_price);
             this._log('WARN', `⏱️ Force-closing stale trade #${trade.id} at ${closePrice.toFixed(3)} — market expired ${tradeAgeMin.toFixed(1)}min ago, Gamma unresolved`);
             await this._closePosition(trade, closePrice, 'MARKET_RESOLVED_TIMEOUT');
           } else {
