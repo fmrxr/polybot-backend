@@ -684,22 +684,23 @@ class BotInstance {
         return;
       }
 
+      // Lock this market BEFORE the async placeOrder call so concurrent ticks can't
+      // slip through while the relay round-trip is in-flight (relay can take 2-5s).
+      // Cleared on error so we can retry on transient failures (HMAC, timeout).
+      const marketEndMs = signal.market?.end_date_iso
+        ? new Date(signal.market.end_date_iso).getTime()
+        : Date.now() + 5 * 60 * 1000;
+      this._triedMarkets.set(marketId, marketEndMs);
+
       try {
         // Pass limitPrice (already tick-adjusted in _executeTrade) — NOT lastTradePrice.
-        // placeOrder adds another tick internally; passing lastTradePrice causes double tick-add
-        // (logged limit=0.51 but actual CLOB order placed at 0.52).
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, limitPrice);
         const orderId = order?.orderID || order?.order_id || order?.id;
         if (!orderId) {
           this._log('WARN', `[LIVE] Order placed but no orderId returned — cannot monitor fill`);
+          this._triedMarkets.delete(marketId); // allow retry
           return;
         }
-        // Mark as attempted only after a successful order placement — prevents locking
-        // out the market for the whole window when a transient error (HMAC, network) occurs.
-        const marketEndMs = signal.market?.end_date_iso
-          ? new Date(signal.market.end_date_iso).getTime()
-          : Date.now() + 5 * 60 * 1000;
-        this._triedMarkets.set(marketId, marketEndMs);
         this._balanceErrorUntil = null; // clear on success
         const confirmedPrice = parseFloat(order.price) || limitPrice; // CLOB may return price as string
         this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: confirmedPrice });
@@ -725,10 +726,14 @@ class BotInstance {
         if (errBody.includes('not enough balance') || errBody.includes('balance is not enough')) {
           this._balanceErrorUntil = Date.now() + 2 * 60 * 1000;
           this._log('WARN', `[LIVE] Insufficient balance — pausing order placement for 2 min. Deposit USDC to resume.`);
+          // Keep _triedMarkets entry — balance won't recover in this window
         } else if (errBody.includes('Trading restricted') || errBody.includes('geoblock') || (err.response?.status === 403 && errBody.includes('region'))) {
           this._geoBlockErrorUntil = Date.now() + 5 * 60 * 1000;
           this._log('ERROR', `[LIVE] Geo-blocked (403) — pausing for 5 min. Set CLOB Proxy URL in Settings → Advanced to fix.`);
+          // Keep _triedMarkets entry — geo-block won't clear in this window
         } else {
+          // Transient error (HMAC, timeout, network) — clear lock so we can retry next tick
+          this._triedMarkets.delete(marketId);
           this._log('ERROR', `[LIVE] placeOrder failed: ${errBody}`);
         }
       }
