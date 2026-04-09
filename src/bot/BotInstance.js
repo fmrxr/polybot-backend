@@ -64,6 +64,10 @@ class BotInstance {
     this._geoBlockErrorUntil = null;
     // Track markets where we already attempted an order this window — Map<marketId, expiry>
     this._triedMarkets = new Map();
+    // Atomic execution lock — Set of marketIds currently inside _executeTrade async body.
+    // Prevents a second tick from entering _executeTrade for the same market while the
+    // first is still awaiting placeOrder (relay round-trip). Cleared on exit.
+    this._executingMarkets = new Set();
     // Price dip tracker — waits for a local minimum before entering
     // Map<marketId, { signal, minPrice, minPriceTick, watchSince, lastPrice }>
     this._dipWatcher = new Map();
@@ -491,6 +495,26 @@ class BotInstance {
   }
 
   async _executeTrade(signal, { isFlip = false } = {}) {
+    const { direction, tokenId, market, evAdj, modelProb, marketId, fillProb } = signal;
+    const TICK = 0.01;
+
+    // Atomic lock: block concurrent calls for the same market.
+    // _triedMarkets prevents cross-tick races; this prevents same-tick races where
+    // two code paths (e.g. dip-watch + direct signal) both call _executeTrade simultaneously.
+    if (marketId && this._executingMarkets.has(marketId)) {
+      this._log('INFO', `[SKIP] Already executing trade for market ${marketId?.slice(0,12)} — concurrent call blocked`);
+      return;
+    }
+    if (marketId) this._executingMarkets.add(marketId);
+
+    try {
+      return await this._executeTradeInner(signal, { isFlip });
+    } finally {
+      if (marketId) this._executingMarkets.delete(marketId);
+    }
+  }
+
+  async _executeTradeInner(signal, { isFlip = false } = {}) {
     const { direction, tokenId, market, evAdj, modelProb, marketId, fillProb } = signal;
     const TICK = 0.01;
 

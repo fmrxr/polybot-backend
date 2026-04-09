@@ -792,8 +792,8 @@ class GBMSignalEngine {
     }
 
     // Scenario 3: RANGE CHOP — very low range, no direction
-    // <0.03% range in 30s AND btcDelta small
-    if (range < 0.0003 && absbtcDelta < 0.02) {
+    // <0.02% range in 30s AND btcDelta tiny — truly flat, no signal
+    if (range < 0.0002 && absbtcDelta < 0.008) {
       return { type: 'RANGE_CHOP', noTrade: true, description: `Range chop: range=${(range*100).toFixed(4)}% Δ=${btcDelta.toFixed(3)}%` };
     }
 

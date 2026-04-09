@@ -344,6 +344,21 @@ const initDB = async () => {
       UPDATE bot_settings SET gate2_ev_floor = 2.00 WHERE gate2_ev_floor >= 5.00
     `);
 
+    // Migration: loosen thresholds — confidence 0.42 and min_btc_delta 0.015% were
+    // blocking too many valid signals. New values: confidence=0.20, btc_delta=0.008%,
+    // snipe_timer=5s, range_chop_override=0.02 (allow thin momentum).
+    await client.query(`
+      UPDATE bot_settings SET
+        min_confidence            = 0.200,
+        min_btc_delta             = 0.00800,
+        snipe_timer_seconds       = 5,
+        range_chop_gamma_override = 0.020,
+        gate2_ev_floor            = 1.50
+      WHERE min_confidence >= 0.420
+         OR min_btc_delta >= 0.01500
+         OR snipe_timer_seconds >= 10
+    `);
+
     console.log('[DB] Tables initialized successfully');
   } catch (err) {
     console.error('[DB] Table initialization error:', err.message);
