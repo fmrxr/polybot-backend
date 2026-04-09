@@ -60,6 +60,8 @@ class BotInstance {
 
     // Suppress repeated balance-error retries — set to future timestamp when balance is insufficient
     this._balanceErrorUntil = null;
+    // Suppress repeated geo-block errors — set to future timestamp on 403 geo-block
+    this._geoBlockErrorUntil = null;
   }
 
   async start() {
@@ -572,6 +574,13 @@ class BotInstance {
         return;
       }
 
+      // Suppress retries if geo-blocked (no relay configured) — cooldown 5 min
+      if (this._geoBlockErrorUntil && Date.now() < this._geoBlockErrorUntil) {
+        const secsLeft = Math.ceil((this._geoBlockErrorUntil - Date.now()) / 1000);
+        this._log('WARN', `[LIVE] Skipping order — geo-block cooldown (${secsLeft}s left). Set CLOB Proxy URL in Settings to fix.`);
+        return;
+      }
+
       try {
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
         const orderId = order?.orderID || order?.order_id || order?.id;
@@ -588,6 +597,10 @@ class BotInstance {
           // 2-minute cooldown — log once, don't spam every tick
           this._balanceErrorUntil = Date.now() + 2 * 60 * 1000;
           this._log('WARN', `[LIVE] Insufficient balance — pausing order placement for 2 min. Deposit USDC to resume.`);
+        } else if (errBody.includes('Trading restricted') || errBody.includes('geoblock') || (err.response?.status === 403 && errBody.includes('region'))) {
+          // 5-minute cooldown — geo-block won't resolve without relay
+          this._geoBlockErrorUntil = Date.now() + 5 * 60 * 1000;
+          this._log('ERROR', `[LIVE] Geo-blocked (403) — pausing for 5 min. Set CLOB Proxy URL in Settings → Advanced to fix.`);
         } else {
           this._log('ERROR', `[LIVE] placeOrder failed: ${errBody}`);
         }
