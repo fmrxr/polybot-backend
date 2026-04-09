@@ -216,6 +216,19 @@ class BotInstance {
       const flipped = await this._checkForFlip(signal);
       if (flipped) return;
 
+      // One position at a time — if any open position exists (in any market), skip new entry.
+      // This prevents accumulating multiple losing positions across different windows.
+      // Flips are already handled above and close the old position before opening a new one.
+      const openCount = await pool.query(
+        "SELECT COUNT(*) FROM trades WHERE user_id=$1 AND status='open'",
+        [this.userId]
+      );
+      const numOpen = parseInt(openCount.rows[0].count);
+      if (numOpen > 0) {
+        this._log('INFO', `⏸ Already have ${numOpen} open position(s) — waiting for exit before new entry`);
+        return;
+      }
+
       // --- Open new position ---
       await this._executeTrade(signal);
 
