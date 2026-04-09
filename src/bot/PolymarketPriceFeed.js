@@ -161,7 +161,7 @@ class PolymarketPriceFeed {
       price,
       side: event.side,
       size: parseFloat(event.size) || 0,
-      timestamp: event.timestamp ? parseInt(event.timestamp) * 1000 : Date.now(),
+      timestamp: Date.now(), // always use local receive time — WS events are real-time
     });
     // Log significant price moves (>1¢)
     if (prev && Math.abs(price - prev.price) > 0.01) {
