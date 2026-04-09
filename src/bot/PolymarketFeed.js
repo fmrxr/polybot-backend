@@ -579,8 +579,10 @@ class PolymarketFeed {
         headers['Content-Type'] = 'application/json';
         headers['Accept'] = '*/*';
         headers['User-Agent'] = '@polymarket/clob-client';
+        // localtunnel requires this header to bypass the browser-password interstitial
+        headers['bypass-tunnel-reminder'] = 'true';
 
-        // POST to relay — relay URL is e.g. https://xxxx.ngrok-free.app
+        // POST to relay — relay URL is e.g. https://polybot-relay.loca.lt
         // Path includes /order and optional geo_block_token query param
         const relayBase = this.clobProxyUrl.replace(/\/$/, '');
         const relayUrl = `${relayBase}/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`;

@@ -44,6 +44,7 @@ const server = http.createServer((req, res) => {
     // Forward headers verbatim — includes CLOB L2 HMAC auth headers
     const forwardHeaders = { ...req.headers };
     delete forwardHeaders['host'];           // replace with target host
+    delete forwardHeaders['bypass-tunnel-reminder']; // strip localtunnel header
     forwardHeaders['host'] = CLOB_HOST;
     forwardHeaders['content-length'] = Buffer.byteLength(body).toString();
 
@@ -87,8 +88,8 @@ server.listen(PORT, () => {
   console.log(`[clob-relay] Health check: http://localhost:${PORT}/health`);
   console.log('');
   console.log('Next steps:');
-  console.log('  1. Run: npx ngrok http ' + PORT);
-  console.log('  2. Copy the ngrok https URL');
+  console.log('  1. Run: npx localtunnel --port ' + PORT + ' --subdomain polybot-relay');
+  console.log('  2. URL will be: https://polybot-relay.loca.lt');
   console.log('  3. Paste into Settings → Advanced → CLOB Proxy URL');
   console.log('  4. Save settings and restart the bot');
 });
