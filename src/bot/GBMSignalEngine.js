@@ -241,7 +241,7 @@ class GBMSignalEngine {
         // Commit smoothed price to cache (keyed by marketId, never tokenId).
         // rawYesPrice is preserved separately so _manageOpenPositions can use it
         // for PnL marking without smoothing-induced distortion.
-        this._priceCache.set(marketId, { smoothedPrice: yesPrice, priceSource, timestamp: Date.now() });
+        this._priceCache.set(marketId, { smoothedPrice: yesPrice, rawPrice: rawYesPrice, priceSource, timestamp: Date.now() });
         const alpha = this._adaptiveAlpha(roughRemaining);
         console.log(`[GBMSignalEngine] price: raw=${rawYesPrice.toFixed(3)} sanity=${sanitizedPrice.toFixed(3)} smoothed=${yesPrice.toFixed(3)} alpha=${alpha} src=${priceSource} remaining=${Math.round(roughRemaining)}s`);
 

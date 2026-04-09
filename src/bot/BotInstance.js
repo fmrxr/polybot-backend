@@ -316,20 +316,20 @@ class BotInstance {
         return false;
       }
 
-      // Flip condition: opposite side has significantly better EV
-      // Don't require currentEV < 0 — flip when edge clearly reversed
-      if (evGain > flipThreshold && evGain > FLIP_HYSTERESIS) {
+      // Flip condition: opposite side has significantly better EV AND positive edge.
+      // oppositeEV must be > 0 — flipping into a zero/negative-EV trade just burns fees.
+      if (evGain > flipThreshold && evGain > FLIP_HYSTERESIS && oppositeEV > 0) {
         this._log('INFO', `✅ EV-driven flip: ${currentDirection} → ${newSignal.direction} (EV gain: +${evGain.toFixed(2)}%)`);
 
         // Close at the old trade's market price — NOT the new signal's market price.
         // newSignal is for the new market; existingTrade.market_id may differ.
         // Use _priceCache for the old market, fall back to new signal price only if same market.
         let flipLivePriceYes = null;
-        if (newSignal.marketId === existingTrade.market_id && newSignal.yesPrice != null) {
-          flipLivePriceYes = newSignal.yesPrice;
+        if (newSignal.marketId === existingTrade.market_id && newSignal.rawPrice != null) {
+          flipLivePriceYes = newSignal.rawPrice; // use raw (unsmoothed) for accurate close price
         } else {
           const cached = this.signalEngine?._priceCache?.get(existingTrade.market_id);
-          flipLivePriceYes = cached?.smoothedPrice ?? null;
+          flipLivePriceYes = cached?.rawPrice ?? cached?.smoothedPrice ?? null;
         }
         const flipTokenPrice = existingTrade.direction === 'NO'
           ? (flipLivePriceYes != null ? 1 - flipLivePriceYes : null)
