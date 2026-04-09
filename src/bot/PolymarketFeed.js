@@ -582,7 +582,10 @@ class PolymarketFeed {
         // Stringify ONCE — use the same string for both HMAC signing and the HTTP body.
         // Re-stringifying the parsed object may produce different key order → HMAC mismatch.
         const bodyStr = JSON.stringify(orderPayload);
-        const l2HeaderArgs = { method: 'POST', requestPath: '/order', body: bodyStr };
+        // Sign over the exact path the CLOB server will see — including geo_block_token query param if present.
+        // HMAC mismatch ("incorrect header check") happens when signed path ≠ actual request path.
+        const signedPath = this.geoBlockToken ? `/order?geo_block_token=${this.geoBlockToken}` : '/order';
+        const l2HeaderArgs = { method: 'POST', requestPath: signedPath, body: bodyStr };
         // Use server time to avoid HMAC clock-skew rejection ("incorrect header check")
         let serverTs;
         try {

@@ -235,10 +235,8 @@ class BotInstance {
         return;
       }
 
-      // --- Dip-watcher: enter at local minimum price, not immediately ---
-      // On boundary-book markets (Gamma-priced), price fluctuates ±2% each tick.
-      // Watch for up to DIP_WATCH_TICKS ticks and enter at the lowest seen price.
-      await this._dipWatchAndExecute(signal);
+      // --- Open new position immediately ---
+      await this._executeTrade(signal);
 
     } catch (err) {
       this._log('ERROR', `Main loop error: ${err.message}`);
@@ -1213,13 +1211,23 @@ class BotInstance {
         const marketEndSec = trade.market_id
           ? await this._getMarketRemaining(trade.market_id)
           : 300;
+
+        // EXIT CONDITION 1a: Early stop-loss — price moved strongly against us mid-window
+        // On boundary-book markets entry ~0.52, a drop to ~0.35 = -33% → almost certainly wrong direction.
+        // Exit early to salvage remaining value rather than wait for 0 resolution.
+        if (pnlPct <= -30 && marketEndSec > 30) {
+          this._log('WARN', `🛑 Early stop-loss: PnL ${pnlPct.toFixed(1)}% — closing at ${(rawLivePrice ?? livePrice).toFixed(3)} with ${Math.round(marketEndSec)}s remaining`);
+          await this._closePosition(trade, rawLivePrice ?? livePrice, 'HARD_STOP_LOSS');
+          this.evEngine.clearMarket(marketId);
+          this.signalEngine.clearMarket(marketId);
+          continue;
+        }
+
+        // EXIT CONDITION 1b: Late stop-loss — near resolution, any significant loss
         if (marketEndSec < 30 && pnlPct <= -15) {
-          // Near resolution: fetch actual Gamma resolution price instead of stale cache.
-          // DB showed HARD_STOP_LOSS exits at 0.315/0.155 — stale boundary-book prices,
-          // not real resolution values. Use Gamma to get 0.0 or 1.0 if market has settled.
           const resolvedPrice = await this._getResolutionPrice(trade.market_id, trade.token_id);
           const stopPrice = resolvedPrice ?? livePrice;
-          this._log('WARN', `🛑 Time-gated stop-loss: PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing at ${stopPrice.toFixed(3)} (${resolvedPrice != null ? 'resolved' : 'live'})`);
+          this._log('WARN', `🛑 Time-gated stop-loss: PnL ${pnlPct.toFixed(1)}% with ${Math.round(marketEndSec)}s remaining — closing at ${stopPrice.toFixed(3)}`);
           await this._closePosition(trade, stopPrice, 'HARD_STOP_LOSS');
           this.evEngine.clearMarket(marketId);
           this.signalEngine.clearMarket(marketId);
