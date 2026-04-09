@@ -606,7 +606,12 @@ class PolymarketFeed {
       console.log(`[PolymarketFeed] Order placed: orderId=${resp?.orderID ?? resp?.order_id} status=${resp?.status}`);
       return { ...resp, price: limitPrice };
     } catch (err) {
-      console.error(`[PolymarketFeed] placeOrder failed:`, err.message);
+      // Log full response body for 4xx errors — the message alone is not enough
+      if (err.response) {
+        console.error(`[PolymarketFeed] placeOrder failed: HTTP ${err.response.status} — ${JSON.stringify(err.response.data)}`);
+      } else {
+        console.error(`[PolymarketFeed] placeOrder failed:`, err.message);
+      }
       throw err;
     }
   }
