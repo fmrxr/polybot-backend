@@ -650,10 +650,13 @@ class BotInstance {
       }
     }
 
-    // Gamma fallback for boundary-book markets — use raw/current price, not EMA
+    // Gamma fallback for boundary-book markets — aggressive limit to ensure fill.
+    // Gamma+1tick (0.53 on a 0.52 market) misses fast moves — the market jumps from
+    // 0.52 to 0.74 in one tick and our GTC at 0.53 never fills.
+    // Use Gamma+5ticks as the limit: still economical vs fair value but crosses the book.
     if (limitPrice == null && signal.priceSource === 'gamma') {
-      limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, execYesPrice + TICK)).toFixed(2));
-      this._log('INFO', `[gamma] Limit order at Gamma+1tick: ${limitPrice.toFixed(2)} (raw=${rawYesPrice.toFixed(3)} ema=${signalYesPrice.toFixed(3)})`);
+      limitPrice = parseFloat(Math.min(0.98, Math.max(0.02, execYesPrice + 5 * TICK)).toFixed(2));
+      this._log('INFO', `[gamma] Limit order at Gamma+5ticks: ${limitPrice.toFixed(2)} (raw=${rawYesPrice.toFixed(3)} ema=${signalYesPrice.toFixed(3)})`);
     }
 
     if (limitPrice == null) {
