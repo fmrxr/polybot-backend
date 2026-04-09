@@ -62,6 +62,8 @@ class BotInstance {
     this._balanceErrorUntil = null;
     // Suppress repeated geo-block errors — set to future timestamp on 403 geo-block
     this._geoBlockErrorUntil = null;
+    // Track markets where we already attempted an order this window — Map<marketId, expiry>
+    this._triedMarkets = new Map();
   }
 
   async start() {
@@ -567,6 +569,13 @@ class BotInstance {
     } else {
       // Live: send to Polymarket CLOB
 
+      // One order per market per window — if we already attempted this market, skip
+      const triedExpiry = this._triedMarkets.get(marketId);
+      if (triedExpiry && Date.now() < triedExpiry) {
+        this._log('INFO', `[LIVE] Already attempted order for market ${marketId?.slice(0,12)} this window — skipping`);
+        return;
+      }
+
       // Suppress retries if a balance error occurred recently (cooldown 2 min)
       if (this._balanceErrorUntil && Date.now() < this._balanceErrorUntil) {
         const secsLeft = Math.ceil((this._balanceErrorUntil - Date.now()) / 1000);
@@ -581,6 +590,12 @@ class BotInstance {
         return;
       }
 
+      // Mark this market as attempted — expires when the market window closes
+      const marketEndMs = signal.market?.end_date_iso
+        ? new Date(signal.market.end_date_iso).getTime()
+        : Date.now() + 5 * 60 * 1000;
+      this._triedMarkets.set(marketId, marketEndMs);
+
       try {
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
         const orderId = order?.orderID || order?.order_id || order?.id;
@@ -594,11 +609,9 @@ class BotInstance {
       } catch (err) {
         const errBody = err.response?.data ? JSON.stringify(err.response.data) : err.message;
         if (errBody.includes('not enough balance') || errBody.includes('balance is not enough')) {
-          // 2-minute cooldown — log once, don't spam every tick
           this._balanceErrorUntil = Date.now() + 2 * 60 * 1000;
           this._log('WARN', `[LIVE] Insufficient balance — pausing order placement for 2 min. Deposit USDC to resume.`);
         } else if (errBody.includes('Trading restricted') || errBody.includes('geoblock') || (err.response?.status === 403 && errBody.includes('region'))) {
-          // 5-minute cooldown — geo-block won't resolve without relay
           this._geoBlockErrorUntil = Date.now() + 5 * 60 * 1000;
           this._log('ERROR', `[LIVE] Geo-blocked (403) — pausing for 5 min. Set CLOB Proxy URL in Settings → Advanced to fix.`);
         } else {
