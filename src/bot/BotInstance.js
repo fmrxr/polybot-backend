@@ -195,6 +195,9 @@ class BotInstance {
         return;
       }
 
+      // Housekeeping — purge expired tried-markets and old flip records
+      this._cleanOldFlips();
+
       // --- Monitor pending orders (fill / cancel / adverse-selection) ---
       await this._monitorPendingOrders();
 
@@ -383,6 +386,11 @@ class BotInstance {
   _cleanOldFlips() {
     const tenMinutesAgo = Date.now() - (10 * 60 * 1000);
     this.recentFlips = this.recentFlips.filter(t => t > tenMinutesAgo);
+    // Also purge expired _triedMarkets entries
+    const now = Date.now();
+    for (const [id, expiry] of this._triedMarkets) {
+      if (expiry < now) this._triedMarkets.delete(id);
+    }
   }
 
   // ==========================================
