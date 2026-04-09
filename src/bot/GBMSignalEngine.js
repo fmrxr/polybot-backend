@@ -126,6 +126,7 @@ class GBMSignalEngine {
         lastMarket = market;
         const marketId = market.id || market.condition_id;
         log.reason = ''; // reset per-market so stale reasons don't bleed across iterations
+        log.gates = {};  // reset gates per-market so prior market's gate state doesn't bleed into skip summary
 
         // Gamma API returns clobTokenIds as a JSON string "[\"id1\",\"id2\"]" — must parse it
         // CLOB API returns tokens[].token_id — support both

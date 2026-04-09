@@ -680,12 +680,6 @@ class BotInstance {
         return;
       }
 
-      // Mark this market as attempted — expires when the market window closes
-      const marketEndMs = signal.market?.end_date_iso
-        ? new Date(signal.market.end_date_iso).getTime()
-        : Date.now() + 5 * 60 * 1000;
-      this._triedMarkets.set(marketId, marketEndMs);
-
       try {
         const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
         const orderId = order?.orderID || order?.order_id || order?.id;
@@ -693,6 +687,12 @@ class BotInstance {
           this._log('WARN', `[LIVE] Order placed but no orderId returned — cannot monitor fill`);
           return;
         }
+        // Mark as attempted only after a successful order placement — prevents locking
+        // out the market for the whole window when a transient error (HMAC, network) occurs.
+        const marketEndMs = signal.market?.end_date_iso
+          ? new Date(signal.market.end_date_iso).getTime()
+          : Date.now() + 5 * 60 * 1000;
+        this._triedMarkets.set(marketId, marketEndMs);
         this._balanceErrorUntil = null; // clear on success
         this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: order.price || limitPrice });
         this._log('INFO', `🔥 [LIVE] Order ${orderId} resting at ${(order.price || limitPrice).toFixed(2)} — monitoring fill`);
