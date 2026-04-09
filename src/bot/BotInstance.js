@@ -222,16 +222,20 @@ class BotInstance {
       const flipped = await this._checkForFlip(signal);
       if (flipped) return;
 
-      // One position at a time — if any open position exists (in any market), skip new entry.
-      // This prevents accumulating multiple losing positions across different windows.
-      // Flips are already handled above and close the old position before opening a new one.
+      // One position at a time — block if any open OR pending trade exists.
+      // 'pending' covers orders placed but not yet filled — prevents duplicate entries
+      // when two bot instances race (e.g. Render redeploy while old process still running).
+      if (this._pendingOrders.size > 0) {
+        this._log('INFO', `⏸ Already have ${this._pendingOrders.size} pending order(s) — waiting for fill before new entry`);
+        return;
+      }
       const openCount = await pool.query(
-        "SELECT COUNT(*) FROM trades WHERE user_id=$1 AND status='open'",
+        "SELECT COUNT(*) FROM trades WHERE user_id=$1 AND status IN ('open','pending')",
         [this.userId]
       );
       const numOpen = parseInt(openCount.rows[0].count);
       if (numOpen > 0) {
-        this._log('INFO', `⏸ Already have ${numOpen} open position(s) — waiting for exit before new entry`);
+        this._log('INFO', `⏸ Already have ${numOpen} open/pending position(s) — waiting for exit before new entry`);
         return;
       }
 
@@ -699,6 +703,22 @@ class BotInstance {
         this._balanceErrorUntil = null; // clear on success
         const confirmedPrice = parseFloat(order.price) || limitPrice; // CLOB may return price as string
         this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: confirmedPrice });
+        // Write a pending row to DB immediately — lets cross-instance races see the order
+        // before it fills. Upgraded to status='open' by _recordFilledTrade on fill.
+        try {
+          await pool.query(`
+            INSERT INTO trades (user_id, session_id, market_id, market_question, token_id, direction,
+              entry_price, trade_size, size, status, trade_type, signal_confidence, ev_adj, scenario,
+              execution_type, order_placed_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,'pending','signal',$9,$10,$11,'LIVE',$12)
+          `, [
+            this.userId, this.sessionId || null, marketId, market?.question, tokenId, direction,
+            confirmedPrice, tradeSize, confidence, evAdj,
+            signal.log?.scenario || null, new Date().toISOString()
+          ]);
+        } catch (dbErr) {
+          this._log('WARN', `[LIVE] Failed to write pending row: ${dbErr.message}`);
+        }
         this._log('INFO', `🔥 [LIVE] Order ${orderId} resting at ${confirmedPrice.toFixed(2)} — monitoring fill`);
       } catch (err) {
         const errBody = err.response?.data ? JSON.stringify(err.response.data) : err.message;
@@ -775,6 +795,15 @@ class BotInstance {
           : `timeout after ${(age/1000).toFixed(0)}s`;
         this._log('WARN', `⏱️ Order ${orderId.slice(0,12)}... cancelled — ${reason}`);
         this._pendingOrders.delete(orderId);
+        // Delete the pending DB row so it doesn't permanently block new entries
+        if (!pending.isPaper) {
+          try {
+            await pool.query(
+              "DELETE FROM trades WHERE user_id=$1 AND status='pending' AND market_id=$2",
+              [this.userId, pending.market?.id || pending.market?.condition_id]
+            );
+          } catch (_) {}
+        }
         continue;
       }
 
@@ -909,6 +938,7 @@ class BotInstance {
       if (status.status === 'CANCELLED') {
         this._log('WARN', `🚫 [LIVE] Order ${orderId.slice(0,12)} was cancelled externally`);
         this._pendingOrders.delete(orderId);
+        try { await pool.query("DELETE FROM trades WHERE user_id=$1 AND status='pending' AND market_id=$2", [this.userId, pending.market?.id || pending.market?.condition_id]); } catch (_) {}
         return;
       }
 
@@ -941,6 +971,7 @@ class BotInstance {
         this._log('WARN', `🚫 [LIVE] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} (+${((currentPrice - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling order ${orderId.slice(0,12)}`);
         try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
         this._pendingOrders.delete(orderId);
+        try { await pool.query("DELETE FROM trades WHERE user_id=$1 AND status='pending' AND market_id=$2", [this.userId, pending.market?.id || pending.market?.condition_id]); } catch (_) {}
       }
 
     } catch (err) {
@@ -964,25 +995,49 @@ class BotInstance {
       await pool.query('UPDATE bot_settings SET paper_balance=$1 WHERE user_id=$2', [this.paperBalance, this.userId]);
     }
 
-    await pool.query(`
-      INSERT INTO trades (
-        user_id, session_id, market_id, market_question, token_id, direction,
-        entry_price, trade_size, size, status, trade_type,
-        signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score, scenario,
-        execution_type, order_placed_at, time_to_fill_sec, fill_slippage_ticks
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,'open','signal',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-    `, [
-      this.userId, this.sessionId || null, marketId, market?.question, tokenId, direction,
-      fillPrice, fillDollars, confidence, evAdj,
-      signal.log?.gates?.gate1?.confidence || 0,
-      signal.log?.gates?.gate2?.bestEV || 0,
-      signal.log?.gates?.gate3?.emaEdge || 0,
-      signal.log?.scenario || null,
-      executionType,
-      pending.orderPlacedAt || null,
-      timeToFillSec,
-      fillSlippageTicks
-    ]);
+    // Upgrade the pending DB row to open — avoids creating duplicate rows.
+    // For paper trades there is no pending row, so INSERT directly.
+    let rowsUpdated = 0;
+    if (!pending.isPaper) {
+      const upd = await pool.query(`
+        UPDATE trades SET
+          status='open', entry_price=$1, trade_size=$2, size=$2,
+          signal_confidence=$3, ev_adj=$4,
+          gate1_score=$5, gate2_score=$6, gate3_score=$7, scenario=$8,
+          time_to_fill_sec=$9, fill_slippage_ticks=$10
+        WHERE user_id=$11 AND status='pending' AND market_id=$12
+      `, [
+        fillPrice, fillDollars, confidence, evAdj,
+        signal.log?.gates?.gate1?.confidence || 0,
+        signal.log?.gates?.gate2?.bestEV || 0,
+        signal.log?.gates?.gate3?.emaEdge || 0,
+        signal.log?.scenario || null,
+        timeToFillSec, fillSlippageTicks,
+        this.userId, marketId
+      ]);
+      rowsUpdated = upd.rowCount;
+    }
+    if (rowsUpdated === 0) {
+      // No pending row found (paper trade, or pending row was missing) — INSERT
+      await pool.query(`
+        INSERT INTO trades (
+          user_id, session_id, market_id, market_question, token_id, direction,
+          entry_price, trade_size, size, status, trade_type,
+          signal_confidence, ev_adj, gate1_score, gate2_score, gate3_score, scenario,
+          execution_type, order_placed_at, time_to_fill_sec, fill_slippage_ticks
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,'open','signal',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      `, [
+        this.userId, this.sessionId || null, marketId, market?.question, tokenId, direction,
+        fillPrice, fillDollars, confidence, evAdj,
+        signal.log?.gates?.gate1?.confidence || 0,
+        signal.log?.gates?.gate2?.bestEV || 0,
+        signal.log?.gates?.gate3?.emaEdge || 0,
+        signal.log?.scenario || null,
+        executionType,
+        pending.orderPlacedAt || null,
+        timeToFillSec, fillSlippageTicks
+      ]);
+    }
 
     this._recordSlippage(pending.referencePrice, fillPrice);
 
