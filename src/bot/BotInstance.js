@@ -67,6 +67,9 @@ class BotInstance {
     // Price dip tracker — waits for a local minimum before entering
     // Map<marketId, { signal, minPrice, minPriceTick, watchSince, lastPrice }>
     this._dipWatcher = new Map();
+    // Profit peak tracker — persists across ticks (DB rows are re-fetched each tick)
+    // Map<tradeId, peakPnlPct>
+    this._profitPeaks = new Map();
   }
 
   async start() {
@@ -1229,21 +1232,24 @@ class BotInstance {
         //   (a) PnL ≥ +35% relative (e.g. 0.52 → 0.70) AND remaining > 60s (not at resolution)
         //   (b) PnL ≥ +20% AND trailing peak has reversed ≥ 10% (peak-and-fall)
         // This prevents giving back a 80¢ gain only to close at 6¢ at resolution.
-        if (!trade._profitPeak) trade._profitPeak = 0;
-        if (pnlPct > trade._profitPeak) trade._profitPeak = pnlPct;
-        const peakFallback = trade._profitPeak - pnlPct; // how far from peak
-        const PROFIT_LOCK_PCT = 35;    // lock if up 35%+ relative
-        const TRAILING_STOP_PCT = 10;  // or if up 20%+ but fell 10% from peak
+        const prevPeak = this._profitPeaks.get(trade.id) || 0;
+        const newPeak = Math.max(prevPeak, pnlPct);
+        this._profitPeaks.set(trade.id, newPeak);
+        const peakFallback = newPeak - pnlPct;
+        const PROFIT_LOCK_PCT = 35;    // lock if up 35%+ relative (e.g. 0.52 → 0.70)
+        const TRAILING_STOP_PCT = 10;  // or if peaked at 20%+ then fell 10%
 
         if (pnlPct >= PROFIT_LOCK_PCT && marketEndSec > 60) {
           this._log('INFO', `💰 Profit lock: PnL=${pnlPct.toFixed(1)}% ≥ ${PROFIT_LOCK_PCT}% — selling at ${(rawLivePrice ?? livePrice).toFixed(3)}`);
+          this._profitPeaks.delete(trade.id);
           await this._closePosition(trade, rawLivePrice ?? livePrice, 'PROFIT_LOCK');
           this.evEngine.clearMarket(marketId);
           this.signalEngine.clearMarket(marketId);
           continue;
         }
-        if (trade._profitPeak >= 20 && peakFallback >= TRAILING_STOP_PCT) {
-          this._log('INFO', `📉 Trailing stop: peak=${trade._profitPeak.toFixed(1)}% fell ${peakFallback.toFixed(1)}% — selling at ${(rawLivePrice ?? livePrice).toFixed(3)}`);
+        if (newPeak >= 20 && peakFallback >= TRAILING_STOP_PCT) {
+          this._log('INFO', `📉 Trailing stop: peak=${newPeak.toFixed(1)}% fell ${peakFallback.toFixed(1)}% — selling at ${(rawLivePrice ?? livePrice).toFixed(3)}`);
+          this._profitPeaks.delete(trade.id);
           await this._closePosition(trade, rawLivePrice ?? livePrice, 'TRAILING_STOP');
           this.evEngine.clearMarket(marketId);
           this.signalEngine.clearMarket(marketId);
