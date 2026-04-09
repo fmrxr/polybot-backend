@@ -64,6 +64,7 @@ class BotInstance {
     this._geoBlockErrorUntil = null;
     // Track markets where we already attempted an order this window — Map<marketId, expiry>
     this._triedMarkets = new Map();
+    this._lastTradeAttemptAt = null; // timestamp of last trade attempt — 90s cooldown guard
     // Atomic execution lock — Set of marketIds currently inside _executeTrade async body.
     // Prevents a second tick from entering _executeTrade for the same market while the
     // first is still awaiting placeOrder (relay round-trip). Cleared on exit.
@@ -226,9 +227,15 @@ class BotInstance {
       const flipped = await this._checkForFlip(signal);
       if (flipped) return;
 
+      // Hard cooldown: after any trade attempt, block all new entries for 90 seconds.
+      // This is the last-resort guard against relay latency causing duplicate orders.
+      if (this._lastTradeAttemptAt && Date.now() - this._lastTradeAttemptAt < 90000) {
+        const secsLeft = Math.ceil((90000 - (Date.now() - this._lastTradeAttemptAt)) / 1000);
+        this._log('INFO', `⏸ Trade cooldown: ${secsLeft}s remaining — waiting before next entry`);
+        return;
+      }
+
       // One position at a time — block if any open OR pending trade exists.
-      // 'pending' covers orders placed but not yet filled — prevents duplicate entries
-      // when two bot instances race (e.g. Render redeploy while old process still running).
       if (this._pendingOrders.size > 0) {
         this._log('INFO', `⏸ Already have ${this._pendingOrders.size} pending order(s) — waiting for fill before new entry`);
         return;
@@ -242,6 +249,9 @@ class BotInstance {
         this._log('INFO', `⏸ Already have ${numOpen} open/pending position(s) — waiting for exit before new entry`);
         return;
       }
+
+      // Set cooldown timestamp before attempting — prevents re-entry during relay latency
+      this._lastTradeAttemptAt = Date.now();
 
       // --- Open new position immediately ---
       await this._executeTrade(signal);
