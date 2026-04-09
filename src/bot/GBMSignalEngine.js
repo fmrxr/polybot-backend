@@ -157,44 +157,48 @@ class GBMSignalEngine {
         const t1Price = op0 ? parseFloat(op0[1]) : undefined;
         console.log(`[Tokens] [0] outcome="YES" id=${yesTokenId?.slice(0,12)}... price=${t0Price} | [1] outcome="NO" id=${noTokenId?.slice(0,12)}... price=${t1Price}`);
 
-        const yesBook = await this.polymarket.getOrderBook(yesTokenId);
+        // Fetch YES book, NO book, and Gamma price all in parallel — don't wait for each
+        // source sequentially. BTC 5-min markets almost always have boundary CLOB books
+        // so we always need Gamma anyway; running in parallel cuts latency ~2×.
+        const [yesBook, noBook, gammaYes] = await Promise.all([
+          this.polymarket.getOrderBook(yesTokenId).catch(() => null),
+          noTokenId ? this.polymarket.getOrderBook(noTokenId).catch(() => null) : Promise.resolve(null),
+          this.polymarket.getLivePriceFromGamma(marketId, yesTokenId).catch(() => null),
+        ]);
+
         const yesSpread = yesBook?.spread ?? (yesBook ? yesBook.bestAsk - yesBook.bestBid : 1);
         console.log(`[OrderBook:YES] bid=${yesBook?.bestBid} ask=${yesBook?.bestAsk} mid=${yesBook?.midPrice} spread=${(yesSpread*100).toFixed(0)}% depth=${yesBook?.totalDepth?.toFixed(0)}`);
+        if (noBook) {
+          const noSpread = noBook?.spread ?? (noBook.bestAsk - noBook.bestBid);
+          console.log(`[OrderBook:NO]  bid=${noBook?.bestBid} ask=${noBook?.bestAsk} mid=${noBook?.midPrice} spread=${(noSpread*100).toFixed(0)}% depth=${noBook?.totalDepth?.toFixed(0)}`);
+        }
 
         let orderBook = yesBook;
         let rawYesPrice = (yesBook?.midPrice != null && yesSpread <= 0.10) ? yesBook.midPrice : null;
         let priceSource = rawYesPrice != null ? 'clob' : null;
 
-        // Try NO token book if YES is boundary-only (bid=0.01/ask=0.99)
-        if (rawYesPrice == null && noTokenId) {
-          const noBook = await this.polymarket.getOrderBook(noTokenId);
-          const noSpread = noBook?.spread ?? (noBook ? noBook.bestAsk - noBook.bestBid : 1);
-          console.log(`[OrderBook:NO]  bid=${noBook?.bestBid} ask=${noBook?.bestAsk} mid=${noBook?.midPrice} spread=${(noSpread*100).toFixed(0)}% depth=${noBook?.totalDepth?.toFixed(0)}`);
+        // Try NO token book if YES is boundary-only
+        if (rawYesPrice == null && noBook) {
+          const noSpread = noBook?.spread ?? (noBook.bestAsk - noBook.bestBid);
           if (noBook?.midPrice != null && noSpread <= 0.10) {
-            rawYesPrice = 1 - noBook.midPrice; // YES price derived from NO mid
+            rawYesPrice = 1 - noBook.midPrice;
             orderBook = noBook;
             priceSource = 'clob';
             console.log(`[GBMSignalEngine] YES book boundary-only — using NO book: noMid=${noBook.midPrice.toFixed(3)} yesPrice=${rawYesPrice.toFixed(3)}`);
           }
         }
 
-        // SOURCE 3: Gamma live price — fresh per-tick fetch, NOT cached market.outcomePrices.
-        // market.outcomePrices is stale (fetched up to 30s ago). During active trading,
-        // the real market price can move significantly (e.g. 0.50 → 0.78) between fetches.
-        // getLivePriceFromGamma() does a fresh Gamma /markets/:id call each tick.
+        // SOURCE 3: Gamma live price (already fetched in parallel above).
         // BTC 5-min markets structurally show boundary CLOB books (bid=0.01/ask=0.99).
-        // Execution uses a GTC limit order placed at Gamma price ± 1 tick — this is how
-        // real fills happen on these markets (same as the Polymarket UI).
-        // Synthetic spread=0.02 so the boundary gate below passes for these markets.
+        // Execution uses a GTC limit order placed at Gamma price — how real fills happen.
         if (rawYesPrice == null) {
-          const gammaYes = await this.polymarket.getLivePriceFromGamma(marketId, yesTokenId);
           if (gammaYes != null && isFinite(gammaYes) && gammaYes > 0.01 && gammaYes < 0.99) {
             rawYesPrice = gammaYes;
             priceSource = 'gamma';
             orderBook = { midPrice: gammaYes, bestAsk: gammaYes + 0.01, bestBid: gammaYes - 0.01, spread: 0.02, totalDepth: yesBook?.totalDepth || 0 };
             console.log(`[GBMSignalEngine] Gamma source (live): yesPrice=${gammaYes.toFixed(3)}`);
           } else {
-            // Fallback: use cached outcomePrices if fresh fetch fails or returns ambiguous 0.5
+            // Fallback: cached outcomePrices
             let op = market.outcomePrices;
             if (typeof op === 'string') { try { op = JSON.parse(op); } catch(_) { op = null; } }
             const cachedYes = op ? parseFloat(op[0]) : null;
