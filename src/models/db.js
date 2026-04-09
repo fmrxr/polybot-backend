@@ -226,9 +226,21 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS early_window_sec INTEGER DEFAULT 100,
         ADD COLUMN IF NOT EXISTS late_window_sec INTEGER DEFAULT 600,
         ADD COLUMN IF NOT EXISTS min_remaining_sec INTEGER DEFAULT 400,
-        ADD COLUMN IF NOT EXISTS min_btc_delta DECIMAL(8,5) DEFAULT 0.00500,
+        ADD COLUMN IF NOT EXISTS min_btc_delta DECIMAL(8,5) DEFAULT 0.01500,
         ADD COLUMN IF NOT EXISTS geo_block_token TEXT,
-        ADD COLUMN IF NOT EXISTS clob_proxy_url TEXT;
+        ADD COLUMN IF NOT EXISTS clob_proxy_url TEXT,
+        ADD COLUMN IF NOT EXISTS min_confidence DECIMAL(5,3) DEFAULT 0.420,
+        ADD COLUMN IF NOT EXISTS min_strong_btc_delta DECIMAL(8,5) DEFAULT 0.02000,
+        ADD COLUMN IF NOT EXISTS range_chop_gamma_override DECIMAL(5,3) DEFAULT 0.045;
+
+      -- Update existing rows to new balanced signal thresholds (idempotent)
+      UPDATE bot_settings SET
+        min_btc_delta            = 0.01500,
+        gate2_ev_floor           = 2.20,
+        min_confidence           = COALESCE(min_confidence, 0.420),
+        min_strong_btc_delta     = COALESCE(min_strong_btc_delta, 0.02000),
+        range_chop_gamma_override = COALESCE(range_chop_gamma_override, 0.045)
+      WHERE min_btc_delta <= 0.00500 OR gate2_ev_floor <= 0.50;
 
       ALTER TABLE signals
         ADD COLUMN IF NOT EXISTS gate_failed   DECIMAL(5,2),
