@@ -64,6 +64,9 @@ class BotInstance {
     this._geoBlockErrorUntil = null;
     // Track markets where we already attempted an order this window — Map<marketId, expiry>
     this._triedMarkets = new Map();
+    // Price dip tracker — waits for a local minimum before entering
+    // Map<marketId, { signal, minPrice, minPriceTick, watchSince, lastPrice }>
+    this._dipWatcher = new Map();
   }
 
   async start() {
@@ -229,8 +232,10 @@ class BotInstance {
         return;
       }
 
-      // --- Open new position ---
-      await this._executeTrade(signal);
+      // --- Dip-watcher: enter at local minimum price, not immediately ---
+      // On boundary-book markets (Gamma-priced), price fluctuates ±2% each tick.
+      // Watch for up to DIP_WATCH_TICKS ticks and enter at the lowest seen price.
+      await this._dipWatchAndExecute(signal);
 
     } catch (err) {
       this._log('ERROR', `Main loop error: ${err.message}`);
@@ -419,6 +424,66 @@ class BotInstance {
   //
   // This ensures paper P&L is realistic — orders can and do go unfilled.
   // ==========================================
+
+  // ─────────────────────────────────────────────────────────────────────
+  // DIP WATCHER — waits up to N ticks for a local price minimum before entry
+  // For boundary-book (Gamma) markets: price ticks ±1-2% each interval.
+  // We watch for the price to start rising after dipping — enter at the dip.
+  // Timeout: enter anyway after DIP_WATCH_TICKS ticks to avoid missing the market.
+  // ─────────────────────────────────────────────────────────────────────
+  async _dipWatchAndExecute(signal) {
+    const DIP_WATCH_TICKS = 4;   // max ticks to watch before forcing entry
+    const marketId = signal.marketId;
+    const currentPrice = signal.direction === 'NO'
+      ? (1 - (signal.rawPrice ?? signal.yesPrice))
+      : (signal.rawPrice ?? signal.yesPrice);
+
+    const existing = this._dipWatcher.get(marketId);
+
+    if (!existing) {
+      // First tick seeing this signal — start watching
+      this._dipWatcher.set(marketId, {
+        signal,
+        minPrice: currentPrice,
+        minPriceTick: 0,
+        watchSince: Date.now(),
+        tickCount: 1,
+        lastPrice: currentPrice,
+      });
+      this._log('INFO', `👀 Dip-watch started: ${signal.direction} price=${currentPrice.toFixed(3)} market=${marketId?.slice(0,12)}`);
+      return; // don't enter yet
+    }
+
+    // Update watcher
+    existing.tickCount += 1;
+    const prevLast = existing.lastPrice;
+    existing.lastPrice = currentPrice;
+
+    if (currentPrice < existing.minPrice) {
+      existing.minPrice = currentPrice;
+      existing.minPriceTick = existing.tickCount;
+      this._log('INFO', `👀 Dip-watch: new low=${currentPrice.toFixed(3)} (tick ${existing.tickCount})`);
+    }
+
+    // Entry trigger: price rising after a dip (local minimum confirmed)
+    const priceRising = currentPrice > prevLast;
+    const hadDip = existing.minPrice < existing.signal.rawPrice ?? existing.signal.yesPrice;
+    const timedOut = existing.tickCount >= DIP_WATCH_TICKS;
+
+    if (priceRising && hadDip) {
+      this._log('INFO', `✅ Dip confirmed: entry at ${existing.minPrice.toFixed(3)} (current=${currentPrice.toFixed(3)}) — executing`);
+    } else if (timedOut) {
+      this._log('INFO', `⏰ Dip-watch timeout (${DIP_WATCH_TICKS} ticks) — entering at current ${currentPrice.toFixed(3)}`);
+    } else {
+      return; // keep watching
+    }
+
+    // Clear watcher and execute with the best (minimum) price observed
+    this._dipWatcher.delete(marketId);
+    // Override the signal's rawPrice with the best entry price seen
+    const bestSignal = { ...existing.signal, rawPrice: existing.minPrice };
+    await this._executeTrade(bestSignal);
+  }
 
   async _executeTrade(signal, { isFlip = false } = {}) {
     const { direction, tokenId, market, evAdj, modelProb, marketId, fillProb } = signal;
@@ -1158,7 +1223,34 @@ class BotInstance {
           continue;
         }
 
-        // EXIT CONDITION 2: DISABLED — NEGATIVE_EV_EXIT
+        // EXIT CONDITION 2: PROFIT LOCK — sell when price moved strongly in our favor
+        // On boundary-book markets, token can swing 52¢ → 80¢+ mid-window.
+        // Lock profit when:
+        //   (a) PnL ≥ +35% relative (e.g. 0.52 → 0.70) AND remaining > 60s (not at resolution)
+        //   (b) PnL ≥ +20% AND trailing peak has reversed ≥ 10% (peak-and-fall)
+        // This prevents giving back a 80¢ gain only to close at 6¢ at resolution.
+        if (!trade._profitPeak) trade._profitPeak = 0;
+        if (pnlPct > trade._profitPeak) trade._profitPeak = pnlPct;
+        const peakFallback = trade._profitPeak - pnlPct; // how far from peak
+        const PROFIT_LOCK_PCT = 35;    // lock if up 35%+ relative
+        const TRAILING_STOP_PCT = 10;  // or if up 20%+ but fell 10% from peak
+
+        if (pnlPct >= PROFIT_LOCK_PCT && marketEndSec > 60) {
+          this._log('INFO', `💰 Profit lock: PnL=${pnlPct.toFixed(1)}% ≥ ${PROFIT_LOCK_PCT}% — selling at ${(rawLivePrice ?? livePrice).toFixed(3)}`);
+          await this._closePosition(trade, rawLivePrice ?? livePrice, 'PROFIT_LOCK');
+          this.evEngine.clearMarket(marketId);
+          this.signalEngine.clearMarket(marketId);
+          continue;
+        }
+        if (trade._profitPeak >= 20 && peakFallback >= TRAILING_STOP_PCT) {
+          this._log('INFO', `📉 Trailing stop: peak=${trade._profitPeak.toFixed(1)}% fell ${peakFallback.toFixed(1)}% — selling at ${(rawLivePrice ?? livePrice).toFixed(3)}`);
+          await this._closePosition(trade, rawLivePrice ?? livePrice, 'TRAILING_STOP');
+          this.evEngine.clearMarket(marketId);
+          this.signalEngine.clearMarket(marketId);
+          continue;
+        }
+
+        // EXIT CONDITION 4: DISABLED — NEGATIVE_EV_EXIT
         // DB analysis: 29 exits, 22 at zero P&L (price unchanged on boundary books),
         // avg hold 180s cutting trades that would have resolved naturally at 556s.
         // Binary markets resolve in ≤5 min — hold to resolution captures real edge.
