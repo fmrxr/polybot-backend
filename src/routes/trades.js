@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
+const https = require('https');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -243,6 +244,57 @@ router.get('/sessions', async (req, res) => {
     res.json({ sessions: result.rows });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/trades/polymarket-activity — fetch real on-chain trades from Polymarket data API
+// Uses the wallet address stored in bot_settings to query the user's actual trade history.
+router.get('/polymarket-activity', async (req, res) => {
+  try {
+    const settingsRes = await pool.query(
+      'SELECT polymarket_wallet_address FROM bot_settings WHERE user_id = $1',
+      [req.userId]
+    );
+    const wallet = settingsRes.rows[0]?.polymarket_wallet_address;
+    if (!wallet) return res.json({ trades: [], error: 'No wallet address configured' });
+
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    // Polymarket data API — activity endpoint returns all buys/sells/redeems for a wallet
+    const url = `https://data-api.polymarket.com/activity?user=${wallet.toLowerCase()}&limit=${limit}`;
+
+    const data = await new Promise((resolve, reject) => {
+      const request = https.get(url, { headers: { 'Accept': 'application/json' } }, (response) => {
+        let body = '';
+        response.on('data', chunk => { body += chunk; });
+        response.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch (e) { reject(new Error('Invalid JSON from Polymarket data API')); }
+        });
+      });
+      request.on('error', reject);
+      request.setTimeout(8000, () => { request.destroy(); reject(new Error('Timeout')); });
+    });
+
+    // Normalize to consistent shape
+    const rows = Array.isArray(data) ? data : (data.data || data.activities || []);
+    const normalized = rows.map(t => ({
+      id:           t.id || t.transactionHash,
+      timestamp:    t.timestamp || t.createdAt,
+      market:       t.title || t.market || t.conditionId || '—',
+      side:         t.side || t.outcome || t.type,         // BUY / SELL / REDEEM
+      outcome:      t.outcomeIndex === 0 ? 'YES' : t.outcomeIndex === 1 ? 'NO' : (t.outcome || '—'),
+      price:        parseFloat(t.price || t.avgPrice || 0),
+      size:         parseFloat(t.size || t.amount || 0),
+      usdcAmount:   parseFloat(t.usdcAmt || t.cashAmount || t.size || 0),
+      hash:         t.transactionHash || t.hash,
+      proxyWallet:  t.proxyWallet || t.maker,
+    }));
+
+    res.json({ trades: normalized, wallet, total: normalized.length });
+  } catch (err) {
+    console.error('[polymarket-activity]', err.message);
+    res.status(500).json({ error: err.message, trades: [] });
   }
 });
 

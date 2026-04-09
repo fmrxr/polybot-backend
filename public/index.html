@@ -893,6 +893,7 @@
   <div class="tabs" style="margin-bottom:14px;">
     <button class="tab active" onclick="switchTradesTab('tabTrades', this)">Trades</button>
     <button class="tab"        onclick="switchTradesTab('tabSignals', this)">Signals</button>
+    <button class="tab"        onclick="switchTradesTab('tabPolyActivity', this); loadPolyActivity();">Polymarket Activity</button>
   </div>
 
   <!-- ── TAB: TRADES ── -->
@@ -1136,6 +1137,23 @@
   </div>
 
   </div><!-- /tabSignals -->
+
+  <!-- ── TAB: POLYMARKET ACTIVITY ── -->
+  <div id="tabPolyActivity" class="tab-content">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <div style="font-size:11px;color:var(--text-muted);">Live on-chain trades from your Polymarket wallet</div>
+      <button class="btn btn-sm" onclick="loadPolyActivity()" style="font-size:11px;padding:4px 12px;">↻ Refresh</button>
+    </div>
+    <div id="polyActivityStatus" style="font-size:11px;color:var(--text-muted);margin-bottom:10px;"></div>
+    <div class="panel" style="padding:0;overflow:hidden;">
+      <div style="display:grid;grid-template-columns:120px 60px 70px 1fr 80px 90px;gap:0;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);padding:8px 14px;border-bottom:1px solid var(--border);background:rgba(255,255,255,0.02);">
+        <span>Time</span><span>Side</span><span>Outcome</span><span>Market</span><span style="text-align:right;">Price</span><span style="text-align:right;">USDC</span>
+      </div>
+      <div id="polyActivityBody">
+        <div style="text-align:center;padding:32px;color:var(--text-muted);font-size:12px;">Click Refresh to load your Polymarket activity</div>
+      </div>
+    </div>
+  </div><!-- /tabPolyActivity -->
 
 </div><!-- /trades -->
 
@@ -2394,6 +2412,52 @@
       if (statsRes.ok) { const stats = await statsRes.json(); renderProMetrics(stats); }
     } catch (err) { console.error('Load trades error:', err); }
     loadDecisionStream();
+  }
+
+  async function loadPolyActivity() {
+    const token = localStorage.getItem('token');
+    const statusEl = document.getElementById('polyActivityStatus');
+    const bodyEl   = document.getElementById('polyActivityBody');
+    if (statusEl) statusEl.textContent = 'Loading…';
+    try {
+      const res = await fetch(`${window.API_BASE||''}/api/trades/polymarket-activity?limit=100`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (data.error && !data.trades?.length) {
+        if (bodyEl) bodyEl.innerHTML = `<div style="text-align:center;padding:32px;color:var(--red);font-size:12px;">${data.error}</div>`;
+        if (statusEl) statusEl.textContent = '';
+        return;
+      }
+      const rows = data.trades || [];
+      if (statusEl) statusEl.textContent = `Wallet: ${data.wallet || '—'} · ${rows.length} transactions`;
+      if (!rows.length) {
+        if (bodyEl) bodyEl.innerHTML = `<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:12px;">No activity found for this wallet</div>`;
+        return;
+      }
+      if (bodyEl) bodyEl.innerHTML = rows.map(t => {
+        const dt = t.timestamp ? new Date(t.timestamp * 1000 || t.timestamp) : null;
+        const timeStr = dt ? dt.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+        const side = (t.side || '').toUpperCase();
+        const sideColor = side === 'BUY' ? 'var(--green)' : side === 'SELL' ? 'var(--red)' : 'var(--text-muted)';
+        const outcome = (t.outcome || '').toUpperCase();
+        const outcomeColor = outcome === 'YES' ? 'var(--green)' : outcome === 'NO' ? 'var(--red)' : 'var(--text-muted)';
+        const price = t.price ? (t.price * 100).toFixed(1) + '¢' : '—';
+        const usdc = t.usdcAmount ? '$' + parseFloat(t.usdcAmount).toFixed(2) : '—';
+        const market = (t.market || '—').slice(0, 60);
+        return `<div style="display:grid;grid-template-columns:120px 60px 70px 1fr 80px 90px;gap:0;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12px;align-items:center;">
+          <span style="color:var(--text-muted);font-size:11px;">${timeStr}</span>
+          <span style="font-weight:700;color:${sideColor};">${side || '—'}</span>
+          <span style="font-weight:600;color:${outcomeColor};">${outcome || '—'}</span>
+          <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${t.market || ''}">${market}</span>
+          <span style="text-align:right;color:var(--cyan);">${price}</span>
+          <span style="text-align:right;font-weight:600;">${usdc}</span>
+        </div>`;
+      }).join('');
+    } catch (err) {
+      if (statusEl) statusEl.textContent = 'Error: ' + err.message;
+      if (bodyEl) bodyEl.innerHTML = `<div style="text-align:center;padding:32px;color:var(--red);font-size:12px;">${err.message}</div>`;
+    }
   }
 
   async function loadDecisionStream() {
