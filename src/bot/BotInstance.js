@@ -795,9 +795,20 @@ class BotInstance {
         return;
       }
 
-      // Still LIVE (resting) — check for adverse selection using CLOB mid (no Gamma)
-      const liveBook = await this.polymarket.getOrderBook(pending.tokenId);
-      const currentPrice = liveBook?.midPrice ?? null;
+      // Still LIVE (resting) — check for adverse selection
+      // For boundary-book markets (priceSource=gamma): use Gamma price since CLOB mid=0.5 always
+      // For real-book markets: use CLOB mid
+      let currentPrice = null;
+      if (pending.signal?.priceSource === 'gamma') {
+        try {
+          const gp = await this.polymarket.getLivePriceFromGamma(pending.signal?.marketId, pending.tokenId);
+          currentPrice = gp != null ? (pending.direction === 'NO' ? 1 - gp : gp) : null;
+        } catch (_) {}
+      }
+      if (currentPrice == null) {
+        const liveBook = await this.polymarket.getOrderBook(pending.tokenId);
+        currentPrice = liveBook?.midPrice ?? null;
+      }
       if (currentPrice && currentPrice > pending.limitPrice + ADVERSE_TICKS * TICK) {
         this._log('WARN', `🚫 [LIVE] Adverse selection: limit=${pending.limitPrice.toFixed(2)} market=${currentPrice.toFixed(3)} (+${((currentPrice - pending.limitPrice)/TICK).toFixed(0)} ticks) — cancelling order ${orderId.slice(0,12)}`);
         try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
