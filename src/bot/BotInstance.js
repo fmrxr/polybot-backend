@@ -319,8 +319,8 @@ class BotInstance {
         this.recentFlips.push(Date.now());
         this._cleanOldFlips();
 
-        // Open opposite position
-        await this._executeTrade(newSignal);
+        // Open opposite position — mark as flip so the one-per-market guard doesn't block it
+        await this._executeTrade(newSignal, { isFlip: true });
         return true;
       }
 
@@ -399,7 +399,7 @@ class BotInstance {
   // This ensures paper P&L is realistic — orders can and do go unfilled.
   // ==========================================
 
-  async _executeTrade(signal) {
+  async _executeTrade(signal, { isFlip = false } = {}) {
     const { direction, tokenId, market, evAdj, modelProb, marketId, fillProb } = signal;
     const TICK = 0.01;
 
@@ -570,10 +570,13 @@ class BotInstance {
       // Live: send to Polymarket CLOB
 
       // One order per market per window — if we already attempted this market, skip
-      const triedExpiry = this._triedMarkets.get(marketId);
-      if (triedExpiry && Date.now() < triedExpiry) {
-        this._log('INFO', `[LIVE] Already attempted order for market ${marketId?.slice(0,12)} this window — skipping`);
-        return;
+      // Exception: flip orders are always allowed (they close the old position first)
+      if (!isFlip) {
+        const triedExpiry = this._triedMarkets.get(marketId);
+        if (triedExpiry && Date.now() < triedExpiry) {
+          this._log('INFO', `[LIVE] Already attempted order for market ${marketId?.slice(0,12)} this window — skipping`);
+          return;
+        }
       }
 
       // Suppress retries if a balance error occurred recently (cooldown 2 min)
