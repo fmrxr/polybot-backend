@@ -551,9 +551,15 @@ class PolymarketFeed {
     }
 
     // size = token quantity (CLOB limit orders use token qty, not dollar amount)
-    const tokenSize = parseFloat((dollarSize / limitPrice).toFixed(2));
+    // Polymarket enforces a minimum of 5 tokens per order.
+    const MIN_TOKEN_SIZE = 5;
+    let tokenSize = parseFloat((dollarSize / limitPrice).toFixed(2));
     if (!isFinite(tokenSize) || tokenSize <= 0) {
       throw new Error(`Invalid token size: dollarSize=${dollarSize} limitPrice=${limitPrice} → tokenSize=${tokenSize}`);
+    }
+    if (tokenSize < MIN_TOKEN_SIZE) {
+      tokenSize = MIN_TOKEN_SIZE;
+      console.log(`[PolymarketFeed] tokenSize floored to minimum ${MIN_TOKEN_SIZE} (was ${(dollarSize / limitPrice).toFixed(2)})`);
     }
 
     const sideEnum = side === 'SELL' ? Side.SELL : Side.BUY;
