@@ -1,5 +1,15 @@
 const axios = require('axios');
 
+// Module-level relay mutex — serializes concurrent placeOrder calls through the same tunnel.
+// Free ngrok tunnels corrupt concurrent HTTP bodies causing HMAC "incorrect header check".
+// All PolymarketFeed instances share this lock since they share the same relay URL.
+let _relayLock = Promise.resolve();
+function withRelayLock(fn) {
+  const next = _relayLock.then(fn, fn); // run fn after current lock; always release on error too
+  _relayLock = next.then(() => {}, () => {}); // advance lock, swallow errors so lock never gets stuck
+  return next;
+}
+
 // ClobClient is ESM-only — must be loaded with dynamic import()
 let _ClobClient = null;
 let _Side = null;
@@ -613,9 +623,11 @@ class PolymarketFeed {
         const relayBase = this.clobProxyUrl.replace(/\/$/, '');
         const relayUrl = `${relayBase}/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`;
         console.log(`[PolymarketFeed] Relay POST → ${relayUrl}`);
-        // Send bodyStr (pre-serialized) so the exact bytes match what was HMAC-signed.
-        // Passing the raw object would cause axios to re-stringify with potentially different key order.
-        const axiosResp = await axios.post(relayUrl, bodyStr, { headers, timeout: 15000 });
+        // Serialize relay POSTs — free ngrok tunnels corrupt concurrent HTTP bodies,
+        // causing HMAC "incorrect header check" when two bots fire simultaneously.
+        const axiosResp = await withRelayLock(() =>
+          axios.post(relayUrl, bodyStr, { headers, timeout: 15000 })
+        );
         resp = axiosResp.data;
         console.log(`[PolymarketFeed] Relay order response: ${JSON.stringify(resp)}`);
       } else {
