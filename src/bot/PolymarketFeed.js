@@ -1,5 +1,15 @@
 const axios = require('axios');
 
+// Per-relay-URL mutex — serializes concurrent POSTs through the same tunnel.
+// Free tunnels (ngrok/localtunnel) corrupt concurrent HTTP bodies → HMAC failure.
+// Map<relayBaseUrl, Promise> — different tunnels don't block each other.
+const _relayLocks = new Map();
+function withRelayLock(relayBase, fn) {
+  const current = _relayLocks.get(relayBase) || Promise.resolve();
+  const next = current.then(fn, fn);
+  _relayLocks.set(relayBase, next.then(() => {}, () => {}));
+  return next;
+}
 
 // ClobClient is ESM-only — must be loaded with dynamic import()
 let _ClobClient = null;
@@ -618,7 +628,9 @@ class PolymarketFeed {
         const relayBase = this.clobProxyUrl.replace(/\/$/, '');
         const relayUrl = `${relayBase}/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`;
         console.log(`[PolymarketFeed] Relay POST → ${relayUrl}`);
-        const axiosResp = await axios.post(relayUrl, bodyStr, { headers, timeout: 15000 });
+        const axiosResp = await withRelayLock(relayBase, () =>
+          axios.post(relayUrl, bodyStr, { headers, timeout: 15000 })
+        );
         resp = axiosResp.data;
         console.log(`[PolymarketFeed] Relay order response: ${JSON.stringify(resp)}`);
       } else {

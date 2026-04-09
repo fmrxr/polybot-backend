@@ -768,8 +768,13 @@ class BotInstance {
           this._geoBlockErrorUntil = Date.now() + 5 * 60 * 1000;
           this._log('ERROR', `[LIVE] Geo-blocked (403) — pausing for 5 min. Set CLOB Proxy URL in Settings → Advanced to fix.`);
           // Keep _triedMarkets entry — geo-block won't clear in this window
+        } else if (errBody.includes('incorrect header check') || errBody.includes('HMAC') || errBody.includes('header check')) {
+          // HMAC failure = relay corruption (ngrok free tier). Keep _triedMarkets lock
+          // and set a 60s cooldown — retrying immediately just fires duplicate orders.
+          this._lastTradeAttemptAt = Date.now(); // reset cooldown timer
+          this._log('ERROR', `[LIVE] HMAC/relay error — keeping market lock, cooldown 60s: ${errBody}`);
         } else {
-          // Transient error (HMAC, timeout, network) — clear lock so we can retry next tick
+          // Other transient error (timeout, network) — clear lock so we can retry next tick
           this._triedMarkets.delete(marketId);
           this._log('ERROR', `[LIVE] placeOrder failed: ${errBody}`);
         }
