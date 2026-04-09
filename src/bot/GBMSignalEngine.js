@@ -270,14 +270,8 @@ class GBMSignalEngine {
           : 300;
 
         // Reject near-resolved prices: token settling to 0 or 1 — no edge remains.
-        // Check BOTH raw and smoothed price (smoothed can lag behind a fast spike).
-        // Also hard-block entering any market with <60s left — not enough time to fill + profit.
         if (rawYesPrice >= 0.88 || rawYesPrice <= 0.12) {
           console.log(`[GBMSignalEngine] SKIP — near-resolved price: rawYesPrice=${rawYesPrice.toFixed(3)} (outside 0.12–0.88 range)`);
-          continue;
-        }
-        if (roughRemaining < 60) {
-          console.log(`[GBMSignalEngine] SKIP — too late to enter: ${Math.round(roughRemaining)}s remaining`);
           continue;
         }
 

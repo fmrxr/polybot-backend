@@ -550,6 +550,17 @@ class BotInstance {
       return;
     }
 
+    // ── 1b. Time gate — no new entries with <60s remaining (flips exempt: closing existing position) ──
+    if (!isFlip) {
+      const remainingSec = signal.market?.end_date_iso
+        ? (new Date(signal.market.end_date_iso).getTime() - Date.now()) / 1000
+        : 999;
+      if (remainingSec < 60) {
+        this._log('INFO', `[SKIP] Too late to enter: ${Math.round(remainingSec)}s remaining — new entries blocked <60s`);
+        return;
+      }
+    }
+
     // ── 2. Prevent duplicate pending orders for the same token OR same market ──
     const alreadyPending = [...this._pendingOrders.values()].some(
       o => o.tokenId === tokenId || (marketId && o.signal?.marketId === marketId)
