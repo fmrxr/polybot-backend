@@ -539,15 +539,14 @@ class PolymarketFeed {
     const Side = _Side;
     const OrderType = _OrderType;
 
-    // Snap price to 0.01 tick (Polymarket standard tick size for most markets).
-    // Add 1 tick for buys (improves fill probability vs sitting exactly at last trade).
-    // Subtract 1 tick for sells.
+    // Snap to 0.01 tick grid — caller (_executeTrade) already applied directional tick offset.
+    // For SELL: floor to tick. For BUY: ceil to tick (no extra +1 — caller added it already).
     const TICK = 0.01;
     let limitPrice;
     if (side === 'SELL') {
       limitPrice = Math.max(0.01, parseFloat((Math.floor(fairPrice / TICK) * TICK).toFixed(2)));
     } else {
-      limitPrice = Math.min(0.99, parseFloat((Math.ceil(fairPrice / TICK) * TICK + TICK).toFixed(2)));
+      limitPrice = Math.min(0.99, parseFloat((Math.ceil(fairPrice / TICK) * TICK).toFixed(2)));
     }
 
     // size = token quantity (CLOB limit orders use token qty, not dollar amount)

@@ -681,7 +681,10 @@ class BotInstance {
       }
 
       try {
-        const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, lastTradePrice);
+        // Pass limitPrice (already tick-adjusted in _executeTrade) — NOT lastTradePrice.
+        // placeOrder adds another tick internally; passing lastTradePrice causes double tick-add
+        // (logged limit=0.51 but actual CLOB order placed at 0.52).
+        const order = await this.polymarket.placeOrder(tokenId, 'BUY', tradeSize, limitPrice);
         const orderId = order?.orderID || order?.order_id || order?.id;
         if (!orderId) {
           this._log('WARN', `[LIVE] Order placed but no orderId returned — cannot monitor fill`);
@@ -694,8 +697,9 @@ class BotInstance {
           : Date.now() + 5 * 60 * 1000;
         this._triedMarkets.set(marketId, marketEndMs);
         this._balanceErrorUntil = null; // clear on success
-        this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: order.price || limitPrice });
-        this._log('INFO', `🔥 [LIVE] Order ${orderId} resting at ${(order.price || limitPrice).toFixed(2)} — monitoring fill`);
+        const confirmedPrice = parseFloat(order.price) || limitPrice; // CLOB may return price as string
+        this._pendingOrders.set(orderId, { ...pendingBase, orderId, isPaper: false, limitPrice: confirmedPrice });
+        this._log('INFO', `🔥 [LIVE] Order ${orderId} resting at ${confirmedPrice.toFixed(2)} — monitoring fill`);
       } catch (err) {
         const errBody = err.response?.data ? JSON.stringify(err.response.data) : err.message;
         if (errBody.includes('not enough balance') || errBody.includes('balance is not enough')) {
