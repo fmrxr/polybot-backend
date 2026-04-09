@@ -326,10 +326,10 @@ class GBMSignalEngine {
         // directional outcome based on earlier BTC move. Gamma IS the signal — skip
         // RANGE_CHOP only. NEWS_SPIKE remains blocked (chaotic fills, no structure).
         // Threshold configurable via settings.range_chop_gamma_override (default 0.04 = 4%).
-        // 5% was too strict — markets at 0.545 (4.5% disp) were blocked despite real edge.
-        // Default 0.005 (0.5%): any Gamma price ≠ 0.500 carries real edge even in flat BTC.
-        // 0.04 was too strict — boundary books always show yesPrice ≈ 0.505 and got blocked constantly.
-        const chopOverrideThreshold = parseFloat(this.settings?.range_chop_gamma_override) || 0.005;
+        // Raised to 0.08 (8%): flat BTC + RANGE_CHOP only passes when market is at 58¢+ or 42¢-.
+        // Previous 0.005 (0.5%) was too permissive — a market at 50.5¢ was overriding RANGE_CHOP.
+        // Clean signals require the market to have already priced a real directional outcome.
+        const chopOverrideThreshold = parseFloat(this.settings?.range_chop_gamma_override) || 0.08;
         const gammaDisplacementPct = Math.abs(yesPrice - 0.5);
         const gammaOverridesChop = scenario.type === 'RANGE_CHOP' && gammaDisplacementPct >= chopOverrideThreshold;
         if (scenario.noTrade && !gammaOverridesChop) {
@@ -343,13 +343,24 @@ class GBMSignalEngine {
         }
 
         // Skip flat-BTC windows — no directional signal means EV ≈ -cost only.
-        // Exception: if Gamma price is already meaningfully off 0.5 (|yesPrice - 0.5| > 0.01),
-        // the market has priced a directional move we may still have edge on.
-        const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.01;
-        const minBtcDelta = parseFloat(this.settings?.min_btc_delta) || 0.005;
+        // Exception: if Gamma price is meaningfully displaced from 0.5 (|yesPrice - 0.5| > 0.05),
+        // the market has priced a real directional outcome (30¢/70¢+ range).
+        // Raised from 0.01 (1¢) to 0.05 (5¢) — a market at 52¢ has no real edge, only noise.
+        const gammaPriceSignificant = Math.abs(yesPrice - 0.5) > 0.05;
+        const minBtcDelta = parseFloat(this.settings?.min_btc_delta) || 0.05;
         if (Math.abs(btcDelta) < minBtcDelta && !gammaPriceSignificant) {
           log.gates.btcFlat = { btcDelta, minBtcDelta, yesPrice, passed: false };
           log.reason = `BTC flat: |delta|=${Math.abs(btcDelta).toFixed(3)}% < ${minBtcDelta}% and Gamma near 0.5`;
+          continue;
+        }
+
+        // NEUTRAL MARKET BLOCK: yesPrice within 5% of 0.5 means market has no strong view.
+        // Entering a coin-flip at 52¢ has near-zero edge — skip regardless of BTC delta.
+        // Allow through only when BTC delta is strong (≥ 0.15%) suggesting a real move is happening.
+        const minStrongDelta = parseFloat(this.settings?.min_strong_btc_delta) || 0.15;
+        if (Math.abs(yesPrice - 0.5) < 0.05 && Math.abs(btcDelta) < minStrongDelta) {
+          log.gates.neutralBlock = { yesPrice, btcDelta, threshold: 0.05, passed: false };
+          log.reason = `Neutral market: yesPrice=${yesPrice.toFixed(3)} within 5% of 0.5 and BTC delta=${btcDelta.toFixed(3)}% < ${minStrongDelta}% — coin flip, skip`;
           continue;
         }
 
@@ -362,8 +373,8 @@ class GBMSignalEngine {
 
         const totalEdge = btcEdge + microEdge;
 
-        const bullish = btcDelta > 0.015;
-        const bearish = btcDelta < -0.015;
+        const bullish = btcDelta > 0.05;
+        const bearish = btcDelta < -0.05;
 
         // When BTC is flat but Gamma has already priced a directional move (yesPrice ≠ 0.5),
         // treat the Gamma displacement as the directional signal.
@@ -371,8 +382,10 @@ class GBMSignalEngine {
         // yesPrice=0.515 → market expects YES outcome → bullish signal.
         // This preserves EV when BTC momentarily pauses after already having moved.
         const gammaDisplacement = yesPrice - 0.5; // + = market priced YES, - = priced NO
-        const gammaBullish = !bullish && !bearish && gammaDisplacement > 0.01;
-        const gammaBearish = !bullish && !bearish && gammaDisplacement < -0.01;
+        // Raised from 0.01 to 0.05 — only treat Gamma displacement as a directional signal
+        // when market is at 55¢+ or 45¢-, not the nearly-neutral 51-52¢ typical open.
+        const gammaBullish = !bullish && !bearish && gammaDisplacement > 0.05;
+        const gammaBearish = !bullish && !bearish && gammaDisplacement < -0.05;
 
         let modelProb;
         if (bullish || gammaBullish) {
@@ -475,7 +488,7 @@ class GBMSignalEngine {
         const evAnalysis = this.evEngine.evaluateBothSides(modelProb, yesPrice, costs);
         const evReal = evAnalysis.bestEV;
 
-        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 0.5;
+        let evFloor = parseFloat(this.settings.gate2_ev_floor) || 3.0;
 
         // Scenario 9: Cross-Market Lag — strongest edge, ease floor significantly
         if (scenario.type === 'LAG_EDGE') evFloor *= 0.65;
@@ -627,10 +640,11 @@ class GBMSignalEngine {
         const signalConfidence = parseFloat(rawConfidence.toFixed(3));
 
         // Confidence gate — skip if signal quality is too low (noise, not edge).
-        // Threshold lowered to 0.15 (was 0.20) — weak but valid signals now pass.
-        if (signalConfidence < 0.15) {
-          log.gates.confidence = { value: signalConfidence, threshold: 0.15, passed: false };
-          log.reason = `Low confidence: ${signalConfidence.toFixed(3)} < 0.15 — insufficient signal quality`;
+        // Raised to 0.30 — requires real BTC momentum + EV alignment to pass.
+        const confidenceThreshold = parseFloat(this.settings?.min_confidence) || 0.30;
+        if (signalConfidence < confidenceThreshold) {
+          log.gates.confidence = { value: signalConfidence, threshold: confidenceThreshold, passed: false };
+          log.reason = `Low confidence: ${signalConfidence.toFixed(3)} < ${confidenceThreshold} — insufficient signal quality`;
           continue;
         }
 
