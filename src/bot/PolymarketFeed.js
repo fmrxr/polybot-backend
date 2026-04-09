@@ -579,16 +579,27 @@ class PolymarketFeed {
           { tickSize: '0.01', negRisk: false }
         );
         const orderPayload = _orderToJson(signedOrder, this._creds.key || '', OrderType.GTC, false, false);
+        // Stringify ONCE — use the same string for both HMAC signing and the HTTP body.
+        // Re-stringifying the parsed object may produce different key order → HMAC mismatch.
         const bodyStr = JSON.stringify(orderPayload);
         const l2HeaderArgs = { method: 'POST', requestPath: '/order', body: bodyStr };
         // Use server time to avoid HMAC clock-skew rejection ("incorrect header check")
         let serverTs;
         try {
-          serverTs = await this.clobClient.getServerTime();
+          const raw = await this.clobClient.getServerTime();
+          // getServerTime() returns a raw integer (Unix seconds) via axios JSON parse
+          serverTs = typeof raw === 'number' ? raw : parseInt(raw, 10);
+          if (isNaN(serverTs)) serverTs = undefined;
         } catch (_) {
           serverTs = undefined;
         }
+        const localTs = Math.floor(Date.now() / 1000);
+        const skew = serverTs != null ? serverTs - localTs : 0;
+        if (Math.abs(skew) > 2) {
+          console.log(`[PolymarketFeed] Clock skew: local=${localTs} server=${serverTs} skew=${skew}s`);
+        }
         const headers = await _createL2Headers(this._signer, this._creds, l2HeaderArgs, serverTs);
+        console.log(`[PolymarketFeed] L2 headers: POLY_TIMESTAMP=${headers.POLY_TIMESTAMP} key=${headers.POLY_API_KEY?.slice(0,8)}...`);
         headers['Content-Type'] = 'application/json';
         headers['Accept'] = '*/*';
         headers['User-Agent'] = '@polymarket/clob-client';
@@ -600,7 +611,9 @@ class PolymarketFeed {
         const relayBase = this.clobProxyUrl.replace(/\/$/, '');
         const relayUrl = `${relayBase}/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`;
         console.log(`[PolymarketFeed] Relay POST → ${relayUrl}`);
-        const axiosResp = await axios.post(relayUrl, orderPayload, { headers, timeout: 15000 });
+        // Send bodyStr (pre-serialized) so the exact bytes match what was HMAC-signed.
+        // Passing the raw object would cause axios to re-stringify with potentially different key order.
+        const axiosResp = await axios.post(relayUrl, bodyStr, { headers, timeout: 15000 });
         resp = axiosResp.data;
         console.log(`[PolymarketFeed] Relay order response: ${JSON.stringify(resp)}`);
       } else {
