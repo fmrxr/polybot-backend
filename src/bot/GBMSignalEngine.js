@@ -2,11 +2,12 @@ const EVEngine = require('./EVEngine');
 const MicrostructureEngine = require('./MicrostructureEngine');
 
 class GBMSignalEngine {
-  constructor(polymarket, binance, chainlink, settings) {
+  constructor(polymarket, binance, chainlink, settings, priceFeed = null) {
     this.polymarket = polymarket;
     this.binance = binance;
     this.chainlink = chainlink;
     this.settings = settings;
+    this.priceFeed = priceFeed; // real-time WS price feed (optional)
     this.evEngine = new EVEngine();
     this.microEngine = new MicrostructureEngine();
 
@@ -142,12 +143,48 @@ class GBMSignalEngine {
 
         // ==========================================
         // STEP 1: GET REAL MARKET DATA
-        // Price discovery — 3-source waterfall:
+        // Price discovery — 4-source waterfall:
+        //   0. WebSocket real-time price (sub-second, preferred)
         //   1. YES token CLOB order book (most direct)
         //   2. NO token CLOB order book  (token order may be inverted in API)
         //   3. Gamma API tokens[i].price (actual market price from last trade)
         // bid=0.01/ask=0.99 = boundary/resting liquidity only — not a real price.
         // ==========================================
+
+        // Subscribe WS to this market's tokens (no-op if already subscribed)
+        if (this.priceFeed && yesTokenId) {
+          const toSub = [yesTokenId];
+          if (noTokenId) toSub.push(noTokenId);
+          this.priceFeed.subscribe(toSub);
+        }
+
+        // SOURCE 0: WebSocket live price — freshest possible, sub-second latency.
+        // Only use if received within last 10s to avoid stale WS cache.
+        let rawYesPrice = null;
+        let priceSource = null;
+        if (this.priceFeed) {
+          const wsEntry = this.priceFeed.getPrice(yesTokenId);
+          if (wsEntry && (Date.now() - wsEntry.timestamp) < 10000) {
+            const wsPrice = wsEntry.price;
+            if (wsPrice > 0.01 && wsPrice < 0.99) {
+              rawYesPrice = wsPrice;
+              priceSource = 'ws';
+              console.log(`[GBMSignalEngine] WS source: yesPrice=${wsPrice.toFixed(3)} age=${((Date.now()-wsEntry.timestamp)/1000).toFixed(1)}s`);
+            }
+          }
+          // Try NO token WS if YES not available
+          if (rawYesPrice == null && noTokenId) {
+            const wsNoEntry = this.priceFeed.getPrice(noTokenId);
+            if (wsNoEntry && (Date.now() - wsNoEntry.timestamp) < 10000) {
+              const wsNoPrice = wsNoEntry.price;
+              if (wsNoPrice > 0.01 && wsNoPrice < 0.99) {
+                rawYesPrice = 1 - wsNoPrice;
+                priceSource = 'ws';
+                console.log(`[GBMSignalEngine] WS source (NO token): noPrice=${wsNoPrice.toFixed(3)} yesPrice=${rawYesPrice.toFixed(3)}`);
+              }
+            }
+          }
+        }
 
         // Bug 1 fix: Gamma tokens[] objects don't carry .outcome or .price fields.
         // Use outcomePrices[] array for diagnostic prices, default outcomes to YES/NO.
@@ -160,10 +197,12 @@ class GBMSignalEngine {
         // Fetch YES book, NO book, and Gamma price all in parallel — don't wait for each
         // source sequentially. BTC 5-min markets almost always have boundary CLOB books
         // so we always need Gamma anyway; running in parallel cuts latency ~2×.
+        // Skip HTTP fetches if WS already gave us a fresh price.
+        const needsHttpPrice = rawYesPrice == null;
         const [yesBook, noBook, gammaYes] = await Promise.all([
           this.polymarket.getOrderBook(yesTokenId).catch(() => null),
           noTokenId ? this.polymarket.getOrderBook(noTokenId).catch(() => null) : Promise.resolve(null),
-          this.polymarket.getLivePriceFromGamma(marketId, yesTokenId).catch(() => null),
+          needsHttpPrice ? this.polymarket.getLivePriceFromGamma(marketId, yesTokenId).catch(() => null) : Promise.resolve(null),
         ]);
 
         const yesSpread = yesBook?.spread ?? (yesBook ? yesBook.bestAsk - yesBook.bestBid : 1);
@@ -174,8 +213,15 @@ class GBMSignalEngine {
         }
 
         let orderBook = yesBook;
-        let rawYesPrice = (yesBook?.midPrice != null && yesSpread <= 0.10) ? yesBook.midPrice : null;
-        let priceSource = rawYesPrice != null ? 'clob' : null;
+        // Synthetic orderBook for WS-sourced price (boundary-style, depth from CLOB if available)
+        if (rawYesPrice != null && priceSource === 'ws') {
+          orderBook = { midPrice: rawYesPrice, bestAsk: rawYesPrice + 0.01, bestBid: rawYesPrice - 0.01, spread: 0.02, totalDepth: yesBook?.totalDepth || 0 };
+        }
+        // Only apply CLOB price if WS didn't already give us one
+        if (rawYesPrice == null) {
+          rawYesPrice = (yesBook?.midPrice != null && yesSpread <= 0.10) ? yesBook.midPrice : null;
+          priceSource = rawYesPrice != null ? 'clob' : null;
+        }
 
         // Try NO token book if YES is boundary-only
         if (rawYesPrice == null && noBook) {
@@ -218,20 +264,22 @@ class GBMSignalEngine {
           continue;
         }
 
-        // Reject near-resolved CLOB prices: token already settling to 0 or 1.
-        // Kelly/EV math degrades badly above 0.88 — no tradeable edge remains.
-        // Also filters markets that are resolving imminently but CLOB still active.
-        if (rawYesPrice >= 0.88 || rawYesPrice <= 0.12) {
-          console.log(`[GBMSignalEngine] SKIP — near-resolved CLOB price: yesPrice=${rawYesPrice.toFixed(3)} (outside 0.12–0.88 tradeable range)`);
-          continue;
-        }
-
-        // Rough seconds-remaining estimate — used for adaptive smoothing alpha.
-        // Full remaining calc happens later in the gate pipeline; this is only
-        // needed to pick the right alpha before we proceed.
+        // Rough seconds-remaining estimate — used for adaptive smoothing alpha and time gate.
         const roughRemaining = market.end_date_iso
           ? new Date(market.end_date_iso).getTime() / 1000 - Date.now() / 1000
           : 300;
+
+        // Reject near-resolved prices: token settling to 0 or 1 — no edge remains.
+        // Check BOTH raw and smoothed price (smoothed can lag behind a fast spike).
+        // Also hard-block entering any market with <60s left — not enough time to fill + profit.
+        if (rawYesPrice >= 0.88 || rawYesPrice <= 0.12) {
+          console.log(`[GBMSignalEngine] SKIP — near-resolved price: rawYesPrice=${rawYesPrice.toFixed(3)} (outside 0.12–0.88 range)`);
+          continue;
+        }
+        if (roughRemaining < 60) {
+          console.log(`[GBMSignalEngine] SKIP — too late to enter: ${Math.round(roughRemaining)}s remaining`);
+          continue;
+        }
 
         // Sanity filter: CLOB mid only (Gamma passes through unfiltered).
         const sanitizedPrice = this._sanityCheck(marketId, rawYesPrice, priceSource);

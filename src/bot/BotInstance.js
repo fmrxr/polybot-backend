@@ -4,6 +4,7 @@ const GBMSignalEngine = require('./GBMSignalEngine');
 const BinanceFeed = require('./BinanceFeed');
 const ChainlinkFeed = require('./ChainlinkFeed');
 const PolymarketFeed = require('./PolymarketFeed');
+const PolymarketPriceFeed = require('./PolymarketPriceFeed');
 const EVEngine = require('./EVEngine');
 const { decrypt } = require('../services/encryption');
 const axios = require('axios');
@@ -22,6 +23,7 @@ class BotInstance {
     this.binance = new BinanceFeed();
     this.chainlink = new ChainlinkFeed();
     this.polymarket = null;
+    this.priceFeed = new PolymarketPriceFeed(); // real-time WS price feed
     this.signalEngine = null;
     this.evEngine = new EVEngine();
 
@@ -98,15 +100,21 @@ class BotInstance {
       await this.binance.connect();
       await this.chainlink.start(30000);
 
+      // Connect real-time Polymarket price feed (non-blocking — bot still works if WS fails)
+      this.priceFeed.connect().catch(err => {
+        this._log('WARN', `PolymarketPriceFeed connect failed: ${err.message} — falling back to HTTP`);
+      });
+
       // Wait for initial price
       await this._waitForPrice(15000);
 
-      // Initialize signal engine
+      // Initialize signal engine with WS price feed
       this.signalEngine = new GBMSignalEngine(
         this.polymarket,
         this.binance,
         this.chainlink,
-        this.settings
+        this.settings,
+        this.priceFeed
       );
 
       this.isRunning = true;
@@ -162,6 +170,7 @@ class BotInstance {
 
     if (this.binance) this.binance.disconnect();
     if (this.chainlink) this.chainlink.stop();
+    if (this.priceFeed) this.priceFeed.disconnect();
 
     // preserveActive=true on graceful shutdown so auto-restart works after deploy
     if (!preserveActive) {
@@ -689,6 +698,19 @@ class BotInstance {
     };
 
     if (this.settings.paper_trading) {
+      // Paper: dedup same as live — one attempt per market per window
+      if (!isFlip) {
+        const triedExpiry = this._triedMarkets.get(marketId);
+        if (triedExpiry && Date.now() < triedExpiry) {
+          this._log('INFO', `[PAPER] Already attempted order for market ${marketId?.slice(0,12)} this window — skipping`);
+          return;
+        }
+        const marketEndMs = signal.market?.end_date_iso
+          ? new Date(signal.market.end_date_iso).getTime()
+          : Date.now() + 5 * 60 * 1000;
+        this._triedMarkets.set(marketId, marketEndMs);
+      }
+
       // Paper: create a synthetic order ID — no API call needed
       const paperId = `paper_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       this._pendingOrders.set(paperId, { ...pendingBase, orderId: paperId, isPaper: true });
@@ -773,6 +795,10 @@ class BotInstance {
           // and set a 60s cooldown — retrying immediately just fires duplicate orders.
           this._lastTradeAttemptAt = Date.now(); // reset cooldown timer
           this._log('ERROR', `[LIVE] HMAC/relay error — keeping market lock, cooldown 60s: ${errBody}`);
+        } else if (errBody.includes('ECONNREFUSED') || errBody.includes('actively refused') || errBody.includes('connect ECONNREFUSED')) {
+          // Relay not reachable — keep lock, set cooldown. Retrying causes duplicate orders.
+          this._lastTradeAttemptAt = Date.now();
+          this._log('ERROR', `[LIVE] Relay connection refused — keeping market lock, cooldown 60s. Check your tunnel is running.`);
         } else {
           // Other transient error (timeout, network) — clear lock so we can retry next tick
           this._triedMarkets.delete(marketId);
@@ -1926,6 +1952,7 @@ class BotInstance {
         else if (gates.freshness     && !gates.freshness.passed)      gateFailed = 0.2;
         else if (gates.chase         && !gates.chase.passed)          gateFailed = 0.3;
         else if (gates.evTrend       && !gates.evTrend.passed)        gateFailed = 0.4;
+        else if (gates.neutralBlock  && !gates.neutralBlock.passed)   gateFailed = 0.5;
         else if (gates.scenarioFilter && !gates.scenarioFilter.passed) gateFailed = 0.6;
         else if (gates.boundaryBook  && !gates.boundaryBook.passed)   gateFailed = 0.7;
         else if (gates.gate1         && !gates.gate1.passed)          gateFailed = 1;
