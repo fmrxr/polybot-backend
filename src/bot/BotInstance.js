@@ -640,6 +640,27 @@ class BotInstance {
 
       if (age > effectiveTimeoutMs) {
         if (!pending.isPaper) {
+          // Check final status before cancelling — order may have filled during the timeout window
+          try {
+            const finalStatus = await this.polymarket.getOrderStatus(orderId);
+            if (finalStatus?.isFilled) {
+              const fillDollars = (finalStatus.sizeMatched || pending.dollarSize / pending.limitPrice) * pending.limitPrice;
+              const timeToFillSec = parseFloat((age / 1000).toFixed(2));
+              this._log('INFO', `✅ [LIVE] Order ${orderId.slice(0,12)} filled at timeout — $${fillDollars.toFixed(2)}`);
+              await this._recordFilledTrade(pending, pending.limitPrice, fillDollars, { executionType: 'LIVE', timeToFillSec });
+              this._pendingOrders.delete(orderId);
+              continue;
+            }
+            if (finalStatus?.isPartial && finalStatus.sizeMatched > 0) {
+              const fillDollars = finalStatus.sizeMatched * pending.limitPrice;
+              const timeToFillSec = parseFloat((age / 1000).toFixed(2));
+              this._log('INFO', `📊 [LIVE] Partial fill at timeout ${orderId.slice(0,12)}: $${fillDollars.toFixed(2)}`);
+              try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
+              await this._recordFilledTrade(pending, pending.limitPrice, fillDollars, { executionType: 'LIVE', timeToFillSec });
+              this._pendingOrders.delete(orderId);
+              continue;
+            }
+          } catch (_) {}
           try { await this.polymarket.cancelOrder(orderId); } catch (_) {}
         }
         const reason = marketRemainingSec != null && marketRemainingSec < 35
