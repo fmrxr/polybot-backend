@@ -1,14 +1,5 @@
 const axios = require('axios');
 
-// Module-level relay mutex — serializes concurrent placeOrder calls through the same tunnel.
-// Free ngrok tunnels corrupt concurrent HTTP bodies causing HMAC "incorrect header check".
-// All PolymarketFeed instances share this lock since they share the same relay URL.
-let _relayLock = Promise.resolve();
-function withRelayLock(fn) {
-  const next = _relayLock.then(fn, fn); // run fn after current lock; always release on error too
-  _relayLock = next.then(() => {}, () => {}); // advance lock, swallow errors so lock never gets stuck
-  return next;
-}
 
 // ClobClient is ESM-only — must be loaded with dynamic import()
 let _ClobClient = null;
@@ -59,6 +50,8 @@ class PolymarketFeed {
     this._signer = null;  // kept for proxy-mode order signing
     this._creds = null;   // kept for proxy-mode L2 header generation
     this.clobClient = null;
+    this._clockSkew = 0;          // cached server-vs-local skew (seconds)
+    this._clockSkewFetchedAt = 0; // timestamp of last skew fetch
     this.marketsCache = [];
     this.lastMarketFetch = null;
     this.marketCacheTTL = 10000; // 10s
@@ -595,21 +588,23 @@ class PolymarketFeed {
         // HMAC mismatch ("incorrect header check") happens when signed path ≠ actual request path.
         const signedPath = this.geoBlockToken ? `/order?geo_block_token=${this.geoBlockToken}` : '/order';
         const l2HeaderArgs = { method: 'POST', requestPath: signedPath, body: bodyStr };
-        // Use server time to avoid HMAC clock-skew rejection ("incorrect header check")
-        let serverTs;
-        try {
-          const raw = await this.clobClient.getServerTime();
-          // getServerTime() returns a raw integer (Unix seconds) via axios JSON parse
-          serverTs = typeof raw === 'number' ? raw : parseInt(raw, 10);
-          if (isNaN(serverTs)) serverTs = undefined;
-        } catch (_) {
-          serverTs = undefined;
+        // Use cached clock skew to avoid a round-trip to getServerTime() on every order.
+        // Skew is refreshed every 5 minutes — Render's NTP-synced clock is stable.
+        const nowMs = Date.now();
+        if (nowMs - this._clockSkewFetchedAt > 5 * 60 * 1000) {
+          try {
+            const raw = await this.clobClient.getServerTime();
+            const serverTs = typeof raw === 'number' ? raw : parseInt(raw, 10);
+            if (!isNaN(serverTs)) {
+              this._clockSkew = serverTs - Math.floor(nowMs / 1000);
+              this._clockSkewFetchedAt = nowMs;
+              if (Math.abs(this._clockSkew) > 2) {
+                console.log(`[PolymarketFeed] Clock skew updated: ${this._clockSkew}s`);
+              }
+            }
+          } catch (_) { /* keep previous skew */ }
         }
-        const localTs = Math.floor(Date.now() / 1000);
-        const skew = serverTs != null ? serverTs - localTs : 0;
-        if (Math.abs(skew) > 2) {
-          console.log(`[PolymarketFeed] Clock skew: local=${localTs} server=${serverTs} skew=${skew}s`);
-        }
+        const serverTs = Math.floor(nowMs / 1000) + this._clockSkew;
         const headers = await _createL2Headers(this._signer, this._creds, l2HeaderArgs, serverTs);
         console.log(`[PolymarketFeed] L2 headers: POLY_TIMESTAMP=${headers.POLY_TIMESTAMP} key=${headers.POLY_API_KEY?.slice(0,8)}...`);
         headers['Content-Type'] = 'application/json';
@@ -623,11 +618,7 @@ class PolymarketFeed {
         const relayBase = this.clobProxyUrl.replace(/\/$/, '');
         const relayUrl = `${relayBase}/order${this.geoBlockToken ? `?geo_block_token=${this.geoBlockToken}` : ''}`;
         console.log(`[PolymarketFeed] Relay POST → ${relayUrl}`);
-        // Serialize relay POSTs — free ngrok tunnels corrupt concurrent HTTP bodies,
-        // causing HMAC "incorrect header check" when two bots fire simultaneously.
-        const axiosResp = await withRelayLock(() =>
-          axios.post(relayUrl, bodyStr, { headers, timeout: 15000 })
-        );
+        const axiosResp = await axios.post(relayUrl, bodyStr, { headers, timeout: 15000 });
         resp = axiosResp.data;
         console.log(`[PolymarketFeed] Relay order response: ${JSON.stringify(resp)}`);
       } else {
