@@ -462,7 +462,9 @@ class PolymarketFeed {
   }
 
   /** Fetch current YES token price from Gamma API outcomePrices.
-   * Use when CLOB book is boundary-only. clobTokenIds[0] = YES token. */
+   * Use when CLOB book is boundary-only. clobTokenIds[0] = YES token.
+   * If Gamma returns exactly 0.5/0.5 (stale/ambiguous), falls back to
+   * the CLOB lastTradePrice which reflects actual fills. */
   async getLivePriceFromGamma(marketId, tokenId) {
     try {
       const r = await fetch(`https://gamma-api.polymarket.com/markets/${marketId}`,
@@ -477,7 +479,29 @@ class PolymarketFeed {
       if (typeof clobIds === 'string') { try { clobIds = JSON.parse(clobIds); } catch(_) { clobIds = []; } }
       const idx = clobIds?.indexOf(tokenId);
       const price = idx >= 0 ? parseFloat(op[idx]) : parseFloat(op[0]);
-      return (!isNaN(price) && price > 0.02 && price < 0.98) ? price : null;
+      if (!isNaN(price) && price > 0.02 && price < 0.98) {
+        // Gamma sometimes returns exactly 0.5 for both outcomes — this is stale/ambiguous.
+        // Fall through to CLOB lastTradePrice in that case.
+        const p0 = parseFloat(op[0]), p1 = parseFloat(op[1]);
+        const isAmbiguous = Math.abs(p0 - 0.5) < 0.002 && Math.abs(p1 - 0.5) < 0.002;
+        if (!isAmbiguous) return price;
+      }
+      // Gamma price ambiguous or out of range — try CLOB lastTradePrice
+      if (tokenId) {
+        try {
+          const lr = await fetch(`https://clob.polymarket.com/last-trade-price?token_id=${tokenId}`,
+            { signal: AbortSignal.timeout(3000) });
+          if (lr.ok) {
+            const ld = await lr.json();
+            const lp = parseFloat(ld?.price);
+            if (!isNaN(lp) && lp >= 0 && lp <= 1) {
+              console.log(`[PolymarketFeed] Gamma ambiguous — CLOB lastTrade: ${lp.toFixed(3)}`);
+              return lp;
+            }
+          }
+        } catch (_) {}
+      }
+      return null;
     } catch (_) { return null; }
   }
 
